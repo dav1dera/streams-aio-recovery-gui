@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import webbrowser
 
-from .backend import Failure, GitHub, Host, SSH, SHA, TAG, require
+from .backend import Failure, GitHub, Host, SSH, SHA, TAG, require, restore_all
 from .codes import ERROR_CODES
 
 TEXT = {
@@ -19,6 +19,10 @@ TEXT = {
     'NPM': 'Database NPM', 'AIO': 'Configurazioni AIO', 'PREFLIGHT': 'Controlli finali',
     'PREPARED': 'Preparazione completata', 'STARTED': 'Avvio dei servizi', 'TLS': 'Certificati e HTTPS',
     'REFUSED': 'Procedura fermata',
+    'INFISICAL_CONFIG': 'Configurazione privata Infisical',
+    'INFISICAL_DATABASE': 'Ruoli e database Infisical',
+    'INFISICAL_SERVER': 'Avvio e controllo API Infisical',
+    'NATIVE_AGENT': 'Agent continuo e tunnel SSH permanente',
 }
 ERRORS = {
     'SSH_AUTH_FAILED': 'Accesso SSH rifiutato. Controlla utente, password o chiave.',
@@ -37,6 +41,11 @@ ERRORS = {
     'APPLICATION_START_REFUSED': 'Avvio o verifica applicativa fallita. Conserva lo stato e controlla la VM.',
     'REMOTE_OPERATION_FAILED': 'La VM ha fermato il comando. Se presente, il codice del passo è indicato nel registro.',
     'UBUNTU_2404_REQUIRED': 'Questa versione richiede Ubuntu Server 24.04 amd64.',
+    'SEPARATE_RECOVERY_VMS_REQUIRED': 'Stack e Infisical devono essere due VM nuove distinte.',
+    'SSH_API_FORWARDING_REQUIRED': 'Il server SSH deve consentire forwarding sul loopback per la prova Infisical.',
+    'INFISICAL_CONFIG_ARCHIVE_LAYOUT_REQUIRES_REVIEW': 'Il backup contiene file diversi dal contratto Infisical. Conserva il materiale per controllarlo.',
+    'INFISICAL_DUMP_NOT_COMPATIBLE': 'Il dump PostgreSQL non è leggibile con la versione recuperata.',
+    'INFISICAL_RESTORED_API_NOT_READY': 'Il nuovo Infisical non risponde ancora al controllo API locale.',
 }
 
 
@@ -75,11 +84,13 @@ class App(tk.Tk):
                   font=('Segoe UI', 11)).pack(anchor='w', padx=28, pady=(18, 10))
         self.book = ttk.Notebook(self)
         self.book.pack(fill='both', expand=True, padx=24)
-        connections, backups, advanced, run = [ttk.Frame(self.book, padding=20) for _ in range(4)]
-        for tab, title in zip((connections, backups, advanced, run), ('VM e GitHub', 'Backup', 'Infisical e opzioni', 'Ripristino')):
+        connections, backups, infisical, advanced, run = [ttk.Frame(self.book, padding=20) for _ in range(5)]
+        for tab, title in zip((connections, backups, infisical, advanced, run),
+                              ('VM e GitHub', 'Backup', 'Nuova VM Infisical', 'Opzioni', 'Ripristino')):
             self.book.add(tab, text=title)
         self._connections(connections)
         self._backups(backups)
+        self._infisical(infisical)
         self._advanced(advanced)
         self._run(run)
         self.status = tk.StringVar(value='Pronto. Inizia con una VM vuota; la produzione può restare accesa.')
@@ -152,25 +163,35 @@ class App(tk.Tk):
         self.entry(frame, 'File Universal Auth client-secret', 'client_secret_file', 4, browse=True)
         self.entry(frame, 'Password sudo (se diversa)', 'sudo_password', 5, secret=True)
         self.entry(frame, 'Passphrase chiave SSH', 'key_password', 6, secret=True)
-        ttk.Separator(tab).pack(fill='x', pady=16)
+    def _infisical(self, tab):
+        ttk.Label(tab, text='Recupera prima il server dei segreti.', font=('Segoe UI', 15, 'bold')).pack(anchor='w')
+        ttk.Label(tab, text='Per «Ripristina entrambe le VM» inserisci una seconda VM nuova Ubuntu 24.04 amd64.\n'
+                  'La vecchia VM Fedora resta intatta. Se usi solo «Prepara stack», Infisical deve già essere disponibile.',
+                  wraplength=890).pack(anchor='w', pady=(8,16))
         vm = ttk.Frame(tab)
         vm.pack(fill='x')
-        self.entry(vm, 'VM Infisical · host SSH opzionale', 'infisical_host', 0)
+        self.entry(vm, 'Nuova VM Infisical · host SSH', 'infisical_host', 0)
         self.entry(vm, 'Utente VM Infisical', 'infisical_user', 1, default='infiscal')
-        self.entry(vm, 'Password SSH / sudo Infisical', 'infisical_password', 2, secret=True)
-        ttk.Label(tab, text='La connessione Infisical è per il controllo host. Il restore del server PostgreSQL/config non\n'
-                  'è ancora automatizzato: richiede il contratto del deployment privato. Infisical deve già rispondere.',
-                  wraplength=890).pack(anchor='w', pady=(8, 0))
+        self.entry(vm, 'Porta SSH', 'infisical_port', 2, default='22')
+        self.entry(vm, 'Password SSH', 'infisical_password', 3, secret=True)
+        self.entry(vm, 'Chiave SSH (in alternativa)', 'infisical_key', 4, browse=True)
+        self.entry(vm, 'Passphrase chiave SSH', 'infisical_key_password', 5, secret=True)
+        self.entry(vm, 'Password sudo (se diversa)', 'infisical_sudo_password', 6, secret=True)
+        ttk.Label(tab, text='Ripristino: Infisical v0.165.16 · PostgreSQL 14.24 · Redis, con digest verificati.\n'
+                  'Le chiavi applicative arrivano dal backup cifrato. Il programma non ne genera altre.\n'
+                  'I segreti viaggiano alla VM stack attraverso due connessioni SSH; non serve cambiare il DNS per prepararli.',
+                  wraplength=890).pack(anchor='w', pady=(20,0))
 
     def _run(self, tab):
         ttk.Label(tab, text='Un passo alla volta, con esiti verificabili.', font=('Segoe UI', 15, 'bold')).pack(anchor='w')
         ttk.Label(tab, text='Ubuntu 24.04 amd64 · utente UID/GID 1000 · sudo · SSH attivo', wraplength=850).pack(anchor='w', pady=8)
         self.lab = tk.BooleanVar(value=False)
-        ttk.Checkbutton(tab, text='Confermo che la VM docker-stack è nuova e destinata a questa prova.', variable=self.lab).pack(anchor='w', pady=8)
+        ttk.Checkbutton(tab, text='Confermo che le VM selezionate sono nuove e destinate a questa prova.', variable=self.lab).pack(anchor='w', pady=8)
         actions = ttk.Frame(tab)
         actions.pack(fill='x', pady=8)
         self.buttons = []
-        for text, fn, style in [('Verifica', self.verify, 'TButton'), ('Prepara ripristino', self.prepare, 'Accent.TButton'),
+        for text, fn, style in [('Verifica', self.verify, 'TButton'), ('Ripristina entrambe le VM', self.one_click, 'Accent.TButton'),
+                                ('Prepara stack', self.prepare, 'TButton'),
                                 ('Avvia servizi', self.start_services, 'TButton'), ('Salva esiti', self.save_report, 'TButton')]:
             button = ttk.Button(actions, text=text, command=fn, style=style)
             button.pack(side='left', padx=(0, 10))
@@ -178,6 +199,9 @@ class App(tk.Tk):
         self.cancel_button = ttk.Button(actions, text='Interrompi', command=lambda: self.cancelled.set(), state='disabled')
         self.cancel_button.pack(side='right')
         self.tls = tk.BooleanVar(value=False)
+        self.native_agent = tk.BooleanVar(value=True)
+        ttk.Checkbutton(tab, text='Nel ripristino delle due VM installa anche l’Agent continuo con collegamento SSH permanente.',
+                        variable=self.native_agent).pack(anchor='w',pady=4)
         ttk.Checkbutton(tab, text='All’avvio richiedi anche riemissione TLS e verifica HTTPS NPM (Cloudflare/ACME reali).',
                         variable=self.tls).pack(anchor='w', pady=8)
         self.progress = ttk.Progressbar(tab, mode='indeterminate')
@@ -187,7 +211,8 @@ class App(tk.Tk):
         self.log.pack(fill='both', expand=True)
         self.log.tag_configure('ok', foreground='#8fe0b7')
         self.log.tag_configure('error', foreground='#ffb0a5')
-        ttk.Label(tab, text='Preparato ≠ ripristino verificato: restano login, enrollment, Agent continuo e test applicativi.\n'
+        ttk.Label(tab, text='Dopo l’avvio verifica login, enrollment, DNS e HTTPS. L’Agent continuo aggiorna i file privati;\n'
+                  'i vecchi hook di riavvio vanno controllati prima di riattivarli.\n'
                   'Watchtower, DDNS, deunhealth e timer di pubblicazione/backup restano disattivati.',
                   wraplength=890).pack(anchor='w', pady=(12, 0))
 
@@ -204,7 +229,8 @@ class App(tk.Tk):
             self.var(key).set(f'{len(paths)} file selezionati')
 
     def snapshot(self):
-        return {key: variable.get().strip() if key not in ('password', 'sudo_password', 'key_password', 'infisical_password')
+        return {key: variable.get().strip() if key not in ('password', 'sudo_password', 'key_password', 'infisical_password',
+                                                         'infisical_key_password', 'infisical_sudo_password')
                 else variable.get() for key, variable in self.vars.items()}
 
     @staticmethod
@@ -212,6 +238,15 @@ class App(tk.Tk):
         try:
             return Host(data['host'], data['user'], int(data['port']), data['password'],
                         data['ssh_key'], data['key_password'], data['sudo_password'])
+        except ValueError:
+            raise Failure('SSH_ADDRESS_REQUIRED') from None
+
+    @staticmethod
+    def infisical_host(data):
+        try:
+            return Host(data['infisical_host'], data['infisical_user'], int(data['infisical_port']),
+                        data['infisical_password'], data['infisical_key'], data['infisical_key_password'],
+                        data['infisical_sudo_password'])
         except ValueError:
             raise Failure('SSH_ADDRESS_REQUIRED') from None
 
@@ -229,7 +264,7 @@ class App(tk.Tk):
             return
         self.busy = True
         self.cancelled.clear()
-        self.book.select(3)
+        self.book.select(4)
         self.progress.start(15)
         self.cancel_button.configure(state='normal')
         for button in self.buttons:
@@ -265,13 +300,53 @@ class App(tk.Tk):
             finally:
                 ssh.close()
             if data.get('infisical_host'):
-                host = Host(data['infisical_host'], data['infisical_user'], password=data['infisical_password'])
+                host = self.infisical_host(data)
                 other = SSH(host, self.key_dialog, self.cancelled)
                 try:
-                    other.check(fresh=False)
-                    self.events.put(('message', 'Accesso SSH alla VM Infisical verificato. Il servizio secret non è stato modificato.'))
+                    other.check(role='infisical')
+                    self.events.put(('message', 'Nuova destinazione Infisical verificata. Nessun servizio modificato.'))
                 finally:
                     other.close()
+        self.job(action)
+
+    def one_click(self):
+        data = self.snapshot()
+        try:
+            self.host(data).validate()
+            self.infisical_host(data).validate()
+            require(self.lab.get(), 'FRESH_VM_CONFIRMATION_REQUIRED')
+            require(bool(SHA.fullmatch(data['public_commit'])) and bool(TAG.fullmatch(data['dr_tag'])), 'SELECT_GITHUB_RECOVERY_POINT')
+            require(Path(data['age_identity']).is_file(), 'AGE_IDENTITY_FILE_REQUIRED')
+            require(bool(data.get('aio_payload') or (self.files['aiostreams_exports'] and self.files['aiometadata_exports'])),
+                    'AIO_EXPORTS_OR_PAYLOAD_REQUIRED')
+            require(bool(data['client_id_file']) == bool(data['client_secret_file']), 'BOTH_UNIVERSAL_AUTH_FILES_REQUIRED')
+        except Failure as error:
+            messagebox.showinfo('Completa gli input', str(error), parent=self)
+            return
+        summary = ('Nuovo stack: ' + data['host'] + '\nNuovo Infisical: ' + data['infisical_host']
+                   + '\nRelease: ' + data['dr_tag'] + '\nCommit: ' + data['public_commit'][:12]
+                   + '\n\nInstallerà Docker su entrambe le VM e ripristinerà Infisical in /opt/infisical.\n'
+                   'Poi leggerà i segreti recuperati, preparerà lo stack e avvierà i servizi.\n'
+                   'Chiave age ed export resteranno in storage privato sulle nuove VM.\n'
+                   'DNS, timer, DDNS, Watchtower ed enrollment richiedono il collaudo successivo.\n'
+                   + ('Installerà anche l’Agent e una chiave SSH dedicata, limitata all’API Infisical.'
+                      if self.native_agent.get() else 'Agent continuo escluso da questa prova.'))
+        if not messagebox.askokcancel('Ripristina le due VM nuove', summary, parent=self):
+            return
+        data.update({k:list(v) for k,v in self.files.items()})
+        data['native_agent']=self.native_agent.get()
+        tls = self.tls.get()
+        def action():
+            stack = SSH(self.host(data), self.key_dialog, self.cancelled)
+            server = None
+            try:
+                server = SSH(self.infisical_host(data), self.key_dialog, self.cancelled)
+                restore_all(stack, server, data, lambda item:self.events.put(('stage',item)), tls)
+                self.events.put(('message','Infisical recuperato, segreti letti dalla nuova VM e stack avviato. Ora verifica gli accessi applicativi.'))
+            finally:
+                stack.close()
+                if server is not None:
+                    server.close()
         self.job(action)
 
     def prepare(self):
@@ -376,14 +451,15 @@ class App(tk.Tk):
         path = filedialog.asksaveasfilename(title='Salva gli esiti senza credenziali', defaultextension='.json', parent=self)
         if path:
             Path(path).write_text(json.dumps(dict(schema=1, events=self.safe_report,
-                scope='PREPARATION_AND_OPTIONAL_START; FULL_DR_NOT_VERIFIED'), indent=2) + '\n', encoding='utf-8')
+                scope='SERVER_RESTORE_AND_STACK_START; FUNCTIONAL_DR_NOT_VERIFIED'), indent=2) + '\n', encoding='utf-8')
 
     def close_app(self):
         if self.busy and not messagebox.askokcancel('Operazione in corso',
                 'Chiudere interrompe la connessione; non annulla quanto già fatto sulla VM. I dati vengono conservati.', parent=self):
             return
         self.cancelled.set()
-        for key in ('password', 'github_token', 'sudo_password', 'key_password', 'infisical_password'):
+        for key in ('password', 'github_token', 'sudo_password', 'key_password', 'infisical_password',
+                    'infisical_key_password','infisical_sudo_password'):
             self.var(key).set('')
         self.destroy()
 

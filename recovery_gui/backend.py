@@ -21,7 +21,8 @@ from .codes import ERROR_CODES
 PUBLIC = 'dav1dera/streams-aio-sanitized'
 PRIVATE = 'dav1dera/streams-aio-dr'
 STAGES = {'DEPENDENCIES', 'CLONES', 'DOWNLOAD', 'DECRYPT', 'INITIALIZE', 'INPUTS',
-          'RENDER', 'EMPTY_STATE', 'NPM', 'AIO', 'PREFLIGHT', 'PREPARED', 'STARTED', 'REFUSED', 'TLS'}
+          'RENDER', 'EMPTY_STATE', 'NPM', 'AIO', 'PREFLIGHT', 'PREPARED', 'STARTED', 'REFUSED', 'TLS',
+          'INFISICAL_CONFIG', 'INFISICAL_DATABASE', 'INFISICAL_SERVER', 'NATIVE_AGENT'}
 CODE = re.compile(r'[A-Z][A-Z0-9_]{0,100}\Z')
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 TAG = re.compile(r'dr-[0-9]{8}T[0-9]{6}Z\Z')
@@ -88,7 +89,7 @@ class GitHub:
         require(path.startswith('repos/') and '..' not in path, 'INVALID_GITHUB_RESOURCE')
         request = Request('https://api.github.com/' + path,
                           headers={'Authorization': 'Bearer ' + self.token, 'Accept': 'application/vnd.github+json',
-                                   'User-Agent': 'streams-aio-recovery-gui/0.1.0', 'X-GitHub-Api-Version': '2022-11-28'})
+                                   'User-Agent': 'streams-aio-recovery-gui/0.2.0', 'X-GitHub-Api-Version': '2022-11-28'})
         try:
             with build_opener(NoRedirect()).open(request, timeout=25) as response:
                 raw = response.read(4 * 1024**2 + 1)
@@ -203,31 +204,40 @@ class SSH:
             raise Failure(code)
         return bytes(collected)
 
-    def check(self, fresh=True):
+    def check(self, fresh=True, role='stack'):
+        require(role in ('stack', 'infisical'), 'INVALID_RECOVERY_ROLE')
         home = self.run(['sh', '-c', 'printf %s "$HOME"']).decode()
         require(bool(re.fullmatch(r'/[A-Za-z0-9/_-]+', home)), 'UNSUPPORTED_REMOTE_HOME')
         source = (resources() / 'probe.py').read_text(encoding='utf-8')
-        args = ['python3', '-c', source, '--target', home + '/streams-aio',
-                '--runner', home + '/.local/share/streams-aio-recovery']
+        area = self.area(home, role)
+        target = '/opt/infisical' if role == 'infisical' else home + '/streams-aio'
+        args = ['python3', '-c', source, '--target', target, '--runner', area, '--role', role]
         if fresh:
             args.append('--fresh')
         info = json.loads(self.run(args, sudo=True, timeout=40))
         require(info.get('user') == self.host.user and info.get('home') == home, 'DEPLOYMENT_USER_MISMATCH')
         return info
 
+    @staticmethod
+    def area(home, role):
+        return home + '/.local/share/streams-aio-' + ('infisical-recovery' if role == 'infisical' else 'recovery')
+
     def upload(self, request):
-        home = self.check()['home']
-        area = home + '/.local/share/streams-aio-recovery'
+        role = request.get('role', 'stack')
+        home = (self.check(role=role) if role != 'stack' else self.check())['home']
+        area = self.area(home, role)
         remote = area + '/upload-' + uuid.uuid4().hex
         self.run(['sh', '-c', 'umask 077; mkdir -p -- "$1"; mkdir -- "$2"', '_', area, remote])
         sftp = self.client.open_sftp()
         try:
             sftp.chmod(area, 0o700)
             sftp.mkdir(remote + '/remote', mode=0o700)
-            for name in ('bootstrap.sh', 'recover.py', 'probe.py', 'requirements-dr.txt', 'requirements-new-vm.txt', 'start.py'):
+            for name in ('bootstrap.sh', 'recover.py', 'probe.py', 'requirements-dr.txt', 'requirements-new-vm.txt', 'start.py',
+                         'infisical_server.py', 'infisical-deployment.json', 'native_agent.py'):
                 self._put(sftp, resources() / name, remote + '/remote/' + name)
             config = {key: request[key] for key in ('github_token', 'public_commit', 'dr_tag',
                       'infisical_address', 'project_id', 'environment')}
+            config.update(role=role, ssh_bridge=request.get('ssh_bridge') is True)
             for name in ('age_identity', 'client_id_file', 'client_secret_file', 'aio_payload'):
                 if request.get(name):
                     destination = remote + '/' + name
@@ -262,8 +272,36 @@ class SSH:
 
     def prepare(self, request, callback):
         remote, raw = self.upload(request)
-        self.run(['bash', remote + '/remote/bootstrap.sh', self.host.user],
+        args = ['bash', remote + '/remote/bootstrap.sh', self.host.user]
+        if request.get('role') == 'infisical':
+            args.append('infisical')
+        self.run(args,
                  sudo=True, callback=callback, timeout=7200, input=b'STREAMS_INPUT_V1\n' + raw)
+
+    def restored_port(self):
+        home = self.check(role='infisical')['home']
+        path = self.area(home, 'infisical') + '/state.json'
+        source = ('import json,sys; from pathlib import Path; s=json.loads(Path(sys.argv[1]).read_bytes()); '
+                  'assert s.get("server_restore")=="PASS_NEEDS_SECRET_READ_TEST"; '
+                  'assert "INFISICAL_SERVER" in s["completed"]; print(json.dumps({"port":s["api_port"]}))')
+        result = json.loads(self.run(['python3','-c',source,path], sudo=True, timeout=30))
+        port = result.get('port')
+        require(type(port) is int and 1 <= port <= 65535, 'INFISICAL_API_PORT_REQUIRES_REVIEW')
+        return port
+
+    def native(self, action, home, target, callback=None, metadata=None):
+        role='infisical' if target=='/opt/infisical' else 'stack'
+        area=self.area(home,role)
+        sftp=self.client.open_sftp()
+        try:
+            for name in ('native_agent.py','recover.py'):
+                self._put(sftp,resources()/name,area+'/'+name)
+        finally:
+            sftp.close()
+        raw=b'STREAMS_NATIVE_V1\n'+json.dumps(metadata).encode()+b'\n' if metadata is not None else None
+        return self.run([area+'/venv/bin/python','-B',area+'/native_agent.py',action,
+                         '--target',target,'--state-home',area],sudo=True,callback=callback,
+                        timeout=1800,input=raw)
 
     def start(self, tls, callback):
         home = self.run(['sh', '-c', 'printf %s "$HOME"']).decode()
@@ -279,3 +317,107 @@ class SSH:
         if tls:
             args.append('--tls')
         self.run(args, sudo=True, callback=callback, timeout=7200)
+
+
+class APIBridge:
+    """Stack loopback -> encrypted SSH -> desktop -> encrypted SSH -> Infisical.
+
+    No desktop listener, LAN HTTP socket or API value is persisted or logged.
+    Closing the context also closes every in-flight forwarded channel.
+    """
+    def __init__(self, stack, server, port):
+        require(type(port) is int and 1 <= port <= 65535, 'INFISICAL_API_PORT_REQUIRES_REVIEW')
+        self.stack, self.server, self.port = stack, server, port
+        self.closed = threading.Event()
+        self.channels, self.lock = [], threading.Lock()
+
+    def __enter__(self):
+        try:
+            self.listen_port = self.stack.client.get_transport().request_port_forward(
+                '127.0.0.1', 0, handler=self.accept)
+            require(type(self.listen_port) is int and 1 <= self.listen_port <= 65535,
+                    'SSH_API_FORWARDING_REQUIRED')
+        except Failure:
+            raise
+        except Exception:
+            raise Failure('SSH_API_FORWARDING_REQUIRED') from None
+        return 'http://127.0.0.1:' + str(self.listen_port)
+
+    def accept(self, incoming, origin, destination):
+        def connect():
+            outgoing = None
+            try:
+                if self.closed.is_set() or self.stack.cancelled.is_set():
+                    return
+                outgoing = self.server.client.get_transport().open_channel(
+                    'direct-tcpip', ('127.0.0.1', self.port), ('127.0.0.1', 0), timeout=15)
+                with self.lock:
+                    if self.closed.is_set():
+                        return
+                    self.channels.extend((incoming, outgoing))
+                workers = [threading.Thread(target=self.relay, args=pair, daemon=True)
+                           for pair in ((incoming, outgoing),(outgoing, incoming))]
+                for worker in workers:
+                    worker.start()
+                for worker in workers:
+                    worker.join()
+            except Exception:
+                pass  # SDK reports a fixed failure, never tunnel bytes or errors.
+            finally:
+                incoming.close()
+                if outgoing is not None:
+                    outgoing.close()
+                with self.lock:
+                    for channel in (incoming, outgoing):
+                        if channel in self.channels:
+                            self.channels.remove(channel)
+        threading.Thread(target=connect, daemon=True).start()
+
+    def relay(self, source, destination):
+        source.settimeout(0.5)
+        try:
+            while not self.closed.is_set() and not self.stack.cancelled.is_set():
+                try:
+                    data = source.recv(32768)
+                except socket.timeout:
+                    continue
+                if not data:
+                    return
+                destination.sendall(data)
+        except Exception:
+            pass
+        finally:
+            source.close()
+            destination.close()
+
+    def __exit__(self, *exc):
+        self.closed.set()
+        try:
+            self.stack.client.get_transport().cancel_port_forward('127.0.0.1', self.listen_port)
+        finally:
+            with self.lock:
+                for channel in self.channels:
+                    channel.close()
+
+
+def restore_all(stack, server, request, callback, tls=False):
+    """Preflight both hosts before any upload/install; restore Infisical first."""
+    require(not request.get('native_agent', True) or not any(request.get(name) for name in
+            ('project_id', 'environment', 'client_id_file', 'client_secret_file')),
+            'NATIVE_AGENT_REQUIRES_RECOVERED_SCOPE')
+    first, second = stack.check(), server.check(role='infisical')
+    require(first.get('machine_id') and first['machine_id'] != second.get('machine_id'),
+            'SEPARATE_RECOVERY_VMS_REQUIRED')
+    server.prepare(dict(request, role='infisical', aiostreams_exports=[],
+                        aiometadata_exports=[], aio_payload=''), callback)
+    with APIBridge(stack, server, server.restored_port()) as address:
+        stack.prepare(dict(request, role='stack', infisical_address=address, ssh_bridge=True), callback)
+    if request.get('native_agent',True):
+        public=json.loads(stack.native('key',first['home'],first['home']+'/streams-aio'))['public_key']
+        server.native('authorize',second['home'],'/opt/infisical',callback=callback,
+                      metadata={'public_key':public})
+        host_key=server.client.get_transport().get_remote_server_key()
+        stack.native('install',first['home'],first['home']+'/streams-aio',callback=callback,
+                     metadata={'host':server.host.address,'port':server.host.port,'api_port':server.restored_port(),
+                               'host_key':host_key.get_name()+' '+host_key.get_base64()})
+    stack.start(tls, callback)
