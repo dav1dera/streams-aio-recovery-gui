@@ -19,12 +19,13 @@ if __name__ == '__main__':
         import paramiko
         from recovery_gui.backend import resources
         required = ('bootstrap.sh', 'recover.py', 'probe.py', 'start.py',
-                    'requirements-dr.txt', 'requirements-new-vm.txt')
+                    'requirements-dr.txt', 'requirements-new-vm.txt', 'infisical_server.py','infisical_inventory.py','infisical-deployment.json',
+                    'native_agent.py')
         assert all((resources() / name).is_file() for name in required)
         app = App()
         app.update()
-        assert len(app.book.tabs()) == 4 and not app.lab.get() and not app.tls.get()
-        for tab in range(4):
+        assert len(app.book.tabs()) == 5 and not app.lab.get() and not app.tls.get()
+        for tab in range(5):
             app.book.select(tab)
             app.update()
         app.destroy()
