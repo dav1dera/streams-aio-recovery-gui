@@ -5,8 +5,10 @@ set +x
 umask 077
 fail() { printf 'RECOVERY_EVENT {"stage":"REFUSED","status":"REFUSED","code":"%s"}\n' "$1"; exit 1; }
 trap 'fail BOOTSTRAP_FAILED' ERR
-[[ $EUID == 0 && $# == 1 ]] || fail ROOT_INSTALLER_REQUIRED
+[[ $EUID == 0 && ($# == 1 || $# == 2) ]] || fail ROOT_INSTALLER_REQUIRED
 DEPLOY_USER="$1"
+RECOVERY_ROLE="${2:-stack}"
+[[ $RECOVERY_ROLE == stack || $RECOVERY_ROLE == infisical ]] || fail INVALID_RECOVERY_ROLE
 # sudo consumes a password line only when authentication is required. Framing
 # handles both password-required and NOPASSWD, without persisting either input.
 IFS= read -r INPUT_HEADER || fail RECOVERY_REQUEST_REQUIRED
@@ -27,8 +29,14 @@ source /etc/os-release
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 RUNNER_HOME="$DEPLOY_HOME/.local/share/streams-aio-recovery"
 TARGET_HOME="$DEPLOY_HOME/streams-aio"
+ENTRY_POINT=recover.py
+if [[ $RECOVERY_ROLE == infisical ]]; then
+    RUNNER_HOME="$DEPLOY_HOME/.local/share/streams-aio-infisical-recovery"
+    TARGET_HOME=/opt/infisical
+    ENTRY_POINT=infisical_server.py
+fi
 export STREAMS_RECOVERY_USER="$DEPLOY_USER"
-python3 "$HERE/probe.py" --fresh --runner "$RUNNER_HOME" --target "$TARGET_HOME" >/dev/null
+python3 "$HERE/probe.py" --fresh --role "$RECOVERY_ROLE" --runner "$RUNNER_HOME" --target "$TARGET_HOME" >/dev/null
 exec 9>"$RUNNER_HOME/setup.lock"
 flock -n 9 || fail RECOVERY_ALREADY_RUNNING
 printf '%s\n' 'RECOVERY_EVENT {"stage":"DEPENDENCIES","status":"RUNNING"}'
@@ -60,6 +68,6 @@ usermod -aG docker "$DEPLOY_USER"
 python3 -m venv "$RUNNER_HOME/venv"
 "$RUNNER_HOME/venv/bin/python" -m pip install --quiet -r "$HERE/requirements-new-vm.txt"
 printf '%s\n' 'RECOVERY_EVENT {"stage":"DEPENDENCIES","status":"PASS"}'
-printf '%s' "$REQUEST_JSON" | "$RUNNER_HOME/venv/bin/python" -B "$HERE/recover.py" \
+printf '%s' "$REQUEST_JSON" | "$RUNNER_HOME/venv/bin/python" -B "$HERE/$ENTRY_POINT" \
     --target "$TARGET_HOME" --state-home "$RUNNER_HOME" --config-stdin
 unset REQUEST_JSON

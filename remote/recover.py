@@ -34,10 +34,11 @@ BUNDLE_FILES = set(ASSETS) | {'manifest.json', 'SHA256SUMS'}
 CODE = re.compile(r'[A-Z][A-Z0-9_]*\Z')
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 KEY = re.compile(r'[A-Z][A-Z0-9_]*\Z')
-RUNNER_VERSION = '0.1.0'
+RUNNER_VERSION = '0.2.0'
 GITHUB_TOKEN = None
 EVENTS = {'CLONES', 'DOWNLOAD', 'DECRYPT', 'INITIALIZE', 'INPUTS', 'RENDER',
-          'EMPTY_STATE', 'NPM', 'AIO', 'PREFLIGHT', 'PREPARED', 'STARTED', 'REFUSED'}
+          'EMPTY_STATE', 'NPM', 'AIO', 'PREFLIGHT', 'PREPARED', 'STARTED', 'REFUSED',
+          'INFISICAL_CONFIG', 'INFISICAL_DATABASE', 'INFISICAL_SERVER', 'NATIVE_AGENT'}
 
 
 def event(stage, status='PASS', code=None):
@@ -95,9 +96,10 @@ def command(args, code, cwd=None, interactive=False, timeout=1800, input=None):
     # Capture all child output except the required sudo/browser login exchange.
     # No decrypted data, SDK exceptions, Docker configuration or stderr is echoed.
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(('COMPOSE_', 'INFISICAL_', 'PYTHON'))}
+           if not k.startswith(('COMPOSE_', 'INFISICAL_', 'PYTHON'))
+           and k not in ('GH_TOKEN', 'GITHUB_TOKEN')}
     env.update(PYTHONDONTWRITEBYTECODE='1', GIT_TERMINAL_PROMPT='0', GH_PROMPT_DISABLED='1')
-    if GITHUB_TOKEN:
+    if GITHUB_TOKEN and str(args[0]) in ('git', 'gh'):
         env['GH_TOKEN'] = GITHUB_TOKEN
     if str(args[0]) in ('git', 'gh') and os.geteuid() == 0:
         args = ['sudo', '-H', '-u', os.environ['STREAMS_RECOVERY_USER'],
@@ -148,9 +150,11 @@ def validate_bundle(manager, directory, tag):
     return data
 
 
-def validate_address(address):
+def validate_address(address, ssh_bridge=False):
     u = urlsplit(address)
-    require(u.scheme == 'https' and bool(u.hostname) and u.username is None
+    loopback = (ssh_bridge is True and u.scheme == 'http' and u.hostname == '127.0.0.1'
+                and u.port is not None and 1 <= u.port <= 65535)
+    require(((u.scheme == 'https' and bool(u.hostname)) or loopback) and u.username is None
             and u.password is None and not u.query and not u.fragment
             and u.path in ('', '/'), 'HTTPS_INFISICAL_ORIGIN_REQUIRED')
     return address.rstrip('/')
@@ -336,7 +340,9 @@ class Recovery:
                          'INPUTS': not (self.root / '.secrets/dr-inputs').exists(),
                          'AIO': not any((self.root / f'data/{s}/data/db.sqlite').exists()
                                         for s in ('aiostreams', 'aiometadata'))
-                                and not (self.root / '.generated/aio-import-complete.json').exists()}
+                                and not (self.root / '.generated/aio-import-complete.json').exists(),
+                         'INFISICAL_SERVER': self.config.get('role') == 'infisical'
+                                and 'INFISICAL_DATABASE' in self.state['completed']}
             require(not pending or retryable.get(pending, False), 'INCOMPLETE_STEP_REQUIRES_REVIEW')
             self.state['in_progress'] = None
         else:
@@ -419,7 +425,8 @@ class Recovery:
             directory = Path(tempfile.mkdtemp(prefix='agent-backup-', dir=self.home)) / 'files'
             unpack_agent(self.private / 'infisical-agent.tar.gz', directory)
             recovered = agent_bootstrap(directory)
-        address = validate_address(self.config.get('infisical_address') or recovered['address'])
+        address = validate_address(self.config.get('infisical_address') or recovered['address'],
+                                   ssh_bridge=self.config.get('ssh_bridge') is True)
         project = self.config.get('project_id') or recovered['project']
         environment = self.config.get('environment') or recovered['environment']
         require(re.fullmatch(r'[A-Za-z0-9_-]+', project) and re.fullmatch(r'[A-Za-z0-9_-]+', environment),
@@ -431,8 +438,13 @@ class Recovery:
         # explicit HTTPS origin; subsequent SDK operations read existing secrets.
         logging.disable(logging.CRITICAL)
         client = InfisicalSDKClient(host=address, cache_ttl=None)
+        if self.config.get('ssh_bridge') is True:
+            client.api.session.trust_env = False
         original_request = client.api.session.request
         def bounded_request(method, url, **kwargs):
+            expected, actual = urlsplit(address), urlsplit(url)
+            require((actual.scheme, actual.hostname, actual.port) ==
+                    (expected.scheme, expected.hostname, expected.port), 'INFISICAL_API_ORIGIN_CHANGED')
             kwargs.update(timeout=(10, 30), allow_redirects=False)
             return original_request(method, url, **kwargs)
         client.api.session.request = bounded_request

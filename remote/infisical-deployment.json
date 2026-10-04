@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "source_directory": "/opt/infisical",
+  "services": ["backend", "db", "redis"],
+  "database": "infisical",
+  "database_user": "infisical",
+  "postgres_major": 14,
+  "images": {
+    "backend": "infisical/infisical@sha256:6b911e3938ac2ff385a782df59ce9272799be7976d26dc5667266a2aecac4116",
+    "db": "postgres@sha256:4ea9e5ed06591da7ea23eb65465e8d3187fe79f4d5ec3ae976d29a33b013e77a",
+    "redis": "redis@sha256:718f745deb7dfefeac6eed7041fc7ec9476b50e61b247932682457c41adafa0e"
+  }
+}
