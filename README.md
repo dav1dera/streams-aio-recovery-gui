@@ -12,7 +12,7 @@ La preparazione e il semplice stato running/healthy **non certificano** login, e
 
 ## Aprire il programma
 
-Usa `StreamsAIO-Recovery.exe` prodotto dal job Windows in **Actions → Safety tests and Windows app → Artifacts**. L’eseguibile comprende Python e SSH; non richiede Python installato sul PC. È privo di firma Authenticode: non modificare le protezioni Windows per eseguirlo, e verifica provenienza e SHA256 del file scaricato.
+Scarica `StreamsAIO-Recovery.exe` e `SHA256SUMS` dalla [release privata v0.1.0](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.1.0), accedendo con il tuo account GitHub. Le compilazioni successive sono anche disponibili in **Actions → Safety tests and Windows app → Artifacts**. L’eseguibile comprende Python e SSH; non richiede Python installato sul PC. È privo di firma Authenticode: non modificare le protezioni Windows per eseguirlo, e verifica provenienza e SHA256 del file scaricato.
 
 Per eseguire il sorgente con Python 3.11+:
 
