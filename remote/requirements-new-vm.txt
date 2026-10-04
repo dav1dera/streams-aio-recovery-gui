@@ -1,0 +1,3 @@
+-r requirements-dr.txt
+# Official SDK; bootstrap reads existing folders, never creates/updates secrets.
+infisicalsdk==1.0.17
