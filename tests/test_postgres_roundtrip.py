@@ -66,7 +66,10 @@ class PostgresRoundTrip(unittest.TestCase):
                                 '-e','POSTGRES_DB=postgres','-e','POSTGRES_PASSWORD=synthetic-fixture',image])
                         return b''
                     self.assertEqual(args[:3],['exec','-T','db'])
-                    return docker(['exec','-i',destination,*args[3:]],input)
+                    # Match the real command adapter, including transient
+                    # psql failures while a new cluster is still initializing.
+                    return server.command(['docker','exec','-i',destination,*args[3:]],
+                                          'INFISICAL_RESTORE_COMMAND_FAILED',input=input,timeout=300)
                 recovery.compose=compose
                 # command() here is the actual pg_restore --list invocation.
                 recovery.database()
