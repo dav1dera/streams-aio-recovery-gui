@@ -233,7 +233,7 @@ class SSH:
             sftp.chmod(area, 0o700)
             sftp.mkdir(remote + '/remote', mode=0o700)
             for name in ('bootstrap.sh', 'recover.py', 'probe.py', 'requirements-dr.txt', 'requirements-new-vm.txt', 'start.py',
-                         'infisical_server.py', 'infisical-deployment.json', 'native_agent.py'):
+                         'infisical_server.py', 'infisical_inventory.py', 'infisical-deployment.json', 'native_agent.py'):
                 self._put(sftp, resources() / name, remote + '/remote/' + name)
             config = {key: request[key] for key in ('github_token', 'public_commit', 'dr_tag',
                       'infisical_address', 'project_id', 'environment')}
