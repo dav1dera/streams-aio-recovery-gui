@@ -5,6 +5,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish a new prerelease after all tests and the Windows self-test pass
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -48,3 +53,44 @@ jobs:
             dist/StreamsAIO-Recovery.exe
             dist/SHA256SUMS
           retention-days: 30
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release && github.ref == 'refs/heads/main'
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: recovery-gui-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: StreamsAIO-Recovery-Windows
+          path: dist
+      - name: Package tested source and publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(python -c "import re; from recovery_gui import __version__; assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', __version__); print('v' + __version__)")
+          test "$(gh repo view "$GITHUB_REPOSITORY" --json isPrivate --jq .isPrivate)" = true
+          # A release/tag already present is never overwritten or moved.
+          test -z "$(git ls-remote --tags origin "refs/tags/$tag")"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'RELEASE_ALREADY_EXISTS'; exit 1
+          fi
+          python -c "from pathlib import Path; p=Path('dist/SHA256SUMS'); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))"
+          (cd dist && sha256sum -c SHA256SUMS)
+          git archive --format=zip --output=dist/streams-aio-recovery-gui-source.zip "$GITHUB_SHA"
+          (cd dist && sha256sum StreamsAIO-Recovery.exe streams-aio-recovery-gui-source.zip > SHA256SUMS)
+          gh release create "$tag" dist/StreamsAIO-Recovery.exe dist/streams-aio-recovery-gui-source.zip dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease \
+            --title "Streams AIO Recovery $tag" --notes-file docs/RELEASE-NOTES.md
+          mkdir -p dist/verified
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir dist/verified
+          (cd dist/verified && sha256sum -c SHA256SUMS)
+          cmp dist/SHA256SUMS dist/verified/SHA256SUMS
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false
+          echo "RELEASE_UPLOAD_VERIFY PASS tag=$tag commit=$GITHUB_SHA"
