@@ -24,10 +24,23 @@ if __name__ == '__main__':
         assert all((resources() / name).is_file() for name in required)
         app = App()
         app.update()
-        assert len(app.book.tabs()) == 5 and not app.lab.get() and not app.tls.get()
+        assert len(app.book.tabs()) == 5 and not app.lab.get() and not app.tls.get() and app.native_agent.get()
+        for tab in range(5):
+            app.nav[tab].invoke()
+            app.update()
+            assert app.book.index(app.book.select()) == tab
+            assert app.page_title.get() == app.titles[tab]
+        app._move(-1)
+        app.update()
+        assert app.book.index(app.book.select()) == 3
+        app.geometry('980x700')
+        app.update()
         for tab in range(5):
             app.book.select(tab)
             app.update()
+            page = app.pages[tab]
+            assert page.canvas.winfo_width() > 600
+            assert page.canvas.bbox('all') is not None
         app.destroy()
     else:
         main()
