@@ -10,6 +10,7 @@ import webbrowser
 
 from .backend import Failure, GitHub, Host, SSH, SHA, TAG, require, restore_all
 from .codes import ERROR_CODES
+from . import __version__
 
 TEXT = {
     'DEPENDENCIES': 'Docker e dipendenze', 'CLONES': 'Repository e commit scelto',
@@ -49,13 +50,28 @@ ERRORS = {
 }
 
 
+class ScrollPage(ttk.Frame):
+    """Keep every input reachable at small window sizes and higher DPI."""
+    def __init__(self, parent):
+        super().__init__(parent, style='Page.TFrame')
+        self.canvas = tk.Canvas(self, bg='#f5f7fb', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient='vertical', command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right', fill='y')
+        self.canvas.pack(side='left', fill='both', expand=True)
+        self.content = ttk.Frame(self.canvas, style='Page.TFrame', padding=(0, 0, 16, 8))
+        item = self.canvas.create_window(0, 0, anchor='nw', window=self.content)
+        self.content.bind('<Configure>', lambda e:self.canvas.configure(scrollregion=self.canvas.bbox('all')))
+        self.canvas.bind('<Configure>', lambda e:self.canvas.itemconfigure(item, width=e.width))
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('Streams AIO · Recovery')
-        self.geometry('1040x800')
-        self.minsize(940, 720)
-        self.configure(bg='#f3f5f8')
+        self.geometry('1180x800')
+        self.minsize(980, 700)
+        self.configure(bg='#f5f7fb')
         self.events = queue.Queue()
         self.cancelled = threading.Event()
         self.busy = False
@@ -63,158 +79,311 @@ class App(tk.Tk):
         self.vars = {}
         self.files = {'aiostreams_exports': [], 'aiometadata_exports': []}
         self.safe_report = []
+        self.return_page = None
+        self.active_phase = None
         self.protocol('WM_DELETE_WINDOW', self.close_app)
+        self._theme()
+        sidebar = tk.Frame(self, bg='#101b30', width=222)
+        sidebar.pack(side='left', fill='y')
+        sidebar.pack_propagate(False)
+        brand = tk.Canvas(sidebar, width=42, height=42, bg='#101b30', highlightthickness=0)
+        brand.pack(anchor='w', padx=24, pady=(30, 15))
+        brand.create_rectangle(2, 2, 40, 40, fill='#4b63f0', outline='')
+        brand.create_line(12, 25, 21, 15, 30, 25, fill='white', width=3)
+        brand.create_line(21, 16, 21, 31, fill='white', width=3)
+        tk.Label(sidebar, text='STREAMS AIO', bg='#101b30', fg='#f8fafc',
+                 font=('Segoe UI', 12, 'bold')).pack(anchor='w', padx=24)
+        tk.Label(sidebar, text='Recovery workspace', bg='#101b30', fg='#8e9bb2',
+                 font=('Segoe UI', 10)).pack(anchor='w', padx=24, pady=(4, 26))
+        tk.Label(sidebar, text='IL TUO PERCORSO', bg='#101b30', fg='#718198',
+                 font=('Segoe UI', 8, 'bold')).pack(anchor='w', padx=24, pady=(0, 10))
+        self.nav = []
+        self.titles = ['VM e GitHub', 'Backup', 'Nuova VM Infisical', 'Opzioni', 'Ripristino']
+        self.descriptions = ['Collega la VM stack e scegli il punto di recupero.',
+                             'Scegli dal PC la chiave age e le configurazioni AIO.',
+                             'Collega la seconda VM: recupereremo prima i segreti.',
+                             'Completa solo le opzioni che ti servono.',
+                             'Controlla le destinazioni, poi avvia il recupero.']
+        for index, label in enumerate(self.titles):
+            button = tk.Button(sidebar, text=f'  {index+1:02d}    {label}', anchor='w',
+                               font=('Segoe UI', 10), bg='#101b30', fg='#a4b0c4',
+                               activebackground='#243454', activeforeground='white',
+                               relief='flat', bd=0, padx=12, pady=13, cursor='hand2',
+                               command=lambda i=index:self.book.select(i))
+            button.pack(fill='x', padx=12, pady=3)
+            self.nav.append(button)
+        tk.Label(sidebar, text=f'v{__version__}  /  WINDOWS', bg='#101b30', fg='#718198',
+                 font=('Segoe UI', 8)).pack(side='bottom', anchor='w', padx=24, pady=22)
+        note = tk.Frame(sidebar, bg='#192842', padx=13, pady=13)
+        note.pack(side='bottom', fill='x', padx=18, pady=6)
+        tk.Label(note, text='Una prova, due VM nuove', bg='#192842', fg='#dbe5f7',
+                 font=('Segoe UI', 9, 'bold'), anchor='w').pack(fill='x')
+        tk.Label(note, text='Le VM operative possono\nrestare disponibili.', bg='#192842', fg='#91a1ba',
+                 font=('Segoe UI', 9), justify='left').pack(anchor='w', pady=(6, 0))
+        workspace = ttk.Frame(self, style='Page.TFrame', padding=(28, 22, 20, 16))
+        workspace.pack(side='left', fill='both', expand=True)
+        top = ttk.Frame(workspace, style='Page.TFrame')
+        top.pack(fill='x')
+        self.step_text = tk.StringVar()
+        ttk.Label(top, textvariable=self.step_text, style='Eyebrow.TLabel').pack(side='left')
+        ttk.Button(top, text='Apri la guida ↗', style='Link.TButton', command=lambda:webbrowser.open(
+            'https://github.com/dav1dera/streams-aio-recovery-gui/blob/main/README.md')).pack(side='right')
+        self.page_title = tk.StringVar()
+        self.page_description = tk.StringVar()
+        ttk.Label(workspace, textvariable=self.page_title, style='Title.TLabel').pack(anchor='w', pady=(12, 4))
+        ttk.Label(workspace, textvariable=self.page_description, style='Muted.TLabel').pack(anchor='w', pady=(0, 18))
+        self.book = ttk.Notebook(workspace, style='Wizard.TNotebook')
+        self.book.pack(fill='both', expand=True)
+        self.pages = [ScrollPage(self.book) for _ in range(5)]
+        for page, title in zip(self.pages, self.titles):
+            self.book.add(page, text=title)
+        self._connections(self.pages[0].content)
+        self._backups(self.pages[1].content)
+        self._infisical(self.pages[2].content)
+        self._advanced(self.pages[3].content)
+        self._run(self.pages[4].content)
+        footer = ttk.Frame(workspace, style='Page.TFrame', padding=(0, 14, 0, 0))
+        footer.pack(fill='x')
+        self.status = tk.StringVar(value='Pronto. Nessuna operazione avviata.')
+        ttk.Label(footer, textvariable=self.status, style='Status.TLabel', wraplength=490).pack(side='left')
+        self.next_button = ttk.Button(footer, text='Continua →', style='Accent.TButton', command=lambda:self._move(1))
+        self.next_button.pack(side='right')
+        self.previous_button = ttk.Button(footer, text='← Indietro', command=lambda:self._move(-1))
+        self.previous_button.pack(side='right', padx=(8, 10))
+        self.book.bind('<<NotebookTabChanged>>', self._page_changed)
+        self.bind_all('<MouseWheel>', self._wheel, add='+')
+        self._page_changed()
+        self.after(100, self.poll)
+
+    def _theme(self):
         style = ttk.Style(self)
         style.theme_use('clam')
-        style.configure('.', font=('Segoe UI', 10), background='#f3f5f8', foreground='#192a42')
-        style.configure('TNotebook', background='#f3f5f8', borderwidth=0)
-        style.configure('TNotebook.Tab', padding=(18, 10), background='#e6ecf3')
-        style.map('TNotebook.Tab', background=[('selected', '#ffffff')])
-        style.configure('TEntry', padding=6)
-        style.configure('TButton', padding=(12, 8))
-        style.configure('Accent.TButton', background='#245fc5', foreground='white', borderwidth=0)
-        style.map('Accent.TButton', background=[('active', '#194ea9'), ('disabled', '#d0d9e8')])
-        header = tk.Frame(self, bg='#152940', height=100)
-        header.pack(fill='x')
-        tk.Label(header, text='STREAMS AIO  /  RECOVERY', bg='#152940', fg='#8dbcfb',
-                 font=('Segoe UI', 10, 'bold')).pack(anchor='w', padx=28, pady=(18, 0))
-        tk.Label(header, text='Ricostruisci il tuo stack, da Windows.', bg='#152940', fg='white',
-                 font=('Segoe UI', 23, 'bold')).pack(anchor='w', padx=28, pady=(2, 12))
-        ttk.Label(self, text='1  Collega la VM     →     2  Scegli il recupero     →     3  Verifica e prepara     →     4  Avvia',
-                  font=('Segoe UI', 11)).pack(anchor='w', padx=28, pady=(18, 10))
-        self.book = ttk.Notebook(self)
-        self.book.pack(fill='both', expand=True, padx=24)
-        connections, backups, infisical, advanced, run = [ttk.Frame(self.book, padding=20) for _ in range(5)]
-        for tab, title in zip((connections, backups, infisical, advanced, run),
-                              ('VM e GitHub', 'Backup', 'Nuova VM Infisical', 'Opzioni', 'Ripristino')):
-            self.book.add(tab, text=title)
-        self._connections(connections)
-        self._backups(backups)
-        self._infisical(infisical)
-        self._advanced(advanced)
-        self._run(run)
-        self.status = tk.StringVar(value='Pronto. Inizia con una VM vuota; la produzione può restare accesa.')
-        ttk.Label(self, textvariable=self.status, wraplength=970).pack(fill='x', padx=28, pady=14)
-        self.after(100, self.poll)
+        style.configure('.', font=('Segoe UI', 10), background='#ffffff', foreground='#18243b')
+        style.configure('Page.TFrame', background='#f5f7fb')
+        style.configure('Card.TFrame', background='#ffffff', relief='solid', borderwidth=1,
+                        bordercolor='#e2e8f2')
+        style.configure('Wizard.TNotebook', background='#f5f7fb', borderwidth=0, padding=0,
+                        bordercolor='#f5f7fb', lightcolor='#f5f7fb', darkcolor='#f5f7fb')
+        style.layout('Wizard.TNotebook.Tab', [])
+        style.configure('TLabel', background='#ffffff')
+        style.configure('Title.TLabel', font=('Segoe UI', 24, 'bold'), background='#f5f7fb', foreground='#15223b')
+        style.configure('Eyebrow.TLabel', font=('Segoe UI', 9, 'bold'), background='#f5f7fb', foreground='#4963db')
+        style.configure('Muted.TLabel', background='#f5f7fb', foreground='#6c7a90')
+        style.configure('Status.TLabel', font=('Segoe UI', 9), background='#f5f7fb', foreground='#6c7a90')
+        style.configure('CardTitle.TLabel', font=('Segoe UI', 12, 'bold'))
+        style.configure('CardHint.TLabel', font=('Segoe UI', 9), foreground='#6c7a90')
+        style.configure('Field.TLabel', font=('Segoe UI', 9), foreground='#526178')
+        style.configure('TEntry', padding=(10, 8), fieldbackground='#f8faff', bordercolor='#dce3ef',
+                        lightcolor='#dce3ef', darkcolor='#dce3ef', insertcolor='#18243b')
+        style.map('TEntry', bordercolor=[('focus', '#6b80f5')], lightcolor=[('focus', '#6b80f5')],
+                  darkcolor=[('focus', '#6b80f5')])
+        style.configure('TCombobox', padding=(8, 8), fieldbackground='#f8faff', background='#edf1f9',
+                        bordercolor='#dce3ef', arrowcolor='#596880')
+        style.map('TCombobox', fieldbackground=[('readonly', '#f8faff')], foreground=[('readonly', '#18243b')])
+        style.configure('TButton', padding=(14, 9), background='#ffffff', foreground='#36445d',
+                        borderwidth=1, bordercolor='#dce3ef', relief='flat')
+        style.map('TButton', background=[('active', '#edf1fb'), ('disabled', '#eef1f6')],
+                  foreground=[('disabled', '#9da7b8')])
+        style.configure('Accent.TButton', background='#4963e9', foreground='white', borderwidth=0)
+        style.map('Accent.TButton', background=[('active', '#3a50c8'), ('disabled', '#c1caec')],
+                  foreground=[('disabled', '#ffffff')])
+        style.configure('Link.TButton', padding=(8, 4), background='#f5f7fb', foreground='#4963db', borderwidth=0)
+        style.configure('TCheckbutton', background='#ffffff', font=('Segoe UI', 9))
+        style.map('TCheckbutton', background=[('active', '#ffffff')])
+        style.configure('Horizontal.TProgressbar', background='#4963e9', troughcolor='#e9edf5',
+                        borderwidth=0, thickness=4)
+
+    def _page_changed(self, event=None):
+        index = self.book.index(self.book.select())
+        self.after_idle(lambda:self.pages[index].canvas.yview_moveto(0))
+        self.step_text.set(f'PASSO {index+1:02d} DI 05  /  RECUPERO DELLO STACK')
+        self.page_title.set(self.titles[index])
+        self.page_description.set(self.descriptions[index])
+        for i, button in enumerate(self.nav):
+            button.configure(bg='#283b63' if i==index else '#101b30',
+                             fg='#ffffff' if i==index else '#a4b0c4',
+                             font=('Segoe UI', 10, 'bold') if i==index else ('Segoe UI', 10))
+        if hasattr(self, 'next_button'):
+            self.previous_button.configure(state='disabled' if index==0 else 'normal')
+            self.next_button.configure(state='disabled' if index==4 else 'normal')
+        if hasattr(self, 'summary'):
+            self.summary.set('Stack: '+(self.var('host').get() or 'da configurare')+'    ·    Infisical: '+
+                             (self.var('infisical_host').get() or 'da configurare')+'\nBackup: '+
+                             (self.var('dr_tag').get() or 'da selezionare'))
+
+    def _move(self, direction):
+        self.book.select(max(0, min(4, self.book.index(self.book.select())+direction)))
+
+    def _wheel(self, event):
+        if isinstance(event.widget, (ttk.Entry, ttk.Combobox, tk.Text)):
+            return
+        page = self.pages[self.book.index(self.book.select())]
+        if page.content.winfo_reqheight() > page.canvas.winfo_height():
+            page.canvas.yview_scroll(-int(event.delta/120), 'units')
+
+    def card(self, parent, title, hint=''):
+        outer = ttk.Frame(parent, style='Card.TFrame', padding=16)
+        outer.pack(fill='x', pady=(0, 12))
+        ttk.Label(outer, text=title, style='CardTitle.TLabel').pack(anchor='w')
+        if hint:
+            ttk.Label(outer, text=hint, style='CardHint.TLabel', wraplength=760).pack(anchor='w', pady=(5, 0))
+        body = ttk.Frame(outer)
+        body.pack(fill='x', pady=(10, 0))
+        return body
 
     def var(self, key, default=''):
         if key not in self.vars:
             self.vars[key] = tk.StringVar(value=default)
         return self.vars[key]
 
-    def entry(self, parent, label, key, row, default='', secret=False, browse=False, width=42):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky='w', padx=(0, 18), pady=5)
-        entry = ttk.Entry(parent, textvariable=self.var(key, default), width=width, show='•' if secret else '')
-        entry.grid(row=row, column=1, sticky='ew', pady=5)
+    def entry(self, parent, label, key, row, default='', secret=False, browse=False, column=0, span=1):
+        block = ttk.Frame(parent)
+        block.grid(row=row, column=column, columnspan=span, sticky='ew', padx=(0, 12), pady=(0, 10))
+        ttk.Label(block, text=label, style='Field.TLabel').pack(anchor='w', pady=(0, 5))
+        field = ttk.Frame(block)
+        field.pack(fill='x')
+        entry = ttk.Entry(field, textvariable=self.var(key, default), show='•' if secret else '', width=20)
+        entry.pack(side='left', fill='x', expand=True)
         if browse:
-            ttk.Button(parent, text='Sfoglia…', command=lambda: self.select_file(key)).grid(row=row, column=2, padx=8)
-        parent.columnconfigure(1, weight=1)
+            ttk.Button(field, text='Sfoglia…', command=lambda:self.select_file(key)).pack(side='right', padx=(8, 0))
+        parent.columnconfigure(column, weight=1)
         return entry
 
     def _connections(self, tab):
-        left = ttk.LabelFrame(tab, text=' Nuova VM docker-stack ', padding=14)
-        left.pack(fill='x')
-        self.entry(left, 'Host / IP SSH', 'host', 0)
-        self.entry(left, 'Utente', 'user', 1, default='pi')
-        self.entry(left, 'Porta', 'port', 2, default='22')
-        self.entry(left, 'Password SSH', 'password', 3, secret=True)
-        self.entry(left, 'Chiave SSH (in alternativa)', 'ssh_key', 4, browse=True)
-        git = ttk.LabelFrame(tab, text=' GitHub · accesso in sola lettura ', padding=14)
-        git.pack(fill='x', pady=(14, 0))
-        self.entry(git, 'Token GitHub', 'github_token', 0, secret=True)
-        ttk.Label(git, text='Fine-grained token: Contents / Read per streams-aio-dr e streams-aio-sanitized.\n'
-                  'Il programma non crea token e non richiede permessi di push.', wraplength=730).grid(row=1, column=1, sticky='w', pady=6)
-        ttk.Button(git, text='Carica release da GitHub', command=self.load_choices).grid(row=2, column=1, sticky='w')
-        self.entry(git, 'Commit dello stack', 'public_commit', 3)
-        ttk.Label(git, text='Release DR pubblicata').grid(row=4, column=0, sticky='w')
-        self.tags = ttk.Combobox(git, textvariable=self.var('dr_tag'), state='readonly', width=44)
-        self.tags.grid(row=4, column=1, sticky='ew', pady=5)
+        vm = self.card(tab, 'La nuova VM stack', 'Ubuntu 24.04 amd64 · utente UID/GID 1000 · SSH e sudo')
+        self.entry(vm, 'Host / IP SSH', 'host', 0)
+        self.entry(vm, 'Utente', 'user', 0, default='pi', column=1)
+        self.entry(vm, 'Porta', 'port', 0, default='22', column=2)
+        self.entry(vm, 'Password SSH', 'password', 1, secret=True)
+        self.entry(vm, 'Chiave SSH (in alternativa)', 'ssh_key', 1, browse=True, column=1, span=2)
+        git = self.card(tab, 'GitHub e punto di recupero', 'Token fine-grained · Contents: Read per streams-aio-dr e streams-aio-sanitized')
+        self.entry(git, 'Token GitHub', 'github_token', 0, secret=True, span=2)
+        ttk.Button(git, text='Carica release da GitHub', command=self.load_choices).grid(row=0, column=2, sticky='es', pady=(0, 12))
+        release = ttk.Frame(git)
+        release.grid(row=1, column=0, sticky='ew', padx=(0, 12), pady=(0, 12))
+        ttk.Label(release, text='Release DR pubblicata', style='Field.TLabel').pack(anchor='w', pady=(0, 5))
+        self.tags = ttk.Combobox(release, textvariable=self.var('dr_tag'), state='readonly', width=23)
+        self.tags.pack(fill='x')
+        self.entry(git, 'Commit dello stack', 'public_commit', 1, column=1, span=2)
+        ttk.Label(tab, text='Scegli release e commit coerenti: i due repository vengono aggiornati separatamente.',
+                  style='Muted.TLabel', wraplength=790).pack(anchor='w', pady=2)
 
     def _backups(self, tab):
-        ttk.Label(tab, text='I backup privati restano fuori dai repository.', font=('Segoe UI', 15, 'bold')).pack(anchor='w')
-        ttk.Label(tab, text='La release selezionata contiene NPM, Agent e Infisical. Gli export AIO vengono scelti dal PC.',
-                  wraplength=880).pack(anchor='w', pady=(6, 16))
-        frame = ttk.Frame(tab)
-        frame.pack(fill='x')
-        self.entry(frame, 'Chiave age PRIMARY o RECOVERY', 'age_identity', 0, browse=True)
-        for index, (key, title) in enumerate((('aiostreams_exports', 'Export AIOStreams · 2.35.3'),
-                                               ('aiometadata_exports', 'Export AIOMetadata · 3.3.0')), 1):
-            ttk.Label(frame, text=title).grid(row=index, column=0, sticky='w', pady=12)
-            ttk.Label(frame, textvariable=self.var(key, 'Nessun file selezionato')).grid(row=index, column=1, sticky='w')
-            ttk.Button(frame, text='Scegli JSON…', command=lambda k=key: self.select_many(k)).grid(row=index, column=2, padx=8)
-        ttk.Separator(tab).pack(fill='x', pady=22)
-        ttk.Label(tab, text='Hai già un payload DR completo?', font=('Segoe UI', 12, 'bold')).pack(anchor='w')
-        payload = ttk.Frame(tab)
-        payload.pack(fill='x', pady=10)
+        age = self.card(tab, 'La chiave del tuo backup', 'Usa la identity privata PRIMARY o RECOVERY custodita fuori da Git.')
+        self.entry(age, 'Chiave age PRIMARY o RECOVERY', 'age_identity', 0, browse=True)
+        aio = self.card(tab, 'Le configurazioni AIO', 'Gli export JSON non sono inclusi nelle release DR automatiche.')
+        for index, (key, title) in enumerate((('aiostreams_exports', 'AIOStreams · 2.35.3'),
+                                             ('aiometadata_exports', 'AIOMetadata · 3.3.0'))):
+            box = ttk.Frame(aio, style='Card.TFrame', padding=14)
+            box.grid(row=0, column=index, sticky='nsew', padx=(0, 12))
+            aio.columnconfigure(index, weight=1)
+            ttk.Label(box, text=title, font=('Segoe UI', 11, 'bold')).pack(anchor='w')
+            ttk.Label(box, textvariable=self.var(key, 'Nessun file selezionato'), style='CardHint.TLabel').pack(anchor='w', pady=10)
+            ttk.Button(box, text='Scegli JSON…', command=lambda k=key:self.select_many(k)).pack(anchor='w')
+        payload = self.card(tab, 'Hai già un payload completo?', 'In alternativa ai due gruppi di export, seleziona il PRIVATE_DR_PAYLOAD.')
         self.entry(payload, 'PRIVATE_DR_PAYLOAD (alternativa)', 'aio_payload', 0, browse=True)
-        ttk.Label(tab, text='Per più profili, il programma associa gli UUID ai binding in Infisical. Se l’associazione è ambigua,\n'
-                  'si ferma e chiede un payload esplicito. Non inventa password o profili.', wraplength=850).pack(anchor='w', pady=10)
+        ttk.Label(tab, text='Per più profili, gli export devono corrispondere ai binding presenti in Infisical.',
+                  style='Muted.TLabel', wraplength=790).pack(anchor='w')
+
+    def _infisical(self, tab):
+        vm = self.card(tab, 'La nuova VM Infisical', 'Una seconda VM Ubuntu 24.04 amd64. Le chiavi applicative arrivano dal backup.')
+        self.entry(vm, 'Host / IP SSH', 'infisical_host', 0)
+        self.entry(vm, 'Utente', 'infisical_user', 0, default='infiscal', column=1)
+        self.entry(vm, 'Porta SSH', 'infisical_port', 0, default='22', column=2)
+        self.entry(vm, 'Password SSH', 'infisical_password', 1, secret=True)
+        self.entry(vm, 'Chiave SSH (in alternativa)', 'infisical_key', 1, browse=True, column=1, span=2)
+        self.entry(vm, 'Passphrase chiave SSH', 'infisical_key_password', 2, secret=True)
+        self.entry(vm, 'Password sudo (se diversa)', 'infisical_sudo_password', 2, secret=True, column=1, span=2)
+        info = self.card(tab, 'I tuoi segreti, sul server recuperato')
+        ttk.Label(info, text='Infisical v0.165.16  ·  PostgreSQL 14.24  ·  Redis', font=('Segoe UI', 11, 'bold')).pack(anchor='w')
+        ttk.Label(info, text='Database, chiavi e Universal Auth vengono recuperati dalla release cifrata.\n'
+                  'Il collegamento tra le VM passa da SSH e prosegue anche senza Windows.',
+                  style='CardHint.TLabel', wraplength=760, justify='left').pack(anchor='w', pady=(10, 4))
 
     def _advanced(self, tab):
-        ttk.Label(tab, text='Il minimo, quando il backup Agent è riconosciuto.', font=('Segoe UI', 15, 'bold')).pack(anchor='w')
-        ttk.Label(tab, text='Progetto, ambiente e Universal Auth vengono letti dal backup Agent. Usa questi campi solo per\n'
-                  'cambiare l’endpoint o se la struttura dell’archivio non è riconosciuta.', wraplength=880).pack(anchor='w', pady=(6, 12))
-        frame = ttk.Frame(tab)
-        frame.pack(fill='x')
-        self.entry(frame, 'Endpoint HTTPS Infisical', 'infisical_address', 0)
-        self.entry(frame, 'Project ID (opzionale)', 'project_id', 1)
-        self.entry(frame, 'Ambiente (opzionale)', 'environment', 2)
-        self.entry(frame, 'File Universal Auth client-id', 'client_id_file', 3, browse=True)
-        self.entry(frame, 'File Universal Auth client-secret', 'client_secret_file', 4, browse=True)
-        self.entry(frame, 'Password sudo (se diversa)', 'sudo_password', 5, secret=True)
-        self.entry(frame, 'Passphrase chiave SSH', 'key_password', 6, secret=True)
-    def _infisical(self, tab):
-        ttk.Label(tab, text='Recupera prima il server dei segreti.', font=('Segoe UI', 15, 'bold')).pack(anchor='w')
-        ttk.Label(tab, text='Per «Ripristina entrambe le VM» inserisci una seconda VM nuova Ubuntu 24.04 amd64.\n'
-                  'La vecchia VM Fedora resta intatta. Se usi solo «Prepara stack», Infisical deve già essere disponibile.',
-                  wraplength=890).pack(anchor='w', pady=(8,16))
-        vm = ttk.Frame(tab)
-        vm.pack(fill='x')
-        self.entry(vm, 'Nuova VM Infisical · host SSH', 'infisical_host', 0)
-        self.entry(vm, 'Utente VM Infisical', 'infisical_user', 1, default='infiscal')
-        self.entry(vm, 'Porta SSH', 'infisical_port', 2, default='22')
-        self.entry(vm, 'Password SSH', 'infisical_password', 3, secret=True)
-        self.entry(vm, 'Chiave SSH (in alternativa)', 'infisical_key', 4, browse=True)
-        self.entry(vm, 'Passphrase chiave SSH', 'infisical_key_password', 5, secret=True)
-        self.entry(vm, 'Password sudo (se diversa)', 'infisical_sudo_password', 6, secret=True)
-        ttk.Label(tab, text='Ripristino: Infisical v0.165.16 · PostgreSQL 14.24 · Redis, con digest verificati.\n'
-                  'Le chiavi applicative arrivano dal backup cifrato. Il programma non ne genera altre.\n'
-                  'I segreti viaggiano alla VM stack attraverso due connessioni SSH; non serve cambiare il DNS per prepararli.',
-                  wraplength=890).pack(anchor='w', pady=(20,0))
+        access = self.card(tab, 'Accesso alla VM stack', 'Compila soltanto se sudo usa una password diversa o la chiave SSH ha una passphrase.')
+        self.entry(access, 'Password sudo (se diversa)', 'sudo_password', 0, secret=True)
+        self.entry(access, 'Passphrase chiave SSH', 'key_password', 0, secret=True, column=1)
+        advanced = self.card(tab, 'Infisical già disponibile? Opzioni avanzate',
+                             'Per il recupero delle due VM lascia questi campi vuoti: useremo il backup Agent.')
+        self.entry(advanced, 'Endpoint HTTPS Infisical', 'infisical_address', 0, span=2)
+        self.entry(advanced, 'Project ID (opzionale)', 'project_id', 1)
+        self.entry(advanced, 'Ambiente (opzionale)', 'environment', 1, column=1)
+        self.entry(advanced, 'File Universal Auth client-id', 'client_id_file', 2, browse=True)
+        self.entry(advanced, 'File Universal Auth client-secret', 'client_secret_file', 2, browse=True, column=1)
 
     def _run(self, tab):
-        ttk.Label(tab, text='Un passo alla volta, con esiti verificabili.', font=('Segoe UI', 15, 'bold')).pack(anchor='w')
-        ttk.Label(tab, text='Ubuntu 24.04 amd64 · utente UID/GID 1000 · sudo · SSH attivo', wraplength=850).pack(anchor='w', pady=8)
         self.lab = tk.BooleanVar(value=False)
-        ttk.Checkbutton(tab, text='Confermo che le VM selezionate sono nuove e destinate a questa prova.', variable=self.lab).pack(anchor='w', pady=8)
-        actions = ttk.Frame(tab)
-        actions.pack(fill='x', pady=8)
+        self.tls = tk.BooleanVar(value=False)
+        self.native_agent = tk.BooleanVar(value=True)
+        self.summary = tk.StringVar()
+        action = self.card(tab, 'Rivedi e avvia')
+        ttk.Label(action, textvariable=self.summary, style='CardHint.TLabel', wraplength=760).pack(anchor='w', pady=(0, 10))
+        ttk.Checkbutton(action, text='Confermo che le VM selezionate sono nuove e destinate a questa prova.',
+                        variable=self.lab).pack(anchor='w', pady=(0, 6))
+        ttk.Checkbutton(action, text='Installa l’Agent continuo e il tunnel SSH permanente tra le VM.',
+                        variable=self.native_agent).pack(anchor='w', pady=(0, 6))
+        ttk.Checkbutton(action, text='Riemetti TLS e verifica HTTPS NPM (Cloudflare/ACME reali).',
+                        variable=self.tls).pack(anchor='w', pady=(0, 8))
+        actions = ttk.Frame(action)
+        actions.pack(fill='x')
         self.buttons = []
-        for text, fn, style in [('Verifica', self.verify, 'TButton'), ('Ripristina entrambe le VM', self.one_click, 'Accent.TButton'),
-                                ('Prepara stack', self.prepare, 'TButton'),
-                                ('Avvia servizi', self.start_services, 'TButton'), ('Salva esiti', self.save_report, 'TButton')]:
+        for text, fn, style in [('Verifica', self.verify, 'TButton'),
+                                ('Ripristina entrambe le VM', self.one_click, 'Accent.TButton')]:
             button = ttk.Button(actions, text=text, command=fn, style=style)
             button.pack(side='left', padx=(0, 10))
             self.buttons.append(button)
-        self.cancel_button = ttk.Button(actions, text='Interrompi', command=lambda: self.cancelled.set(), state='disabled')
-        self.cancel_button.pack(side='right')
-        self.tls = tk.BooleanVar(value=False)
-        self.native_agent = tk.BooleanVar(value=True)
-        ttk.Checkbutton(tab, text='Nel ripristino delle due VM installa anche l’Agent continuo con collegamento SSH permanente.',
-                        variable=self.native_agent).pack(anchor='w',pady=4)
-        ttk.Checkbutton(tab, text='All’avvio richiedi anche riemissione TLS e verifica HTTPS NPM (Cloudflare/ACME reali).',
-                        variable=self.tls).pack(anchor='w', pady=8)
+        self.phase_labels = {}
+        phases = ttk.Frame(tab, style='Page.TFrame')
+        phases.pack(fill='x', pady=(0, 8))
+        for index, name in enumerate(('Infisical', 'Stack', 'Agent', 'Servizi')):
+            phases.columnconfigure(index, weight=1)
+            box = ttk.Frame(phases, style='Card.TFrame', padding=(12, 10))
+            box.grid(row=0, column=index, sticky='nsew', padx=(0, 8))
+            ttk.Label(box, text=name, font=('Segoe UI', 9, 'bold')).pack(anchor='w')
+            label = ttk.Label(box, text='Da avviare', style='CardHint.TLabel')
+            label.pack(anchor='w', pady=(3, 0))
+            self.phase_labels[name] = label
         self.progress = ttk.Progressbar(tab, mode='indeterminate')
-        self.progress.pack(fill='x', pady=(10, 12))
-        self.log = tk.Text(tab, height=13, bg='#152940', fg='#e2ebf9', relief='flat',
-                           font=('Consolas', 10), padx=14, pady=12, wrap='word', state='disabled')
-        self.log.pack(fill='both', expand=True)
-        self.log.tag_configure('ok', foreground='#8fe0b7')
-        self.log.tag_configure('error', foreground='#ffb0a5')
-        ttk.Label(tab, text='Dopo l’avvio verifica login, enrollment, DNS e HTTPS. L’Agent continuo aggiorna i file privati;\n'
-                  'i vecchi hook di riavvio vanno controllati prima di riattivarli.\n'
-                  'Watchtower, DDNS, deunhealth e timer di pubblicazione/backup restano disattivati.',
-                  wraplength=890).pack(anchor='w', pady=(12, 0))
+        self.progress.pack(fill='x', pady=(0, 8))
+        log_card = ttk.Frame(tab, style='Card.TFrame', padding=12)
+        log_card.pack(fill='x')
+        toolbar = ttk.Frame(log_card)
+        toolbar.pack(fill='x')
+        ttk.Label(toolbar, text='Attività del ripristino', style='CardTitle.TLabel').pack(side='left')
+        save = ttk.Button(toolbar, text='Salva esiti', command=self.save_report)
+        save.pack(side='right')
+        self.buttons.append(save)
+        self.log = tk.Text(log_card, height=4, bg='#f8faff', fg='#526178', relief='flat',
+                           font=('Consolas', 9), padx=12, pady=8, wrap='word', state='disabled')
+        self.log.pack(fill='x', pady=(10, 0))
+        self.log.tag_configure('ok', foreground='#148569')
+        self.log.tag_configure('error', foreground='#bf4250')
+        self.write_log('Nessuna operazione avviata. Gli esiti compariranno qui.')
+        separate = ttk.Frame(tab, style='Page.TFrame')
+        separate.pack(fill='x', pady=(8, 4))
+        for text, fn in [('Prepara stack', self.prepare), ('Avvia servizi', self.start_services)]:
+            button = ttk.Button(separate, text=text, command=fn)
+            button.pack(side='left', padx=(0, 8))
+            self.buttons.append(button)
+        self.cancel_button = ttk.Button(separate, text='Interrompi', command=lambda:self.cancelled.set(), state='disabled')
+        self.cancel_button.pack(side='right')
+        ttk.Label(tab, text='Dopo l’avvio verifica login, enrollment e HTTPS. I timer di pubblicazione restano disattivati.',
+                  style='Muted.TLabel', wraplength=790).pack(anchor='w', pady=(4, 0))
+
+    def phase_event(self, stage, status):
+        name = ('Infisical' if stage.startswith('INFISICAL_') else 'Agent' if stage=='NATIVE_AGENT'
+                else 'Servizi' if stage in ('STARTED', 'TLS') else 'Stack' if stage in
+                ('INITIALIZE', 'INPUTS', 'RENDER', 'EMPTY_STATE', 'NPM', 'AIO', 'PREFLIGHT', 'PREPARED') else None)
+        if stage == 'REFUSED':
+            name = self.active_phase
+        if name:
+            self.active_phase = name
+            done = stage in ('INFISICAL_SERVER', 'PREPARED', 'NATIVE_AGENT', 'STARTED', 'TLS') and status=='PASS'
+            label = 'Fermato' if status=='REFUSED' else 'Completato' if done else 'In corso'
+            color = '#bf4250' if status=='REFUSED' else '#148569' if done else '#4963db'
+            self.phase_labels[name].configure(text=label, foreground=color)
+
 
     def select_file(self, key):
         path = filedialog.askopenfilename(title='Seleziona il file privato', parent=self)
@@ -259,10 +428,11 @@ class App(tk.Tk):
                 return False
         return bool(answer and answer[0])
 
-    def job(self, action):
+    def job(self, action, return_page=None):
         if self.busy:
             return
         self.busy = True
+        self.return_page = return_page
         self.cancelled.clear()
         self.book.select(4)
         self.progress.start(15)
@@ -286,7 +456,7 @@ class App(tk.Tk):
         token = self.var('github_token').get()
         def action():
             self.events.put(('choices', GitHub(token).choices()))
-        self.job(action)
+        self.job(action, return_page=0)
 
     def verify(self):
         data = self.snapshot()
@@ -425,6 +595,7 @@ class App(tk.Tk):
             elif kind == 'stage':
                 self.safe_report.append(value)
                 stage, status = value['stage'], value['status']
+                self.phase_event(stage, status)
                 self.write_log(TEXT[stage] + ' · ' + status + ((' · ' + value['code']) if value.get('code') else ''),
                                'error' if status == 'REFUSED' else ('ok' if status == 'PASS' else None))
                 self.status.set(TEXT[stage] + ': ' + status)
@@ -437,6 +608,7 @@ class App(tk.Tk):
                 self.write_log(value, 'ok')
             elif kind == 'error':
                 self.safe_report.append(dict(stage='REFUSED', status='REFUSED', code=value))
+                self.phase_event('REFUSED', 'REFUSED')
                 self.write_log(value + ' · ' + ERRORS.get(value, 'Procedura fermata; dati di recupero conservati.'), 'error')
                 self.status.set('Procedura fermata: ' + value)
             elif kind == 'done':
@@ -445,6 +617,9 @@ class App(tk.Tk):
                 self.cancel_button.configure(state='disabled')
                 for button in self.buttons:
                     button.configure(state='normal')
+                if self.return_page is not None:
+                    self.book.select(self.return_page)
+                    self.return_page = None
         self.after(100, self.poll)
 
     def save_report(self):
