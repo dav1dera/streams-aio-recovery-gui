@@ -6,7 +6,7 @@
 
 SSH, backup cifrati e configurazioni GitHub, in una procedura guidata.
 
-**[Scarica il programma · v0.3.0](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.0)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
+**[Scarica il programma · v0.3.1](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.1)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
 
 </div>
 
@@ -20,13 +20,17 @@ Le schermate mostrano il programma reale con i campi vuoti. I test automatici us
 
 | Ti serve | Prepara così |
 | --- | --- |
-| **Due VM nuove** | Ubuntu Server **24.04 amd64**, SSH attivo, utente UID/GID **1000** e sudo su ciascuna. Per la prova usa IP diversi dalle VM operative. |
+| **Due VM nuove** | Ubuntu Server **26.04 LTS amd64** (anche **24.04 LTS**), SSH attivo, utente UID/GID **1000** e sudo su ciascuna. Per la prova usa IP diversi dalle VM operative. |
 | **Accessi SSH** | IP, utente e password oppure file della chiave SSH per entrambe le VM. |
 | **Token GitHub di lettura** | Fine-grained token: **Contents: Read** per `streams-aio-dr` e `streams-aio-sanitized`. |
 | **Chiave privata age** | Identity PRIMARY o RECOVERY custodita fuori da Git. La chiave pubblica `age1…` non basta. |
 | **Configurazioni AIO** | Export JSON di **AIOStreams 2.35.3** e **AIOMetadata 3.3.0**, oppure un `PRIVATE_DR_PAYLOAD` completo. I binding dei profili devono essere presenti in Infisical. |
 
 Gli export AIO vanno conservati separatamente: **le release DR automatiche non li includono**. Docker lo installa il programma. [Preparazione VM, token e verifica del download →](docs/USAGE.md#1-cosa-preparare)
+
+**Hai già caricato `ubuntu-26.04.1-live-server-amd64.iso` su Proxmox? Puoi usare quella.** [Crea le due VM e abilita SSH →](docs/PROXMOX.md). Usa l’eseguibile **v0.3.1 o successivo**: la v0.3.0 accetta soltanto Ubuntu 24.04. Il bootstrap sceglie il repository Docker della versione installata (`resolute` per 26.04, `noble` per 24.04), senza mescolare le distribuzioni. [Requisiti ufficiali Docker](https://docs.docker.com/engine/install/ubuntu/).
+
+Gli screenshot illustrano l’interfaccia v0.3.0; nella v0.3.1 le indicazioni Ubuntu includono anche 26.04.
 
 ## Cinque passi, un ripristino
 
