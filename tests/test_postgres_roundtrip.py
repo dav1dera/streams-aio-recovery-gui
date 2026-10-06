@@ -29,9 +29,10 @@ class PostgresRoundTrip(unittest.TestCase):
             return result.stdout
         def ready(name,user):
             for attempt in range(60):
-                result=subprocess.run(['docker','exec',name,'psql','-X','-U',user,'-d','postgres','-At','-c','SELECT 1'],
+                result=subprocess.run(['docker','exec',name,'psql','-X','-U',user,'-d','postgres','-At','-c',
+                                       "SELECT current_setting('listen_addresses') <> ''"],
                                       capture_output=True,timeout=5)
-                if result.returncode==0 and result.stdout.strip()==b'1':
+                if result.returncode==0 and result.stdout.strip()==b't':
                     return
                 time.sleep(1)
             self.fail('Disposable PostgreSQL did not start')

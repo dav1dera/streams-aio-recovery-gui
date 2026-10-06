@@ -187,18 +187,28 @@ class InfisicalRestoreSafety(unittest.TestCase):
         recovery.runtime=lambda:None
         recovery.private=Path('/private')
         calls=[]
+        readiness=iter([b'f\n',server.Refused('INFISICAL_RESTORE_COMMAND_FAILED'),b't\n'])
+        readiness_checks=[]
         def compose(args,**kwargs):
             calls.append((args,kwargs))
-            if args[-1]=='SELECT 1':
-                return b'1\n'
+            if args[-1]=="SELECT current_setting('listen_addresses') <> ''":
+                readiness_checks.append(args)
+                reply=next(readiness)
+                if isinstance(reply,Exception):
+                    raise reply
+                return reply
+            if kwargs.get('input'):
+                self.assertEqual(len(readiness_checks),3,'No SQL writes during temporary startup/restart')
             if args[-1].startswith('SELECT count'):
                 return b't\n'
             return b''
         recovery.compose=compose
         listing=b'; dbname: infisical\n; Dumped from database version: 14.24\n'
         with (patch.object(server,'private_file',return_value=N(read_bytes=lambda:b'fixture')),
-              patch.object(server,'command',return_value=listing)):
+              patch.object(server,'command',return_value=listing),
+              patch.object(server.time,'sleep') as sleep):
             recovery.database()
+        self.assertEqual(sleep.call_count,2)
         globals_call=next((args,kw) for args,kw in calls if kw.get('input')==b'fixture' and 'psql' in args)
         self.assertIn('ON_ERROR_STOP=1',globals_call[0])
         self.assertIn('--single-transaction',globals_call[0])
