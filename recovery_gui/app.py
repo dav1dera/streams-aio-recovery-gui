@@ -41,7 +41,8 @@ ERRORS = {
     'AIO_EXPORT_PROFILE_AMBIGUOUS': 'Il profilo dell’export non è identificabile. Seleziona un payload DR esplicito.',
     'APPLICATION_START_REFUSED': 'Avvio o verifica applicativa fallita. Conserva lo stato e controlla la VM.',
     'REMOTE_OPERATION_FAILED': 'La VM ha fermato il comando. Se presente, il codice del passo è indicato nel registro.',
-    'UBUNTU_2404_REQUIRED': 'Questa versione richiede Ubuntu Server 24.04 amd64.',
+    'UBUNTU_LTS_VERSION_REQUIRED': 'Usa Ubuntu Server 26.04 o 24.04 amd64.',
+    'UBUNTU_CODENAME_MISMATCH': 'Versione e nome della distribuzione Ubuntu non corrispondono.',
     'SEPARATE_RECOVERY_VMS_REQUIRED': 'Stack e Infisical devono essere due VM nuove distinte.',
     'SSH_API_FORWARDING_REQUIRED': 'Il server SSH deve consentire forwarding sul loopback per la prova Infisical.',
     'INFISICAL_CONFIG_ARCHIVE_LAYOUT_REQUIRES_REVIEW': 'Il backup contiene file diversi dal contratto Infisical. Conserva il materiale per controllarlo.',
@@ -250,7 +251,7 @@ class App(tk.Tk):
         return entry
 
     def _connections(self, tab):
-        vm = self.card(tab, 'La nuova VM stack', 'Ubuntu 24.04 amd64 · utente UID/GID 1000 · SSH e sudo')
+        vm = self.card(tab, 'La nuova VM stack', 'Ubuntu 26.04 o 24.04 amd64 · utente UID/GID 1000 · SSH e sudo')
         self.entry(vm, 'Host / IP SSH', 'host', 0)
         self.entry(vm, 'Utente', 'user', 0, default='pi', column=1)
         self.entry(vm, 'Porta', 'port', 0, default='22', column=2)
@@ -286,7 +287,7 @@ class App(tk.Tk):
                   style='Muted.TLabel', wraplength=790).pack(anchor='w')
 
     def _infisical(self, tab):
-        vm = self.card(tab, 'La nuova VM Infisical', 'Una seconda VM Ubuntu 24.04 amd64. Le chiavi applicative arrivano dal backup.')
+        vm = self.card(tab, 'La nuova VM Infisical', 'Una seconda VM Ubuntu 26.04 o 24.04 amd64. Le chiavi applicative arrivano dal backup.')
         self.entry(vm, 'Host / IP SSH', 'infisical_host', 0)
         self.entry(vm, 'Utente', 'infisical_user', 0, default='infiscal', column=1)
         self.entry(vm, 'Porta SSH', 'infisical_port', 0, default='22', column=2)
@@ -465,7 +466,7 @@ class App(tk.Tk):
             ssh = SSH(self.host(data), self.key_dialog, self.cancelled)
             try:
                 info = ssh.check()
-                self.events.put(('message', 'VM stack verificata: Ubuntu 24.04 amd64; nessun container o volume esistente.'))
+                self.events.put(('message', 'VM stack verificata: ' + info['os'] + ' amd64; nessun container o volume esistente.'))
                 self.events.put(('choices', (tags, data.get('public_commit') or commit)))
             finally:
                 ssh.close()
