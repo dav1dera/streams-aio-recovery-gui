@@ -254,9 +254,14 @@ class InfisicalRecovery(Recovery):
         bootstrap = self.state['postgres_bootstrap_user']
         for attempt in range(60):
             try:
+                # The official image briefly runs a socket-only server while
+                # initializing, then stops it. Wait for the final server before
+                # writing roles/database; SELECT 1 also succeeds on that first
+                # temporary server. Query locally, without publishing a port.
                 ready = self.compose(['exec','-T','db','psql','-X','-U',bootstrap,
-                                      '-d','postgres','-At','-c','SELECT 1'], bootstrap=True)
-                if ready.strip() == b'1':
+                                      '-d','postgres','-At','-c',
+                                      "SELECT current_setting('listen_addresses') <> ''"], bootstrap=True)
+                if ready.strip() == b't':
                     break
             except Refused:
                 pass
