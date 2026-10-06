@@ -254,23 +254,41 @@ def decrypt_all(identity, bundle, destination, run=command):
 
 
 def unpack_agent(archive, destination):
+    destination = safe_path(destination)
     require(not destination.exists(), 'EXISTING_AGENT_ARCHIVE_REFUSED')
     with tarfile.open(archive, 'r:gz') as tar:
         members = tar.getmembers()
         require(len(members) <= 2000 and sum(m.size for m in members) <= 64 * 1024**2,
                 'AGENT_ARCHIVE_TOO_LARGE')
-        names = set()
+        names = {}
+        entries = []
         for member in members:
             path = PurePosixPath(member.name)
-            require(not path.is_absolute() and '..' not in path.parts
+            require('..' not in path.parts
                     and '\\' not in member.name and ':' not in member.name
                     and (member.isdir() or member.isfile()), 'UNSAFE_AGENT_ARCHIVE')
+            if path.is_absolute():
+                # The producer archives these Linux paths with tar -P. Rebase
+                # the known Agent layout into private staging, never onto /etc.
+                require(path.anchor == '/', 'UNSAFE_AGENT_ARCHIVE')
+                path = path.relative_to('/')
+                roots = (PurePosixPath('etc/infisical'), PurePosixPath('etc/infisical-agent'))
+                require(any(path.is_relative_to(root) for root in roots)
+                        or path == PurePosixPath('etc/systemd/system/infisical-agent.service')
+                        or path.is_relative_to(PurePosixPath('etc/systemd/system/infisical-agent.service.d'))
+                        or (member.isdir() and path.as_posix() in ('etc', 'etc/systemd', 'etc/systemd/system')),
+                        'UNSAFE_AGENT_ARCHIVE')
+            require(bool(path.parts) and path.as_posix() != '.', 'UNSAFE_AGENT_ARCHIVE')
             require(path.as_posix() not in names, 'DUPLICATE_AGENT_ARCHIVE_ENTRY')
-            names.add(path.as_posix())
+            names[path.as_posix()] = member.isdir()
+            entries.append((member, path))
+        # Validate the complete tree before creating any private output.
+        require(all(names.get(parent.as_posix(), True) for _, path in entries for parent in path.parents),
+                'UNSAFE_AGENT_ARCHIVE')
         destination.mkdir(mode=0o700)
         # Manual regular-file extraction; never restore ownership, links or hooks.
-        for member in members:
-            path = destination / member.name
+        for member, relative in entries:
+            path = destination / relative.as_posix()
             if member.isdir():
                 path.mkdir(parents=True, exist_ok=True, mode=0o700)
             else:
