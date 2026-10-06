@@ -39,9 +39,14 @@ class UbuntuSupport(unittest.TestCase):
                     probe.ubuntu_codename(dict(ID='ubuntu', VERSION_ID='26.04', **fields))
                 self.assertNotIn('canary', str(error.exception))
 
-    def run_probe(self, version, docker=False, machine='x86_64'):
+    def run_probe(self, version, docker=False, machine='x86_64', legacy_data=False):
         codename = {'24.04': 'noble', '26.04': 'resolute'}[version]
         original_read = Path.read_text
+        original_exists, original_iterdir = Path.exists, Path.iterdir
+        def exists(path):
+            return legacy_data if path.as_posix() == '/var/lib/docker' else original_exists(path)
+        def iterdir(path):
+            return iter([Path('fixture-old-data')]) if path.as_posix() == '/var/lib/docker' else original_iterdir(path)
         def read(path, *args, **kwargs):
             if path.as_posix() == '/etc/os-release':
                 return f'ID=ubuntu\nVERSION_ID="{version}"\nVERSION_CODENAME={codename}\n'
@@ -51,6 +56,7 @@ class UbuntuSupport(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             with patch.object(Path, 'read_text', read), \
+                 patch.object(Path, 'exists', exists), patch.object(Path, 'iterdir', iterdir), \
                  patch.object(probe.pwd, 'getpwuid', return_value=N(pw_gid=1000, pw_name='pi', pw_dir='/home/pi'), create=True), \
                  patch.object(os, 'uname', return_value=N(machine=machine), create=True), \
                  patch.object(probe.shutil, 'which', return_value='/usr/bin/docker' if docker else None), \
@@ -70,6 +76,8 @@ class UbuntuSupport(unittest.TestCase):
             self.run_probe('26.04', docker=True)
         with self.assertRaisesRegex(ValueError, '^UBUNTU_AMD64_REQUIRED$'):
             self.run_probe('26.04', machine='aarch64')
+        with self.assertRaisesRegex(ValueError, '^EXISTING_DOCKER_DATA$'):
+            self.run_probe('26.04', legacy_data=True)
 
 
 if __name__ == '__main__':
