@@ -398,7 +398,15 @@ class Recovery:
                                   'DR_RELEASE_METADATA_UNAVAILABLE'))
         validate_release(meta, tag)
         require(not self.bundle.exists(), 'EXISTING_BUNDLE_REFUSED')
-        stage = Path(tempfile.mkdtemp(prefix='download-', dir=self.home))
+        try:
+            stage = Path(tempfile.mkdtemp(prefix='download-', dir=self.home))
+            # gh runs as the validated deployment user (UID/GID 1000), while
+            # this installer runs as root. Keep mode 0700; transfer ownership
+            # only on the newly created staging directory, never recursively.
+            if os.geteuid() == 0:
+                os.chown(stage, 1000, 1000)
+        except OSError:
+            raise Refused('DR_DOWNLOAD_DIRECTORY_FAILED') from None
         command(['gh', 'release', 'download', tag, '--repo', PRIVATE, '--dir', stage], 'DR_DOWNLOAD_FAILED')
         validate_bundle(self.manager, stage, tag)
         require(all((stage / a['name']).stat().st_size == a['size'] for a in meta['assets']),
