@@ -6,9 +6,9 @@
 
 SSH, backup cifrati e configurazioni GitHub, in una procedura guidata.
 
-**[Scarica il programma · v0.3.2](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.2)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
+**[Scarica il programma · v0.3.3](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.3)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
 
-**La v0.3.2 corregge il download DR fermato dai permessi della cartella temporanea.** Se la v0.3.1 si è fermata su `DR_DOWNLOAD_FAILED`, chiudi il vecchio programma e riprova con la v0.3.2 sulle stesse VM, mantenendo release DR e commit dello stack. I checkpoint e i file del tentativo precedente vengono conservati. [Ripresa del download →](docs/USAGE.md#8-se-la-procedura-si-ferma).
+**La v0.3.3 legge anche i file della chiave age salvati da Windows in UTF-8 con BOM o UTF-16.** Controlla la chiave privata prima della decifratura e distingue una chiave pubblica, una copia non valida e una identity che non apre il backup. Per riprovare conserva le stesse VM, release DR e commit dello stack. Le correzioni dei permessi di download e dell'avvio PostgreSQL della v0.3.2 restano incluse. [Ripresa dopo un errore →](docs/USAGE.md#8-se-la-procedura-si-ferma).
 
 </div>
 
