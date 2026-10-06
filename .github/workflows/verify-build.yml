@@ -28,8 +28,38 @@ jobs:
           RECOVERY_DOCKER_INTEGRATION: '1'
       - run: python -m compileall -q recovery_gui remote main.py
       - run: bash -n remote/bootstrap.sh
+  ubuntu-compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['24.04', '26.04']
+    container: ubuntu:${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the OS policy and install the actual bootstrap dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq python3
+          DOCKER_SUITE=$(python3 remote/probe.py --docker-suite)
+          export DOCKER_SUITE
+          python3 - <<'PY' > /tmp/recovery-dependencies.sh
+          from pathlib import Path
+          shell = Path('remote/bootstrap.sh').read_text()
+          start = shell.index('apt-get update -qq\n')
+          end = shell.index('getent group docker')
+          print('set -euo pipefail\nfail() { echo "$1"; exit 1; }\n' + shell[start:end])
+          PY
+          bash /tmp/recovery-dependencies.sh
+          python3 -m venv /tmp/recovery-venv
+          /tmp/recovery-venv/bin/python -m pip install --quiet -r remote/requirements-new-vm.txt
+          /tmp/recovery-venv/bin/python -c 'import bcrypt, cryptography, jsonschema, yaml, infisicalsdk'
+          /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_ubuntu_support.py -v
+          bash -n remote/bootstrap.sh
   windows:
-    needs: safety
+    needs: [safety, ubuntu-compatibility]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
