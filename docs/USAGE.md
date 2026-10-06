@@ -1,8 +1,8 @@
-# Guida completa · Streams AIO Recovery 0.3.2
+# Guida completa · Streams AIO Recovery 0.3.3
 
 **Ricostruisci Infisical e lo stack Streams AIO su due VM nuove, da Windows.** Inserisci gli accessi SSH, scegli i backup e premi **Ripristina entrambe le VM**: il programma installa Docker, recupera Infisical, prepara lo stack e configura l’Agent continuo.
 
-[Scarica v0.3.2](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.2) · [Backup DR privati](https://github.com/dav1dera/streams-aio-dr/releases) · [Runbook dello stack](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/DISASTER-RECOVERY.md)
+[Scarica v0.3.3](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.3) · [Backup DR privati](https://github.com/dav1dera/streams-aio-dr/releases) · [Runbook dello stack](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/DISASTER-RECOVERY.md)
 
 **Stato:** test Linux, ripristino PostgreSQL 14 con dati sintetici, compilazione e avvio Windows superati. Il collaudo completo con i backup reali sulle due VM resta da eseguire. Servizi avviati e ripristino funzionale sono risultati distinti.
 
@@ -79,7 +79,7 @@ Riferimento: [gestione dei token nella documentazione ufficiale GitHub](https://
 
 ## 2. Scaricare il programma
 
-Dalla [release v0.3.2](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.2), scarica `StreamsAIO-Recovery.exe` e `SHA256SUMS`. Devi essere autenticato su GitHub perché la repository è privata.
+Dalla [release v0.3.3](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.3), scarica `StreamsAIO-Recovery.exe` e `SHA256SUMS`. Devi essere autenticato su GitHub perché la repository è privata.
 
 Apri PowerShell nella cartella del download e verifica:
 
@@ -114,6 +114,8 @@ Controlla la release e il commit scelti. I due repository sono aggiornati da pro
 - In alternativa ai due gruppi, scegli un **PRIVATE_DR_PAYLOAD completo**.
 
 Se hai custodito solo il codice della chiave age, crea con Blocco note un file di testo UTF-8, per esempio `age-primary.txt`, contenente su una sola riga la chiave privata originale completa che inizia con `AGE-SECRET-KEY-1`. Salvalo fuori dalle cartelle Git e selezionalo con **Sfoglia…**. PRIMARY o RECOVERY funzionano se sono tra i recipient del backup scelto; non aggiungere prefissi a un codice sconosciuto e non incollare la chiave nel campo del percorso o negli esiti.
+
+Dalla v0.3.3 sono accettati anche UTF-8 con BOM e UTF-16 con BOM, oltre a righe CRLF, commenti e spazi esterni. Il programma prepara una copia temporanea privata in UTF-8, senza modificare il file originale, e la valida con `age-keygen` prima di tentare la decifratura. La copia temporanea viene eliminata al termine del passo; il file trasferito e i checkpoint restano conservati. Il prefisso e la chiave completa devono essere quelli originali: una chiave pubblica o un codice diverso non vengono trasformati in chiave privata.
 
 Per più profili, gli export devono essere associabili ai binding in Infisical. Se l’associazione è ambigua il programma si ferma. La versione 0.3 richiede gli export di entrambe le applicazioni oppure un payload completo.
 
@@ -235,9 +237,13 @@ Salva gli esiti e controlla il codice mostrato. Non cancellare checkpoint o data
 | `SEPARATE_RECOVERY_VMS_REQUIRED` | Due macchine distinte: alias diversi della stessa VM non bastano. |
 | `GITHUB_AUTH_FAILED` / `GITHUB_ACCESS_DENIED` | Token valido, scadenza, permessi di lettura e accesso al repo privato. |
 | `NO_PUBLISHED_DR_RELEASE` | Serve una release DR pubblicata, non una bozza. |
-| `DR_DOWNLOAD_FAILED` con v0.3.1 | Aggiorna alla v0.3.2: corregge la proprietà della cartella temporanea usata da GitHub CLI. Se persiste, controlla accesso al repository privato e connettività senza mostrare il token. |
+| `DR_DOWNLOAD_FAILED` con v0.3.1 | Aggiorna alla v0.3.3: corregge la proprietà della cartella temporanea usata da GitHub CLI. Se persiste, controlla accesso al repository privato e connettività senza mostrare il token. |
 | `DR_DOWNLOAD_DIRECTORY_FAILED` | Il sistema non ha potuto creare o assegnare la cartella privata del download all'utente UID/GID 1000; nessun artifact viene accettato. |
-| `AGE_DECRYPTION_FAILED` | Identity privata adatta al recipient della release. Passphrase/hardware token age non sono gestiti automaticamente. |
+| `AGE_PUBLIC_KEY_NOT_IDENTITY` | Il file contiene `age1…`, la chiave pubblica. Seleziona l'identity privata PRIMARY o RECOVERY originale. |
+| `AGE_PRIVATE_IDENTITY_REQUIRED` / `AGE_IDENTITY_INVALID` | File con chiave privata originale completa `AGE-SECRET-KEY-1…`. Copia troncata, caratteri modificati, plugin e file con passphrase vengono rifiutati. |
+| `AGE_IDENTITY_ENCODING_INVALID` / `AGE_IDENTITY_FILE_INVALID` | File di testo UTF-8 o UTF-16 con BOM, massimo 64 KiB. Nessun contenuto viene mostrato nel registro. |
+| `AGE_NO_MATCHING_RECIPIENT` | La chiave è valida ma non apre un artifact del backup scelto. Prova l'altra identity originale PRIMARY/RECOVERY oppure una release compatibile. Non generare una nuova chiave per aprire vecchi backup. |
+| `AGE_DECRYPTION_FAILED` | age non ha completato la decifratura per un'altra causa. Le copie e lo staging del tentativo restano privati; nessun set parziale viene installato. |
 | `AIO_EXPORTS_OR_PAYLOAD_REQUIRED` | Export di entrambe le applicazioni oppure payload completo. |
 | Errori registro/associazione AIO | Binding in Infisical e corrispondenza tra profili ed export. |
 | `NATIVE_AGENT_REQUIRES_RECOVERED_SCOPE` | Lascia vuoti progetto, ambiente e file Universal Auth con Agent continuo attivo. |
@@ -249,12 +255,12 @@ Una fase non atomica interrotta dopo scritture di config/database può richieder
 
 **Riprendere il download interrotto dalla v0.3.1:**
 
-1. Chiudi il vecchio eseguibile e apri la v0.3.2.
+1. Chiudi il vecchio eseguibile e apri la v0.3.3.
 2. Inserisci gli stessi accessi delle due VM e gli stessi file privati; carica le release.
 3. Seleziona la stessa release DR e mantieni lo stesso commit completo dello stack usato nel tentativo interrotto.
 4. Per il collaudo lascia disattivata la riemissione TLS reale e premi **Ripristina entrambe le VM**.
 
-Non serve ricreare le VM quando la procedura si è fermata al download prima di installare config/database. Il clone già completato viene verificato e riutilizzato; il download riparte in una nuova cartella privata. Le cartelle dei tentativi falliti restano conservate. SHA256, manifest, dimensioni ed envelope age devono passare prima che il bundle diventi utilizzabile. Non cambiare i permessi in `777`, non cancellare `state.json` e non aggiornare manualmente i clone intermedi.
+Non serve ricreare le VM quando la procedura si è fermata al download o alla decifratura prima di installare config/database. Il clone e il download già completati vengono verificati e riutilizzati; una decifratura fallita può ripartire con un'altra identity originale e una nuova cartella privata. Le cartelle dei tentativi falliti restano conservate. SHA256, manifest, dimensioni ed envelope age devono passare prima che il bundle diventi utilizzabile. Non cambiare i permessi in `777`, non cancellare `state.json` e non aggiornare manualmente i clone intermedi.
 
 ## 9. Credenziali e file privati
 

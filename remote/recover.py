@@ -109,6 +109,13 @@ def command(args, code, cwd=None, interactive=False, timeout=1800, input=None):
                                 capture_output=not interactive, timeout=timeout, input=input)
     except (OSError, subprocess.TimeoutExpired):
         raise Refused(code) from None
+    if result.returncode != 0 and str(args[0]) == 'age' and code == 'AGE_DECRYPTION_FAILED':
+        # Map only known age diagnostics to a fixed code. Never expose stderr,
+        # which may contain paths, private inputs or arbitrary child output.
+        if any(marker in (result.stderr or b'') for marker in
+               (b'no identity matched any of the recipients',
+                b'identity did not match any of the recipients')):
+            raise Refused('AGE_NO_MATCHING_RECIPIENT') from None
     require(result.returncode == 0, code)
     return b'' if interactive else result.stdout
 
@@ -204,15 +211,46 @@ def write_inputs(destination, snapshots):
     os.rename(stage, destination)
 
 
+def canonical_age_identity(raw):
+    """Decode a Windows text file without guessing or generating key material."""
+    require(isinstance(raw, bytes) and len(raw) <= 65536, 'AGE_IDENTITY_FILE_INVALID')
+    try:
+        if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
+            text = raw.decode('utf-16')
+        else:
+            text = raw.decode('utf-8-sig')
+    except UnicodeError:
+        raise Refused('AGE_IDENTITY_ENCODING_INVALID') from None
+    lines = [line.strip() for line in text.splitlines()
+             if line.strip() and not line.lstrip().startswith('#')]
+    require(bool(lines) and len(lines) <= 16, 'AGE_PRIVATE_IDENTITY_REQUIRED')
+    require(not any(line.startswith('age1') for line in lines), 'AGE_PUBLIC_KEY_NOT_IDENTITY')
+    # Only native X25519 identities match the existing backup contract. Reject
+    # plugins, SSH keys and passphrase files before invoking an external tool.
+    require(all(re.fullmatch(r'AGE-SECRET-KEY-1[A-Z0-9]+', line) for line in lines),
+            'AGE_PRIVATE_IDENTITY_REQUIRED')
+    return ('\n'.join(lines) + '\n').encode('ascii')
+
+
 def decrypt_all(identity, bundle, destination, run=command):
     require(not destination.exists(), 'EXISTING_DECRYPTED_MATERIAL_REFUSED')
-    stage = Path(tempfile.mkdtemp(prefix='decryption-', dir=destination.parent))
-    for asset, name in ASSETS.items():
-        run(['age', '--decrypt', '--identity', identity, '--output', stage / name,
-             bundle / asset], 'AGE_DECRYPTION_FAILED')
-        private_file(stage / name)
-    # A failure leaves staging untouched and never installs a partially decrypted set.
-    os.rename(stage, destination)
+    with Path(identity).open('rb') as source:
+        canonical = canonical_age_identity(source.read(65537))
+    # The original transferred file is preserved. The canonical copy exists
+    # only inside a fresh 0700 directory, is 0600, and never joins the bundle.
+    with tempfile.TemporaryDirectory(prefix='age-identity-', dir=destination.parent) as key_dir:
+        key_path = Path(key_dir) / 'identity.txt'
+        fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'wb') as target:
+            target.write(canonical)
+        run(['age-keygen', '-y', key_path], 'AGE_IDENTITY_INVALID')
+        stage = Path(tempfile.mkdtemp(prefix='decryption-', dir=destination.parent))
+        for asset, name in ASSETS.items():
+            run(['age', '--decrypt', '--identity', key_path, '--output', stage / name,
+                 bundle / asset], 'AGE_DECRYPTION_FAILED')
+            private_file(stage / name)
+        # A failure leaves staging untouched and never installs a partial set.
+        os.rename(stage, destination)
 
 
 def unpack_agent(archive, destination):

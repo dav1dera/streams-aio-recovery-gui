@@ -1,16 +1,16 @@
-Corretto il blocco `DR_DOWNLOAD_FAILED` durante il recupero della release cifrata.
+La v0.3.3 gestisce i file della chiave age salvati su Windows in UTF-8 con BOM o UTF-16 con BOM, che prima potevano fermarsi su `AGE_DECRYPTION_FAILED` anche con una chiave corretta.
 
-Il bootstrap crea la cartella temporanea come root, mentre GitHub CLI scarica come utente della VM. La cartella viene ora assegnata all'utente UID/GID 1000 mantenendo i permessi privati `0700`. La correzione si applica al recupero Infisical e al recupero dello stack.
+- Legge solo identity X25519 originali complete `AGE-SECRET-KEY-1…`, con commenti, righe vuote e CRLF. Non genera chiavi e non aggiunge prefissi a codici sconosciuti.
+- Prepara una copia canonica in una cartella temporanea `0700`, file `0600`, esterna ai repository. Il file originale non viene modificato. La copia canonica viene eliminata alla fine del passo, anche in caso di rifiuto.
+- Valida la chiave con `age-keygen` prima della decifratura. Distingue `AGE_PUBLIC_KEY_NOT_IDENTITY`, `AGE_PRIVATE_IDENTITY_REQUIRED`, `AGE_IDENTITY_INVALID` e `AGE_NO_MATCHING_RECIPIENT`, con spiegazioni in italiano nel registro.
+- Nessuna chiave, public recipient o stderr dei processi viene mostrata negli esiti. L'errore di age viene convertito soltanto in codici fissi.
+- SHA256, manifest, dimensioni degli asset, envelope age e rifiuto dei set parziali restano attivi. Restano incluse le correzioni dei permessi di download e dell'avvio PostgreSQL della v0.3.2.
+- Test con vere chiavi PRIMARY/RECOVERY usa e getta: tutti e cinque gli artifact, UTF-8, BOM, UTF-16 LE/BE, CRLF e rifiuto di una terza identity valida ma estranea. Le prove sono obbligatorie su Ubuntu 24.04 e 26.04 prima della build Windows.
 
-- Il token resta su stdin SSH e nell'ambiente dei soli processi Git/GitHub CLI; non entra negli argomenti, nei log o in Docker.
-- SHA256, manifest, dimensioni degli asset ed envelope age continuano a essere verificati prima dell'utilizzo del bundle.
-- I checkpoint restano compatibili. I tentativi falliti vengono conservati; la ripresa del download usa una nuova cartella, senza sovrascrivere bundle esistenti.
-- Nuovo codice `DR_DOWNLOAD_DIRECTORY_FAILED` se la cartella privata non può essere preparata.
-- Test di regressione con un vero processo UID 1000 avviato da root su Ubuntu 24.04 e 26.04, oltre ai controlli di rifiuto e ripresa del download.
-- Il restore PostgreSQL attende ora il server definitivo, dopo il server temporaneo usato dall'immagine ufficiale durante l'inizializzazione. Questo evita avvii prematuri del restore durante il riavvio iniziale; la prova PostgreSQL usa lo stesso controllo. Nessuna porta aggiuntiva viene esposta. [Entrypoint ufficiale PostgreSQL](https://github.com/docker-library/postgres/blob/master/docker-entrypoint.sh).
+**Per riprovare:** annota il commit dello stack nella vecchia GUI, chiudila e scarica **StreamsAIO-Recovery.exe v0.3.3**. Mantieni le stesse VM, release DR e commit, seleziona il file della chiave privata originale e premi **Ripristina entrambe le VM**. Un arresto alla decifratura prima del restore config/database permette di riutilizzare i checkpoint. Per il primo collaudo lascia disattivata la riemissione TLS reale.
 
-**Per riprovare:** chiudi la v0.3.1, scarica **StreamsAIO-Recovery.exe v0.3.2**, mantieni le stesse VM, release DR e commit dello stack, reinserisci gli accessi e premi **Ripristina entrambe le VM**. Se il blocco era al download prima del restore config/database, non serve ricreare le VM. Per il primo collaudo lascia disattivata la riemissione TLS reale.
+Una identity valida che non apre il backup richiede l'altra chiave originale PRIMARY/RECOVERY o una release cifrata per quella identity. Una chiave nuova non apre i backup precedenti. [Formato identity ufficiale age](https://github.com/FiloSottile/age/blob/main/parse.go).
 
-La pubblicazione richiede test di sicurezza, round trip PostgreSQL 14 con dati sintetici, prove dei permessi e dipendenze su entrambi gli Ubuntu, avvio/navigazione dell'eseguibile Windows e verifica SHA256 degli asset riscaricati.
+La pubblicazione richiede inoltre test di sicurezza, round trip PostgreSQL 14 con dati sintetici, prove dei permessi di download, dipendenze su entrambi gli Ubuntu, avvio/navigazione dell'eseguibile Windows e verifica SHA256 degli asset riscaricati.
 
 Il ripristino completo con i backup reali dell'utente resta da collaudare. Questa è una **prerelease**: i test automatici non attestano quel collaudo.

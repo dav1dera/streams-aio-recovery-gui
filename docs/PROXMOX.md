@@ -90,6 +90,6 @@ systemctl is-active ssh.service --no-pager
 
 Per la ISO indicata il sistema riporta `26.04 / resolute`; UID e GID devono essere `1000`, SSH `active`. Annota i due IP.
 
-Apri l’eseguibile **v0.3.2**, inserisci accessi, token GitHub, chiave age ed export AIO, premi **Verifica** e segui la [guida completa](USAGE.md#3-compilare-il-programma-esempio-completo). La VM stack deve raggiungere la VM Infisical via SSH e le nuove VM devono avere accesso a Internet.
+Apri l’eseguibile **v0.3.3**, inserisci accessi, token GitHub, chiave age ed export AIO, premi **Verifica** e segui la [guida completa](USAGE.md#3-compilare-il-programma-esempio-completo). La VM stack deve raggiungere la VM Infisical via SSH e le nuove VM devono avere accesso a Internet.
 
 Per la prima prova lascia TLS e automazioni di pubblicazione disattivati. Al termine verifica login Infisical, Agent/tunnel, NPM e le applicazioni prima di passare alle nuove VM.
