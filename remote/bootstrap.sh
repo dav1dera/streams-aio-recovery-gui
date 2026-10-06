@@ -24,9 +24,9 @@ IFS= read -r REQUEST_JSON || fail RECOVERY_REQUEST_REQUIRED
 DEPLOY_HOME=$(getent passwd "$DEPLOY_USER" | cut -d: -f6)
 [[ $DEPLOY_HOME =~ ^/[A-Za-z0-9/_-]+$ ]] || fail UNSUPPORTED_HOME
 [[ $(uname -m) == x86_64 ]] || fail UBUNTU_AMD64_REQUIRED
-source /etc/os-release
-[[ $ID == ubuntu && $VERSION_ID == 24.04 ]] || fail UBUNTU_2404_REQUIRED
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+DOCKER_SUITE=$(python3 "$HERE/probe.py" --docker-suite) || fail UBUNTU_LTS_VERSION_REQUIRED
+[[ $DOCKER_SUITE == noble || $DOCKER_SUITE == resolute ]] || fail UBUNTU_LTS_VERSION_REQUIRED
 RUNNER_HOME="$DEPLOY_HOME/.local/share/streams-aio-recovery"
 TARGET_HOME="$DEPLOY_HOME/streams-aio"
 ENTRY_POINT=recover.py
@@ -43,7 +43,7 @@ printf '%s\n' 'RECOVERY_EVENT {"stage":"DEPENDENCIES","status":"RUNNING"}'
 apt-get update -qq
 apt-get install -y -qq git gh curl ca-certificates python3-venv acl age
 if ! command -v docker >/dev/null; then
-    for package in docker.io docker-compose docker-compose-v2 podman-docker containerd runc; do
+    for package in docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc; do
         if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then
             fail CONFLICTING_DOCKER_PACKAGE
         fi
@@ -51,10 +51,10 @@ if ! command -v docker >/dev/null; then
     install -m 0755 -d /etc/apt/keyrings
     curl --fail --silent --show-error --location https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
     chmod a+r /etc/apt/keyrings/docker.asc
-    tee /etc/apt/sources.list.d/docker.sources >/dev/null <<'APT'
+    tee /etc/apt/sources.list.d/docker.sources >/dev/null <<APT
 Types: deb
 URIs: https://download.docker.com/linux/ubuntu
-Suites: noble
+Suites: $DOCKER_SUITE
 Components: stable
 Architectures: amd64
 Signed-By: /etc/apt/keyrings/docker.asc

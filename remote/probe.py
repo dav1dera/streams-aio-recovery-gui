@@ -10,6 +10,20 @@ import subprocess
 import sys
 
 
+def ubuntu_codename(info):
+    """Explicit OS policy shared by the SSH probe and the Docker installer."""
+    values = {key: value.strip('\"') for key, value in info.items()}
+    supported = {'24.04': 'noble', '26.04': 'resolute'}
+    version = values.get('VERSION_ID')
+    if values.get('ID') != 'ubuntu' or version not in supported:
+        raise ValueError('UBUNTU_LTS_VERSION_REQUIRED')
+    codename = supported[version]
+    declared = [values[key] for key in ('UBUNTU_CODENAME', 'VERSION_CODENAME') if key in values]
+    if not declared or any(value != codename for value in declared):
+        raise ValueError('UBUNTU_CODENAME_MISMATCH')
+    return codename
+
+
 def probe(target, runner, fresh=False, role='stack'):
     if role not in ('stack', 'infisical') or (role == 'infisical' and target != Path('/opt/infisical')):
         raise ValueError('INVALID_RECOVERY_ROLE')
@@ -20,8 +34,7 @@ def probe(target, runner, fresh=False, role='stack'):
     if user.pw_gid != 1000:
         raise ValueError('DEPLOYMENT_UID_GID_REQUIRED')
     info = dict(x.split('=', 1) for x in Path('/etc/os-release').read_text().splitlines() if '=' in x)
-    if info.get('ID', '').strip('"') != 'ubuntu' or info.get('VERSION_ID', '').strip('"') != '24.04':
-        raise ValueError('UBUNTU_2404_REQUIRED')
+    ubuntu_codename(info)
     if os.uname().machine != 'x86_64':
         raise ValueError('UBUNTU_AMD64_REQUIRED')
     existing = target.exists()
@@ -83,7 +96,7 @@ def probe(target, runner, fresh=False, role='stack'):
             if (labels.get('com.docker.compose.project') != 'infisical' or key not in declared
                     or item.get('Name') != declared[key].get('name')):
                 raise ValueError('FOREIGN_VOLUME_REFUSED')
-    return dict(os='Ubuntu 24.04', architecture='amd64', user=user.pw_name,
+    return dict(os='Ubuntu ' + info['VERSION_ID'].strip('"'), architecture='amd64', user=user.pw_name,
                 home=user.pw_dir, existing_recovery=existing,
                 containers=containers, volumes=volumes,
                 machine_id=Path('/etc/machine-id').read_text().strip())
@@ -91,15 +104,22 @@ def probe(target, runner, fresh=False, role='stack'):
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
-    p.add_argument('--target', required=True)
-    p.add_argument('--runner', required=True)
+    p.add_argument('--target')
+    p.add_argument('--runner')
+    p.add_argument('--docker-suite', action='store_true')
     p.add_argument('--fresh', action='store_true')
     p.add_argument('--role', choices=('stack','infisical'), default='stack')
     a = p.parse_args()
     try:
-        print(json.dumps(probe(Path(a.target), Path(a.runner), a.fresh, a.role)))
+        if a.docker_suite:
+            info = dict(x.split('=', 1) for x in Path('/etc/os-release').read_text().splitlines() if '=' in x)
+            print(ubuntu_codename(info))
+        else:
+            if not a.target or not a.runner:
+                p.error('--target and --runner are required for a host check')
+            print(json.dumps(probe(Path(a.target), Path(a.runner), a.fresh, a.role)))
     except Exception as error:
-        allowed = {'SYMLINK_PATH_REFUSED', 'DEPLOYMENT_UID_GID_REQUIRED', 'UBUNTU_2404_REQUIRED',
+        allowed = {'SYMLINK_PATH_REFUSED', 'DEPLOYMENT_UID_GID_REQUIRED', 'UBUNTU_LTS_VERSION_REQUIRED', 'UBUNTU_CODENAME_MISMATCH',
                    'UBUNTU_AMD64_REQUIRED', 'EXISTING_STACK_REFUSED', 'FOREIGN_RECOVERY_STATE',
                    'DOCKER_CHECK_REQUIRES_SUDO_OR_RUNNING_DAEMON', 'EXISTING_DOCKER_DATA', 'FRESH_DOCKER_HOST_REQUIRED',
                    'INFISICAL_CONFIG_CHANGED','FOREIGN_CONTAINER_REFUSED','FOREIGN_VOLUME_REFUSED','INVALID_RECOVERY_ROLE'}
