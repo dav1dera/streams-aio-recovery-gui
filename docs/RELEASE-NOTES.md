@@ -7,6 +7,7 @@ Il bootstrap crea la cartella temporanea come root, mentre GitHub CLI scarica co
 - I checkpoint restano compatibili. I tentativi falliti vengono conservati; la ripresa del download usa una nuova cartella, senza sovrascrivere bundle esistenti.
 - Nuovo codice `DR_DOWNLOAD_DIRECTORY_FAILED` se la cartella privata non può essere preparata.
 - Test di regressione con un vero processo UID 1000 avviato da root su Ubuntu 24.04 e 26.04, oltre ai controlli di rifiuto e ripresa del download.
+- Il restore PostgreSQL attende ora il server definitivo, dopo il server temporaneo usato dall'immagine ufficiale durante l'inizializzazione. Questo evita avvii prematuri del restore durante il riavvio iniziale; la prova PostgreSQL usa lo stesso controllo. Nessuna porta aggiuntiva viene esposta. [Entrypoint ufficiale PostgreSQL](https://github.com/docker-library/postgres/blob/master/docker-entrypoint.sh).
 
 **Per riprovare:** chiudi la v0.3.1, scarica **StreamsAIO-Recovery.exe v0.3.2**, mantieni le stesse VM, release DR e commit dello stack, reinserisci gli accessi e premi **Ripristina entrambe le VM**. Se il blocco era al download prima del restore config/database, non serve ricreare le VM. Per il primo collaudo lascia disattivata la riemissione TLS reale.
 
