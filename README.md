@@ -6,9 +6,9 @@
 
 SSH, backup cifrati e configurazioni GitHub, in una procedura guidata.
 
-**[Scarica il programma · v0.3.3](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.3)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
+**[Scarica il programma · v0.3.4](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.4)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
 
-**La v0.3.3 legge anche i file della chiave age salvati da Windows in UTF-8 con BOM o UTF-16.** Controlla la chiave privata prima della decifratura e distingue una chiave pubblica, una copia non valida e una identity che non apre il backup. Per riprovare conserva le stesse VM, release DR e commit dello stack. Le correzioni dei permessi di download e dell'avvio PostgreSQL della v0.3.2 restano incluse. [Ripresa dopo un errore →](docs/USAGE.md#8-se-la-procedura-si-ferma).
+**La v0.3.4 legge il backup Agent prodotto con percorsi assoluti Linux.** Ricostruisce i percorsi conosciuti dentro una cartella privata, senza scrivere nei percorsi originali di `/etc`; link, attraversamenti e duplicati restano rifiutati. Per riprendere da `UNSAFE_AGENT_ARCHIVE`, conserva le stesse VM, release DR, commit e file privati: Infisical gia recuperato viene verificato e riutilizzato. Restano incluse le correzioni delle chiavi Windows, del download e di PostgreSQL. [Ripresa dopo un errore →](docs/USAGE.md#8-se-la-procedura-si-ferma).
 
 </div>
 
