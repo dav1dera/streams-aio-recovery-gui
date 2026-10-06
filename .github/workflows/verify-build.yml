@@ -55,9 +55,17 @@ jobs:
           bash /tmp/recovery-dependencies.sh
           python3 -m venv /tmp/recovery-venv
           /tmp/recovery-venv/bin/python -m pip install --quiet -r remote/requirements-new-vm.txt
-          /tmp/recovery-venv/bin/python -c 'import bcrypt, cryptography, jsonschema, yaml, infisicalsdk'
+          /tmp/recovery-venv/bin/python -c 'import bcrypt, cryptography, jsonschema, yaml; from infisical_sdk import InfisicalSDKClient'
           /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_ubuntu_support.py -v
           bash -n remote/bootstrap.sh
+          python3 - <<'PY'
+          import re, subprocess
+          from pathlib import Path
+          for name in ('docs/PROXMOX.md', 'docs/USAGE.md'):
+              for code in re.findall(r'```bash\n(.*?)```', Path(name).read_text(), re.S):
+                  subprocess.run(['bash', '-n'], input=code, text=True, check=True)
+          print('DOCUMENTED_SHELL_SYNTAX PASS')
+          PY
   windows:
     needs: [safety, ubuntu-compatibility]
     runs-on: windows-latest
