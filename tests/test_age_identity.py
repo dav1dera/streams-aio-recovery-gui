@@ -80,6 +80,11 @@ class NativeAge(unittest.TestCase):
             self.skipTest('Enable RECOVERY_AGE_INTEGRATION for native age tests')
         self.assertTrue(shutil.which('age') and shutil.which('age-keygen'),
                         'Native age integration requires both bootstrap tools')
+        if os.name != 'nt':
+            # Match recover.main's private file creation policy for these
+            # in-process fixtures; keep the mode assertions below active.
+            previous_umask = os.umask(0o077)
+            self.addCleanup(os.umask, previous_umask)
         # Production runs on Linux; Windows fixtures do not emulate POSIX modes.
         if os.name == 'nt':
             def fixture_private(path, outside=()):
