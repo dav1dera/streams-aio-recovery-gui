@@ -26,6 +26,13 @@ TEXT = {
     'NATIVE_AGENT': 'Agent continuo e tunnel SSH permanente',
 }
 ERRORS = {
+    'AGE_IDENTITY_FILE_INVALID': 'Il file della chiave age è troppo grande o non valido.',
+    'AGE_IDENTITY_ENCODING_INVALID': 'Salva la chiave privata originale in un file di testo UTF-8 o UTF-16.',
+    'AGE_PRIVATE_IDENTITY_REQUIRED': 'Serve la chiave privata originale completa AGE-SECRET-KEY-1…, salvata in un file. Non aggiungere il prefisso a un altro codice.',
+    'AGE_PUBLIC_KEY_NOT_IDENTITY': 'Il file contiene una chiave pubblica age1…. Seleziona il file della chiave privata PRIMARY o RECOVERY.',
+    'AGE_IDENTITY_INVALID': 'La chiave privata age non è valida: controlla che la copia sia completa e senza caratteri modificati.',
+    'AGE_NO_MATCHING_RECIPIENT': 'La chiave è valida ma non apre questo backup. Seleziona l’altra identity PRIMARY/RECOVERY originale o una release compatibile.',
+    'AGE_DECRYPTION_FAILED': 'age non ha completato la decifratura. Il materiale e i checkpoint restano conservati.',
     'SSH_AUTH_FAILED': 'Accesso SSH rifiutato. Controlla utente, password o chiave.',
     'SSH_CONNECTION_FAILED': 'La VM non risponde via SSH.',
     'SSH_HOST_KEY_CHANGED': 'La chiave SSH è cambiata: verifica la VM dalla console prima di aggiornare known_hosts.',
@@ -599,6 +606,8 @@ class App(tk.Tk):
                 self.phase_event(stage, status)
                 self.write_log(TEXT[stage] + ' · ' + status + ((' · ' + value['code']) if value.get('code') else ''),
                                'error' if status == 'REFUSED' else ('ok' if status == 'PASS' else None))
+                if status == 'REFUSED' and value.get('code') in ERRORS:
+                    self.write_log(ERRORS[value['code']], 'error')
                 self.status.set(TEXT[stage] + ': ' + status)
                 if stage == 'PREPARED' and status == 'PASS':
                     self.prepared = True
