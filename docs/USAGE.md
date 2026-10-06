@@ -1,8 +1,8 @@
-# Guida completa · Streams AIO Recovery 0.3
+# Guida completa · Streams AIO Recovery 0.3.1
 
 **Ricostruisci Infisical e lo stack Streams AIO su due VM nuove, da Windows.** Inserisci gli accessi SSH, scegli i backup e premi **Ripristina entrambe le VM**: il programma installa Docker, recupera Infisical, prepara lo stack e configura l’Agent continuo.
 
-[Scarica v0.3.0](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.0) · [Backup DR privati](https://github.com/dav1dera/streams-aio-dr/releases) · [Runbook dello stack](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/DISASTER-RECOVERY.md)
+[Scarica v0.3.1](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.1) · [Backup DR privati](https://github.com/dav1dera/streams-aio-dr/releases) · [Runbook dello stack](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/DISASTER-RECOVERY.md)
 
 **Stato:** test Linux, ripristino PostgreSQL 14 con dati sintetici, compilazione e avvio Windows superati. Il collaudo completo con i backup reali sulle due VM resta da eseguire. Servizi avviati e ripristino funzionale sono risultati distinti.
 
@@ -10,7 +10,7 @@
 
 ## Percorso rapido
 
-1. Crea **due VM vuote Ubuntu Server 24.04 amd64**, con SSH e un utente UID/GID 1000 abilitato a sudo.
+1. Crea **due VM vuote Ubuntu Server 26.04 LTS amd64** (anche 24.04 LTS), con SSH e un utente UID/GID 1000 abilitato a sudo. [Istruzioni Proxmox e ISO già caricata](PROXMOX.md).
 2. Prepara sul PC token GitHub di lettura, chiave privata age ed export AIO.
 3. Apri `StreamsAIO-Recovery.exe` e compila le prime tre schede.
 4. Premi **Verifica**, controlla release e commit, conferma le destinazioni nuove e premi **Ripristina entrambe le VM**.
@@ -21,7 +21,7 @@
 | Cosa | Dove / requisito |
 | --- | --- |
 | Programma | `StreamsAIO-Recovery.exe` nella release privata. Python sul PC non serve. |
-| VM stack | Ubuntu Server **24.04 amd64**, vuota, con SSH e sudo. |
+| VM stack | Ubuntu Server **26.04 LTS amd64** oppure **24.04 LTS amd64**, vuota, con SSH e sudo. |
 | VM Infisical | Una seconda VM con gli stessi requisiti. La VM originale Fedora resta intatta. |
 | Accessi SSH | IP/host, porta, utente e password oppure chiave privata SSH per ciascuna VM. |
 | Token GitHub | Fine-grained token con **Contents: Read** per `streams-aio-dr` e `streams-aio-sanitized`. |
@@ -37,6 +37,10 @@ Per la prima prova conserva le VM operative e assegna alle nuove VM IP diversi. 
 Le nuove VM devono raggiungere Internet. Il PC deve raggiungerle entrambe via SSH; per l’Agent continuo anche la VM stack deve raggiungere via SSH la nuova VM Infisical.
 
 ### Preparare le VM
+
+Puoi usare la ISO `ubuntu-26.04.1-live-server-amd64.iso` già caricata su Proxmox. Le point release 26.04.x sono identificate da Ubuntu come `VERSION_ID=26.04`. Scarica **v0.3.1 o successivo**: il vecchio eseguibile v0.3.0 continua a rifiutare 26.04 anche se la guida è aggiornata.
+
+Il programma accetta esplicitamente Ubuntu 26.04 (`resolute`) e 24.04 (`noble`), su amd64. Fedora e altre versioni restano escluse. Il repository Docker segue il sistema installato, come previsto dalle [istruzioni ufficiali Docker](https://docs.docker.com/engine/install/ubuntu/).
 
 Durante l’installazione Ubuntu abilita **OpenSSH server**. Crea gli utenti che userai nel programma, per esempio `pi` sullo stack e `infiscal` su Infisical. Entrambi devono avere UID e GID 1000.
 
@@ -75,7 +79,7 @@ Riferimento: [gestione dei token nella documentazione ufficiale GitHub](https://
 
 ## 2. Scaricare il programma
 
-Dalla [release v0.3.0](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.0), scarica `StreamsAIO-Recovery.exe` e `SHA256SUMS`. Devi essere autenticato su GitHub perché la repository è privata.
+Dalla [release v0.3.1](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.1), scarica `StreamsAIO-Recovery.exe` e `SHA256SUMS`. Devi essere autenticato su GitHub perché la repository è privata.
 
 Apri PowerShell nella cartella del download e verifica:
 
@@ -221,7 +225,9 @@ Salva gli esiti e controlla il codice mostrato. Non cancellare checkpoint o data
 | --- | --- |
 | `SSH_CONNECTION_FAILED` / `SSH_AUTH_FAILED` | IP, porta, servizio SSH, utente, password/chiave e passphrase della VM corretta. |
 | `SSH_HOST_KEY_CHANGED` | Verifica dalla console reinstallazione o riutilizzo dell’IP; la chiave cambiata non viene accettata automaticamente. |
-| `UBUNTU_2404_REQUIRED` / `UBUNTU_AMD64_REQUIRED` | Destinazione Ubuntu Server 24.04 amd64. |
+| `UBUNTU_LTS_VERSION_REQUIRED` / `UBUNTU_AMD64_REQUIRED` | Destinazione Ubuntu Server 26.04 oppure 24.04, amd64. |
+| `UBUNTU_CODENAME_MISMATCH` | Il nome della distribuzione in `/etc/os-release` non corrisponde alla versione supportata. |
+| `UBUNTU_2404_REQUIRED` | Stai usando il vecchio eseguibile: scarica v0.3.1 o successivo per Ubuntu 26.04. |
 | `DEPLOYMENT_UID_GID_REQUIRED` | UID e GID dell’utente devono essere 1000. |
 | `FRESH_DOCKER_HOST_REQUIRED` / `EXISTING_STACK_REFUSED` | VM vuota, oppure revisione dello stato di una ripresa interrotta. |
 | `SEPARATE_RECOVERY_VMS_REQUIRED` | Due macchine distinte: alias diversi della stessa VM non bastano. |
@@ -273,3 +279,5 @@ Compilazione Windows: `./build.ps1`. Test sintetici:
 ```
 
 La [CI del progetto](https://github.com/dav1dera/streams-aio-recovery-gui/actions/workflows/verify-build.yml) include PostgreSQL 14 reale con dati sintetici e l’avvio dell’eseguibile Windows. Non usa secret reali e non contatta le VM operative. `dist/` e `build/` sono esclusi da Git.
+
+La compatibilità Ubuntu viene controllata anche in container Ubuntu **24.04 e 26.04**: selezione del repository, installazione delle dipendenze effettive del bootstrap, Docker/Compose e import delle librerie Python. Questi controlli non sostituiscono il collaudo del ripristino completo sulle due VM: kernel, rete, systemd e applicazioni vengono verificati nella prova reale.
