@@ -59,6 +59,7 @@ jobs:
           /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_ubuntu_support.py -v
           RECOVERY_PERMISSION_INTEGRATION=1 /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_download_permissions.py -v
           RECOVERY_AGE_INTEGRATION=1 /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_age_identity.py -v
+          /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_agent_archive.py -v
           bash -n remote/bootstrap.sh
           python3 - <<'PY'
           import re, subprocess
