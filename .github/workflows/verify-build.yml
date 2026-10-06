@@ -57,6 +57,7 @@ jobs:
           /tmp/recovery-venv/bin/python -m pip install --quiet -r remote/requirements-new-vm.txt
           /tmp/recovery-venv/bin/python -c 'import bcrypt, cryptography, jsonschema, yaml; from infisical_sdk import InfisicalSDKClient'
           /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_ubuntu_support.py -v
+          RECOVERY_PERMISSION_INTEGRATION=1 /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_download_permissions.py -v
           bash -n remote/bootstrap.sh
           python3 - <<'PY'
           import re, subprocess
