@@ -1,13 +1,15 @@
-Supporto Ubuntu Server **26.04 LTS amd64**, comprese le ISO 26.04.x, per entrambe le nuove VM. Ubuntu 24.04 resta supportato.
+Corretto il blocco `DR_DOWNLOAD_FAILED` durante il recupero della release cifrata.
 
-- Il controllo SSH e il bootstrap condividono la stessa policy di compatibilità.
-- Docker viene installato dal repository della VM: `resolute` su 26.04, `noble` su 24.04. Nessun fallback a pacchetti di un’altra distribuzione.
-- GUI e messaggi di verifica mostrano le versioni supportate e la versione effettiva della VM.
-- README e guida aggiornati, con istruzioni Proxmox per la ISO già caricata.
-- Test aggiuntivi per Ubuntu 24.04/26.04, dipendenze del bootstrap e rifiuto di versioni/codename incoerenti.
+Il bootstrap crea la cartella temporanea come root, mentre GitHub CLI scarica come utente della VM. La cartella viene ora assegnata all'utente UID/GID 1000 mantenendo i permessi privati `0700`. La correzione si applica al recupero Infisical e al recupero dello stack.
 
-Scarica **StreamsAIO-Recovery.exe** e **SHA256SUMS**. La v0.3.0 continua a richiedere Ubuntu 24.04: aggiorna l’eseguibile per usare 26.04.
+- Il token resta su stdin SSH e nell'ambiente dei soli processi Git/GitHub CLI; non entra negli argomenti, nei log o in Docker.
+- SHA256, manifest, dimensioni degli asset ed envelope age continuano a essere verificati prima dell'utilizzo del bundle.
+- I checkpoint restano compatibili. I tentativi falliti vengono conservati; la ripresa del download usa una nuova cartella, senza sovrascrivere bundle esistenti.
+- Nuovo codice `DR_DOWNLOAD_DIRECTORY_FAILED` se la cartella privata non può essere preparata.
+- Test di regressione con un vero processo UID 1000 avviato da root su Ubuntu 24.04 e 26.04, oltre ai controlli di rifiuto e ripresa del download.
 
-La pubblicazione richiede test di sicurezza, round trip PostgreSQL 14 con dati sintetici, controlli delle dipendenze su entrambi gli Ubuntu e avvio/navigazione dell’eseguibile Windows. Gli asset vengono riscaricati e verificati prima della pubblicazione nel repository privato.
+**Per riprovare:** chiudi la v0.3.1, scarica **StreamsAIO-Recovery.exe v0.3.2**, mantieni le stesse VM, release DR e commit dello stack, reinserisci gli accessi e premi **Ripristina entrambe le VM**. Se il blocco era al download prima del restore config/database, non serve ricreare le VM. Per il primo collaudo lascia disattivata la riemissione TLS reale.
 
-Il ripristino completo con i backup reali dell'utente su due VM nuove resta da collaudare. Questa è una **prerelease**: i test automatici non attestano quel collaudo.
+La pubblicazione richiede test di sicurezza, round trip PostgreSQL 14 con dati sintetici, prove dei permessi e dipendenze su entrambi gli Ubuntu, avvio/navigazione dell'eseguibile Windows e verifica SHA256 degli asset riscaricati.
+
+Il ripristino completo con i backup reali dell'utente resta da collaudare. Questa è una **prerelease**: i test automatici non attestano quel collaudo.
