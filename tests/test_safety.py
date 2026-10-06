@@ -147,8 +147,11 @@ class Safety(unittest.TestCase):
     def test_failed_age_preserves_stage_never_promotes_partial(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
+            (base/'key').write_bytes(b'AGE-SECRET-KEY-1CANARY\n')
             counter = []
             def fake(args, code):
+                if args[0] == 'age-keygen':
+                    return b''
                 counter.append(args)
                 if len(counter) == 2:
                     raise remote.Refused(code)
