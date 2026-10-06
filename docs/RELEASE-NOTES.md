@@ -1,3 +1,15 @@
+La v0.3.4 corregge `UNSAFE_AGENT_ARCHIVE` nel passo **Secret da Infisical** per il backup Agent creato dal produttore con percorsi assoluti Linux.
+
+I file sotto `/etc/infisical`, `/etc/infisical-agent`, la unit `infisical-agent.service` e i suoi drop-in vengono ricostruiti nella cartella privata del recupero. Nessun percorso originale viene usato come destinazione host. Il lettore continua a rifiutare altri percorsi assoluti, link simbolici e hard link, device, attraversamenti, duplicati anche tra nomi assoluti/relativi e collisioni tra file e cartelle, prima di estrarre.
+
+La suite comprende il layout completo dei sei file del produttore, il recupero Universal Auth e i casi di rifiuto. Il controllo locale sull'archivio cifrato reale ha verificato estrazione e riconoscimento del bootstrap senza pubblicare chiavi o contenuti; la copia temporanea privata e stata rimossa. La CI esegue anche questi test su Ubuntu 24.04 e 26.04 prima di compilare e verificare l'eseguibile Windows.
+
+**Per riprendere:** chiudi il vecchio programma, apri **StreamsAIO-Recovery.exe v0.3.4** e mantieni le stesse VM, release DR, commit dello stack, chiave privata ed export JSON. Premi **Ripristina entrambe le VM**. Infisical gia ripristinato viene controllato e riutilizzato; il passo INPUTS incompleto puo ripartire se gli output non sono ancora installati. Non cancellare checkpoint e non rilanciare gli strumenti di reset usati prima della decifratura. Lascia TLS disattivato nella prima prova. La versione dei checkpoint resta invariata.
+
+Restano incluse le correzioni delle identity Windows, dei permessi di download e del bootstrap PostgreSQL descritte sotto. Il recupero completo dei secret, dell'Agent continuo e delle applicazioni sulle VM resta soggetto al collaudo reale.
+
+## Correzioni precedenti incluse: v0.3.3
+
 La v0.3.3 gestisce i file della chiave age salvati su Windows in UTF-8 con BOM o UTF-16 con BOM, che prima potevano fermarsi su `AGE_DECRYPTION_FAILED` anche con una chiave corretta.
 
 - Legge solo identity X25519 originali complete `AGE-SECRET-KEY-1…`, con commenti, righe vuote e CRLF. Non genera chiavi e non aggiunge prefissi a codici sconosciuti.
