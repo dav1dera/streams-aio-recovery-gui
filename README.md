@@ -6,7 +6,9 @@
 
 SSH, backup cifrati e configurazioni GitHub, in una procedura guidata.
 
-**[Scarica il programma · v0.3.5](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.5)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
+**[Scarica il programma · v0.3.6](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.6)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
+
+**La v0.3.6 corregge il passaggio dalla preparazione all'Agent continuo.** Riconosce il commento aggiunto da OpenSSH alla chiave del tunnel, conserva la chiave già creata e mostra i codici di errore dell'Agent anche quando il comando restituisce metadati. Per riprendere dopo **Preparazione completata · PASS**, conserva le stesse VM, release e commit e premi **Ripristina entrambe le VM** nella nuova GUI.
 
 **Puoi configurare AIOStreams e AIOMetadata dopo il ripristino.** Nel passo **Backup** seleziona **Configurerò AIOStreams e AIOMetadata manualmente**: non servono export AIO o payload sul PC. I servizi partono con database nuovi e configurerai i profili dalle loro interfacce. Infisical, secret, stack e NPM seguono il recupero normale. Il registro indica **DA IMPORTARE MANUALMENTE**, senza dichiarare recuperate le configurazioni AIO.
 
