@@ -53,7 +53,8 @@ def parse_event(line):
     try:
         item = json.loads(line[len('RECOVERY_EVENT '):])
         require(set(item) <= {'stage', 'status', 'code'} and item.get('stage') in STAGES
-                and item.get('status') in ('RUNNING', 'PASS', 'REFUSED')
+                and (item.get('status') in ('RUNNING', 'PASS', 'REFUSED')
+                     or item.get('stage') == 'AIO' and item.get('status') == 'SKIPPED')
                 and ('code' not in item or item['code'] in ERROR_CODES), 'INVALID_EVENT')
         return item
     except Exception:
@@ -227,7 +228,22 @@ class SSH:
         home = (self.check(role=role) if role != 'stack' else self.check())['home']
         area = self.area(home, role)
         remote = area + '/upload-' + uuid.uuid4().hex
-        self.run(['sh', '-c', 'umask 077; mkdir -p -- "$1"; mkdir -- "$2"', '_', area, remote])
+        # The installer already requires sudo. Create only this new staging
+        # directory with explicit ownership, even if the user's shell cannot mkdir.
+        setup = '''import os,sys
+from pathlib import Path
+area,stage=map(Path,sys.argv[1:])
+assert stage.parent==area and stage.name.startswith('upload-')
+assert not any(p.is_symlink() for path in (area,stage) for p in (path,*path.parents))
+os.umask(0o077)
+if not area.exists():
+    area.mkdir(parents=True,mode=0o700)
+    os.chown(area,1000,1000)
+assert area.is_dir() and area.stat().st_uid==1000 and area.stat().st_mode & 0o077==0
+stage.mkdir(mode=0o700)
+os.chown(stage,1000,1000)
+'''
+        self.run(['python3', '-B', '-c', setup, area, remote], sudo=True, timeout=40)
         sftp = self.client.open_sftp()
         try:
             sftp.chmod(area, 0o700)
@@ -238,14 +254,17 @@ class SSH:
             config = {key: request[key] for key in ('github_token', 'public_commit', 'dr_tag',
                       'infisical_address', 'project_id', 'environment')}
             config.update(role=role, ssh_bridge=request.get('ssh_bridge') is True)
+            mode = request.get('aio_mode', 'import')
+            require(mode in ('import', 'manual'), 'INVALID_AIO_RECOVERY_MODE')
+            config['aio_mode'] = mode
             for name in ('age_identity', 'client_id_file', 'client_secret_file', 'aio_payload'):
-                if request.get(name):
+                if request.get(name) and not (mode == 'manual' and name == 'aio_payload'):
                     destination = remote + '/' + name
                     self._put(sftp, Path(request[name]), destination)
                     config[name] = destination
             for name in ('aiostreams_exports', 'aiometadata_exports'):
                 config[name] = []
-                for index, file in enumerate(request.get(name, [])):
+                for index, file in enumerate([] if mode == 'manual' else request.get(name, [])):
                     destination = remote + '/' + name + '-' + str(index) + '.json'
                     self._put(sftp, Path(file), destination)
                     config[name].append(destination)

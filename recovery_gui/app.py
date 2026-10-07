@@ -45,6 +45,7 @@ ERRORS = {
     'HTTPS_INFISICAL_ORIGIN_REQUIRED': 'Serve l’endpoint HTTPS Infisical raggiungibile dalla VM.',
     'INFISICAL_SNAPSHOT_FAILED': 'Autenticazione o lettura Infisical fallita. Nessun valore è stato registrato.',
     'AIO_IMPORT_REFUSED': 'L’importatore AIO ha rifiutato gli input o la compatibilità. Nessun database esistente viene sovrascritto.',
+    'MANUAL_AIO_IMPORT_CONFLICT': 'Sono già presenti database o un’importazione AIO. Il programma li conserva e ferma il cambio di modalità.',
     'AIO_EXPORT_PROFILE_AMBIGUOUS': 'Il profilo dell’export non è identificabile. Seleziona un payload DR esplicito.',
     'APPLICATION_START_REFUSED': 'Avvio o verifica applicativa fallita. Conserva lo stato e controlla la VM.',
     'REMOTE_OPERATION_FAILED': 'La VM ha fermato il comando. Se presente, il codice del passo è indicato nel registro.',
@@ -277,6 +278,10 @@ class App(tk.Tk):
                   style='Muted.TLabel', wraplength=790).pack(anchor='w', pady=2)
 
     def _backups(self, tab):
+        self.aio_manual = tk.BooleanVar(value=False)
+        manual = self.card(tab, 'Configurazioni AIO', 'Puoi importarle dopo l’avvio dalle interfacce delle applicazioni.')
+        ttk.Checkbutton(manual, text='Configurerò AIOStreams e AIOMetadata manualmente',
+                        variable=self.aio_manual).grid(row=0, column=0, sticky='w')
         age = self.card(tab, 'La chiave del tuo backup', 'Usa la identity privata PRIMARY o RECOVERY custodita fuori da Git.')
         self.entry(age, 'Chiave age PRIMARY o RECOVERY', 'age_identity', 0, browse=True)
         aio = self.card(tab, 'Le configurazioni AIO', 'Gli export JSON non sono inclusi nelle release DR automatiche.')
@@ -388,7 +393,7 @@ class App(tk.Tk):
         if name:
             self.active_phase = name
             done = stage in ('INFISICAL_SERVER', 'PREPARED', 'NATIVE_AGENT', 'STARTED', 'TLS') and status=='PASS'
-            label = 'Fermato' if status=='REFUSED' else 'Completato' if done else 'In corso'
+            label = 'Configurazioni AIO manuali' if stage=='AIO' and status=='SKIPPED' else 'Fermato' if status=='REFUSED' else 'Completato' if done else 'In corso'
             color = '#bf4250' if status=='REFUSED' else '#148569' if done else '#4963db'
             self.phase_labels[name].configure(text=label, foreground=color)
 
@@ -489,13 +494,14 @@ class App(tk.Tk):
 
     def one_click(self):
         data = self.snapshot()
+        data['aio_mode'] = 'manual' if self.aio_manual.get() else 'import'
         try:
             self.host(data).validate()
             self.infisical_host(data).validate()
             require(self.lab.get(), 'FRESH_VM_CONFIRMATION_REQUIRED')
             require(bool(SHA.fullmatch(data['public_commit'])) and bool(TAG.fullmatch(data['dr_tag'])), 'SELECT_GITHUB_RECOVERY_POINT')
             require(Path(data['age_identity']).is_file(), 'AGE_IDENTITY_FILE_REQUIRED')
-            require(bool(data.get('aio_payload') or (self.files['aiostreams_exports'] and self.files['aiometadata_exports'])),
+            require(data['aio_mode'] == 'manual' or bool(data.get('aio_payload') or (self.files['aiostreams_exports'] and self.files['aiometadata_exports'])),
                     'AIO_EXPORTS_OR_PAYLOAD_REQUIRED')
             require(bool(data['client_id_file']) == bool(data['client_secret_file']), 'BOTH_UNIVERSAL_AUTH_FILES_REQUIRED')
         except Failure as error:
@@ -521,6 +527,8 @@ class App(tk.Tk):
                 server = SSH(self.infisical_host(data), self.key_dialog, self.cancelled)
                 restore_all(stack, server, data, lambda item:self.events.put(('stage',item)), tls)
                 self.events.put(('message','Infisical recuperato, segreti letti dalla nuova VM e stack avviato. Ora verifica gli accessi applicativi.'))
+                if data['aio_mode'] == 'manual':
+                    self.events.put(('message', 'AIOStreams e AIOMetadata avviati vuoti: configura o importa i profili dalle loro interfacce.'))
             finally:
                 stack.close()
                 if server is not None:
@@ -529,12 +537,13 @@ class App(tk.Tk):
 
     def prepare(self):
         data = self.snapshot()
+        data['aio_mode'] = 'manual' if self.aio_manual.get() else 'import'
         try:
             self.host(data).validate()
             require(self.lab.get(), 'FRESH_VM_CONFIRMATION_REQUIRED')
             require(bool(SHA.fullmatch(data['public_commit'])) and bool(TAG.fullmatch(data['dr_tag'])), 'SELECT_GITHUB_RECOVERY_POINT')
             require(Path(data['age_identity']).is_file(), 'AGE_IDENTITY_FILE_REQUIRED')
-            require(bool(data.get('aio_payload') or (self.files['aiostreams_exports'] and self.files['aiometadata_exports'])),
+            require(data['aio_mode'] == 'manual' or bool(data.get('aio_payload') or (self.files['aiostreams_exports'] and self.files['aiometadata_exports'])),
                     'AIO_EXPORTS_OR_PAYLOAD_REQUIRED')
             require(bool(data['client_id_file']) == bool(data['client_secret_file']), 'BOTH_UNIVERSAL_AUTH_FILES_REQUIRED')
         except Failure as error:
@@ -604,11 +613,12 @@ class App(tk.Tk):
                 self.safe_report.append(value)
                 stage, status = value['stage'], value['status']
                 self.phase_event(stage, status)
-                self.write_log(TEXT[stage] + ' · ' + status + ((' · ' + value['code']) if value.get('code') else ''),
+                display_status = 'DA IMPORTARE MANUALMENTE' if status == 'SKIPPED' else status
+                self.write_log(TEXT[stage] + ' · ' + display_status + ((' · ' + value['code']) if value.get('code') else ''),
                                'error' if status == 'REFUSED' else ('ok' if status == 'PASS' else None))
                 if status == 'REFUSED' and value.get('code') in ERRORS:
                     self.write_log(ERRORS[value['code']], 'error')
-                self.status.set(TEXT[stage] + ': ' + status)
+                self.status.set(TEXT[stage] + ': ' + display_status)
                 if stage == 'PREPARED' and status == 'PASS':
                     self.prepared = True
                     self.write_log('Ora puoi avviare i servizi. Il ripristino funzionale e l’Agent continuo sono ancora da verificare.')
