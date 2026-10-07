@@ -1,3 +1,15 @@
+La v0.3.5 aggiunge la configurazione manuale di AIOStreams e AIOMetadata. Nel passo **02 · Backup** seleziona **Configurerò AIOStreams e AIOMetadata manualmente**: puoi lasciare vuoti gli export AIO e `PRIVATE_DR_PAYLOAD`. La chiave privata age resta necessaria.
+
+Infisical, secret, stack, NPM e Agent seguono il recupero esistente. Le applicazioni AIO partono con database nuovi e le configuri o importi dalle loro interfacce dopo l'avvio. Il registro indica **DA IMPORTARE MANUALMENTE**, senza attestare un'importazione riuscita. I controlli sugli altri componenti restano attivi.
+
+**Per riprendere da un errore AIO:** chiudi il vecchio programma, apri **v0.3.5**, conserva le stesse VM, release DR, commit e chiave age, seleziona la modalità manuale e premi **Ripristina entrambe le VM**. I passi completati vengono verificati e riutilizzati. Il cambio di modalità viene rifiutato se esistono già database AIO o un'importazione parziale: nessun database viene cancellato.
+
+Gli upload privati usano nuove cartelle con proprietario e permessi verificati tramite sudo. La suite verifica il preflight originale del commit dello stack: soltanto l'importazione AIO esplicitamente rinviata può essere saltata; NPM, file sorgente, prerequisiti e altri blocchi mantengono il loro effetto. La compilazione Windows include un controllo dell'opzione manuale nella GUI.
+
+Il collaudo completo sulle VM con i backup reali resta da completare. Dopo l'avvio verifica le due applicazioni e i loro collegamenti. [Guida completa](https://github.com/dav1dera/streams-aio-recovery-gui/blob/main/docs/USAGE.md).
+
+## Correzioni precedenti incluse: v0.3.4
+
 La v0.3.4 corregge `UNSAFE_AGENT_ARCHIVE` nel passo **Secret da Infisical** per il backup Agent creato dal produttore con percorsi assoluti Linux.
 
 I file sotto `/etc/infisical`, `/etc/infisical-agent`, la unit `infisical-agent.service` e i suoi drop-in vengono ricostruiti nella cartella privata del recupero. Nessun percorso originale viene usato come destinazione host. Il lettore continua a rifiutare altri percorsi assoluti, link simbolici e hard link, device, attraversamenti, duplicati anche tra nomi assoluti/relativi e collisioni tra file e cartelle, prima di estrarre.
