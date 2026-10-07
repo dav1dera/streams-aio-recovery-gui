@@ -4,6 +4,7 @@ All subprocess output and private configuration stay on the replacement host.
 The desktop forwards the restored API over two authenticated SSH connections.
 """
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -23,6 +24,40 @@ PROFILE_PATH = Path(__file__).with_name('infisical-deployment.json')
 CONFIG_NAMES = {'docker-compose.prod.yml', '.env'}
 DIGEST = re.compile(r'[a-zA-Z0-9._:/-]+@sha256:[0-9a-f]{64}\Z')
 IDENTIFIER = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]{0,62}\Z')
+# These are the two shipped byte representations of the same reviewed profile
+# (LF in the source archive/local build, CRLF in the Windows CI checkout).
+# A legacy checkpoint can migrate only to that exact semantic profile.
+LEGACY_PROFILE_HASHES = {
+    '91a2952ba4c2b974fffe63c4aff1e265df70302909f7ed1522d9ac2bc46c44ed',
+    '410fd23eeaf793240713472a7430c68b57302ee0668de9efd0ed47d86173af88',
+}
+LEGACY_PROFILE_CANONICAL_SHA256 = '1b3e2e99aecc38f4a49d6ccb30ce39305950d6816d32026191a4bb0a9f1ffb71'
+
+
+def deployment_fingerprint(deployment):
+    """Bind the actual database/image settings, independent of JSON layout."""
+    normalized = copy.deepcopy(deployment)
+    normalized['services'] = sorted(normalized['services'])
+    raw = json.dumps(normalized, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def validate_profile_checkpoint(state, state_path, deployment):
+    current = deployment_fingerprint(deployment)
+    if 'deployment_profile_canonical_sha256' in state:
+        require(state['deployment_profile_canonical_sha256'] == current,
+                'INFISICAL_DEPLOYMENT_PROFILE_CHANGED')
+        return
+    legacy = state.get('deployment_profile_sha256')
+    require(isinstance(legacy, str) and legacy in LEGACY_PROFILE_HASHES
+            and current == LEGACY_PROFILE_CANONICAL_SHA256,
+            'INFISICAL_DEPLOYMENT_PROFILE_CHANGED')
+    # Keep the original raw fingerprint and all completed phases for audit.
+    # Atomic save happens only after proving compatibility, without touching
+    # installed configuration, database, containers or restore materials.
+    updated = dict(state, deployment_profile_canonical_sha256=current)
+    save(state_path, updated)
+    state.update(updated)
 
 
 def profile(path=PROFILE_PATH):
@@ -180,9 +215,9 @@ class InfisicalRecovery(Recovery):
         if not self.state.get('postgres_bootstrap_user'):
             self.state['postgres_bootstrap_user'] = 'recovery_' + secrets.token_hex(12)
             self.state['deployment_profile_sha256'] = digest(PROFILE_PATH)
+            self.state['deployment_profile_canonical_sha256'] = deployment_fingerprint(self.deployment)
             save(self.state_path, self.state)
-        require(self.state.get('deployment_profile_sha256') == digest(PROFILE_PATH),
-                'INFISICAL_DEPLOYMENT_PROFILE_CHANGED')
+        validate_profile_checkpoint(self.state, self.state_path, self.deployment)
 
     def clones(self):
         from recover import PRIVATE, SHA

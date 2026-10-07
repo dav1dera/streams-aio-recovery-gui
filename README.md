@@ -6,7 +6,9 @@
 
 SSH, backup cifrati e configurazioni GitHub, in una procedura guidata.
 
-**[Scarica il programma · v0.3.7](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.7)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
+**[Scarica il programma · v0.3.8](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.8)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
+
+**La v0.3.8 corregge la ripresa da `INFISICAL_DEPLOYMENT_PROFILE_CHANGED`.** Le vecchie build Windows e quella locale avevano lo stesso profilo JSON con terminatori di riga diversi. Il programma ora confronta le impostazioni effettive e riconosce i due formati già distribuiti. Mantiene database, chiavi e passi completati; un cambio reale di immagini, database o ruolo PostgreSQL resta bloccato. Riprendi sulle stesse VM con la stessa release DR, commit e chiave age.
 
 **La v0.3.7 corregge i permessi nel passaggio all’Agent.** Il renderer dello stack crea gli env privati come `640`; l’Agent li prende in carico come `600`. La GUI verifica che siano file generati dal piano e dalla ricevuta di questo recupero, poi ne restringe i permessi e assegna il proprietario dell’Agent. Le chiavi private mantengono il requisito `600`; file estranei, link e permessi più aperti restano rifiutati. Riprendi sulle stesse VM con la stessa release, commit e chiave age.
 

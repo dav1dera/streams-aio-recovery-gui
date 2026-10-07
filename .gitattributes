@@ -1,4 +1,1 @@
-* text=auto
-*.sh text eol=lf
-*.py text eol=lf
-*.md text eol=lf
+remote/infisical-deployment.json text eol=lf

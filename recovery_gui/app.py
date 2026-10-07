@@ -48,6 +48,7 @@ ERRORS = {
     'PRIVATE_INPUT_FILE_REQUIRED': 'Un file privato richiesto manca nel materiale recuperato.',
     'HTTPS_INFISICAL_ORIGIN_REQUIRED': 'Serve l’endpoint HTTPS Infisical raggiungibile dalla VM.',
     'INFISICAL_SNAPSHOT_FAILED': 'Autenticazione o lettura Infisical fallita. Nessun valore è stato registrato.',
+    'INFISICAL_DEPLOYMENT_PROFILE_CHANGED': 'Il profilo Infisical non corrisponde al checkpoint. La versione aggiornata riconosce i vecchi formati LF/CRLF; un cambio reale di immagini o database resta bloccato. Conserva checkpoint e dati.',
     'AIO_IMPORT_REFUSED': 'L’importatore AIO ha rifiutato gli input o la compatibilità. Nessun database esistente viene sovrascritto.',
     'MANUAL_AIO_IMPORT_CONFLICT': 'Sono già presenti database o un’importazione AIO. Il programma li conserva e ferma il cambio di modalità.',
     'AIO_EXPORT_PROFILE_AMBIGUOUS': 'Il profilo dell’export non è identificabile. Seleziona un payload DR esplicito.',
