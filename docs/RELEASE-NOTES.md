@@ -1,3 +1,13 @@
+La v0.3.7 corregge `PRIVATE_INPUT_REQUIRES_MODE_600` nel passaggio dai file dello stack all’Agent continuo. Il renderer del commit pubblico scelto crea gli env come `root:deployment-group 0640`; il programma precedente li sottoponeva al controllo `0600` delle chiavi private prima di poterli assegnare all’Agent.
+
+Il programma verifica il piano pubblico, la ricevuta di render e il percorso dentro `.secrets`. Solo un env dichiarato e già generato può passare da `0640` a `0600`, con proprietario dell’Agent. Prima di modificare i permessi verifica l’intero insieme: proprietari o gruppi estranei, accesso pubblico, scrittura di gruppo, bit speciali e link restano rifiutati. I contenuti rimangono identici. Il controllo delle chiavi private resta invariato.
+
+**Per riprendere:** apri **v0.3.7**, mantieni le stesse VM, release DR, commit e chiave age, scegli AIO manuale e Agent attivo, lascia TLS disattivato per la prova e premi **Ripristina entrambe le VM**. La preparazione completata e il tunnel già configurato vengono riutilizzati. Non cancellare checkpoint o database.
+
+I test POSIX eseguono il vero renderer del commit fissato, verificano il passaggio `0640 → 0600` e la seconda esecuzione, conservano byte e ricevuta e controllano i rifiuti prima di qualsiasi modifica. Restano inclusi i test del tunnel, degli archivi e dell’importazione AIO manuale. Agent e servizi sulle VM reali restano da collaudare dopo la ripresa.
+
+## Correzioni precedenti incluse: v0.3.6
+
 La v0.3.6 corregge il blocco dell'Agent subito dopo **Preparazione completata · PASS**. OpenSSH restituisce la chiave pubblica insieme al commento `streams-aio-recovery-tunnel`; la versione precedente rifiutava quel formato e mostrava soltanto `REMOTE_OPERATION_FAILED`.
 
 Il programma ora separa il commento dal materiale della chiave e verifica tipo Ed25519, codifica e struttura prima di inviarla alla seconda VM. La chiave privata già creata viene riutilizzata. Il registro mostra l'inizio del passo Agent e conserva il codice pubblico dell'errore anche nei comandi che restituiscono metadati; stderr, chiavi e output arbitrari restano fuori dai report.

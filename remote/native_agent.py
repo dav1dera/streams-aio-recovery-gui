@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shlex
 import socket
+import stat
 import tarfile
 import tempfile
 import time
@@ -161,6 +162,40 @@ def tunnel_unit(home,user,host,port,api_port):
             '[Install]\nWantedBy=multi-user.target\n').encode()
 
 
+def prepare_private_outputs(rows, root, plan, uid=1000, gid=1000):
+    """Hand rendered env files to the Agent without relaxing private inputs."""
+    root = safe_path(root)
+    marker = json.loads(private_file(root/'.generated/dr-render-complete.json').read_bytes())
+    require(marker.get('root') == str(root) and isinstance(marker.get('outputs'), list)
+            and all(isinstance(path, str) for path in marker['outputs']), 'AGENT_RENDER_MARKER_INVALID')
+    generated = (set(plan['env_files']) | set(plan.get('service_folder_exports', {}))) & set(marker['outputs'])
+    outputs = []
+    # Validate the complete set before altering any owner or permission.
+    for row in rows:
+        output = safe_path(Path(row['destination-path']))
+        require(output.is_relative_to(root/'.secrets'), 'AGENT_PRIVATE_OUTPUT_INVALID')
+        if output.exists():
+            info = output.stat()
+            mode = stat.S_IMODE(info.st_mode)
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, 'AGENT_PRIVATE_OUTPUT_INVALID')
+            require(info.st_uid in (0, uid), 'AGENT_PRIVATE_OUTPUT_PERMISSIONS_INVALID')
+            if mode == 0o640:
+                # The pinned renderer creates these specific env outputs as
+                # root:deployment-group 0640. The running Agent owns them 0600.
+                require(output.relative_to(root).as_posix() in generated and info.st_gid == gid,
+                        'AGENT_PRIVATE_OUTPUT_PERMISSIONS_INVALID')
+            else:
+                require(mode == 0o600, 'AGENT_PRIVATE_OUTPUT_PERMISSIONS_INVALID')
+        outputs.append(output)
+    for output in outputs:
+        output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chown(output.parent, uid, gid)
+        if output.exists():
+            output.chmod(0o600)
+            os.chown(output, uid, gid)
+            private_file(output)
+
+
 def install(home,root,config):
     import pwd
     import yaml
@@ -216,13 +251,7 @@ def install(home,root,config):
     # Refuse an incomplete native mapping instead of losing secret updates.
     require(set(str(root/path) for path in plan['env_files']) <= {row['destination-path'] for row in rows},
             'AGENT_ENV_MAPPING_INCOMPLETE')
-    for row in rows:
-        output = safe_path(Path(row['destination-path']))
-        output.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
-        os.chown(output.parent,1000,1000)
-        if output.exists():
-            private_file(output)
-            os.chown(output,1000,1000)
+    prepare_private_outputs(rows, root, plan)
     for name in ('client_id','client_secret'):
         write_owned(area/name,private_file(recovered[name]).read_bytes())
     agent = dict(infisical={'address':'http://127.0.0.1:'+str(LOCAL_PORT)},
