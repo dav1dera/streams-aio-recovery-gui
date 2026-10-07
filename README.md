@@ -44,9 +44,9 @@ Nella schermata **VM e GitHub** mostrata sopra inserisci l’accesso alla nuova 
 
 Il caricamento propone la release più recente e il commit pubblico corrente. Sono aggiornati separatamente: per recuperare uno stato precedente scegli il commit completo coerente con quella release.
 
-### 02 · Seleziona chiave ed export dal PC
+### 02 · Seleziona la chiave e scegli come configurare AIO
 
-In **Backup**, usa **Sfoglia…** per la chiave privata age e **Scegli JSON…** per i due gruppi di export. Puoi selezionare più profili. Un payload DR completo sostituisce entrambi i gruppi.
+In **Backup**, usa **Sfoglia…** per la chiave privata age. Per configurare AIO dopo l'avvio, seleziona **Configurerò AIOStreams e AIOMetadata manualmente** e lascia vuoti gli export e il payload. Per importarli automaticamente, usa **Scegli JSON…** per i due gruppi di export; un payload DR completo sostituisce entrambi i gruppi.
 
 ![Schermata reale: chiave age ed export AIO](docs/screenshots/02-backup.jpg)
 
@@ -93,7 +93,7 @@ flowchart LR
 | **Infisical** | Configurazione, chiavi applicative, ruoli e database originali. Redis riparte vuoto. |
 | **Stack** | Compose, immagini e configurazioni dal commit pubblico scelto; secret dal nuovo Infisical. |
 | **Agent** | CLI **0.43.137**, mapping privati e tunnel SSH permanente tra le VM. Continua anche dopo aver chiuso Windows. |
-| **NPM e applicazioni AIO** | Database NPM dalla release cifrata; configurazioni AIO dai file scelti sul PC. TLS è opzionale. |
+| **NPM e applicazioni AIO** | Database NPM dalla release cifrata. AIO parte vuoto nella modalità manuale; nell'importazione automatica usa i file scelti sul PC. TLS è opzionale. |
 | **Altri dati runtime** | Ripartono secondo il piano di inizializzazione. Il DR ricostruisce il sistema senza clonare ogni database. |
 
 Il programma rifiuta destinazioni già occupate e mantiene i controlli SSH, SHA256 e di compatibilità. Le credenziali non vengono salvate sul PC; il materiale privato trasferito resta fuori dai clone Git sulle VM.
