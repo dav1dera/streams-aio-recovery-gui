@@ -9,6 +9,7 @@ import contextlib
 import datetime
 import hashlib
 import importlib.util
+import io
 import json
 import logging
 import os
@@ -42,7 +43,8 @@ EVENTS = {'CLONES', 'DOWNLOAD', 'DECRYPT', 'INITIALIZE', 'INPUTS', 'RENDER',
 
 
 def event(stage, status='PASS', code=None):
-    require(stage in EVENTS and status in ('RUNNING', 'PASS', 'REFUSED'), 'INVALID_EVENT')
+    require(stage in EVENTS and (status in ('RUNNING', 'PASS', 'REFUSED')
+            or stage == 'AIO' and status == 'SKIPPED'), 'INVALID_EVENT')
     data = dict(stage=stage, status=status)
     if code:
         require(CODE.fullmatch(code), 'INVALID_ERROR_CODE')
@@ -366,6 +368,42 @@ def logical_payload(registry, streams, metadata):
     return result
 
 
+def stack_preflight(root, state):
+    """Keep the pinned preflight; only explicit manual AIO may defer its import."""
+    if state.get('aio_recovery') != 'MANUAL_PENDING':
+        command([sys.executable, '-B', root / 'scripts/dr.py', 'preflight',
+                 '--target', root, '--mode', 'fresh'], 'FRESH_RENDERER_REFUSED', cwd=root)
+        return
+    require(state.get('aio_mode') == 'manual' and state.get('target') == str(root)
+            and state.get('machine_id') == Path('/etc/machine-id').read_text().strip()
+            and 'NPM' in state.get('completed', []) and 'AIO' in state.get('completed', []),
+            'MANUAL_AIO_CHECKPOINT_REQUIRED')
+    require(not safe_path(root / '.generated/aio-import-complete.json').exists(),
+            'MANUAL_AIO_IMPORT_CONFLICT')
+    dr = load_module(root / 'scripts/dr.py', 'manual_aio_preflight')
+    manifest = json.loads(safe_path(root / 'config/dr-manifest.yaml').read_bytes())
+    allowed = {'aio PRIVATE_DR_PAYLOAD_IMPORT_REQUIRED'}
+    # A mixed unit (e.g. AIO and NPM) must still pass the ordinary check.
+    for unit in manifest['state_units']:
+        services = set(unit.get('services', []))
+        if services and services <= {'aiostreams', 'aiometadata'} and unit.get('classification') in (
+                'REQUIRED_IDENTITY_STATE', 'REQUIRED_USER_STATE'):
+            allowed.add(','.join(unit['services']) + ' ' + unit['id']
+                        + ':REQUIRED_USER_CONFIGURATION_NOT_RECONSTRUCTED')
+    captured = io.StringIO()
+    args = argparse.Namespace(target=str(root), mode='fresh', synthetic=False)
+    try:
+        with contextlib.redirect_stdout(captured):
+            dr.preflight(args)
+    except dr.Refused as error:
+        failures = captured.getvalue().splitlines()
+        require(str(error) == 'DR_PREFLIGHT_BLOCKED' and bool(failures)
+                and all(line in allowed for line in failures), 'FRESH_RENDERER_REFUSED')
+    else:
+        # The pinned preflight must report the missing AIO import marker.
+        raise Refused('MANUAL_AIO_IMPORT_CONFLICT')
+
+
 class Recovery:
     def __init__(self, args):
         self.args = args
@@ -413,7 +451,7 @@ class Recovery:
 
     def step(self, name, action):
         if name in self.state['completed']:
-            event(name)
+            event(name, 'SKIPPED' if name == 'AIO' and self.state.get('aio_recovery') == 'MANUAL_PENDING' else 'PASS')
             return
         event(name, 'RUNNING')
         self.state['in_progress'] = name
@@ -422,7 +460,7 @@ class Recovery:
         self.state['completed'].append(name)
         self.state['in_progress'] = None
         save(self.state_path, self.state)
-        event(name)
+        event(name, 'SKIPPED' if name == 'AIO' and self.state.get('aio_recovery') == 'MANUAL_PENDING' else 'PASS')
 
     def auth(self):
         global GITHUB_TOKEN
@@ -541,6 +579,16 @@ class Recovery:
         self.run_script('npm-dr.py', 'prepare', root=True)
 
     def aio(self):
+        mode = self.config.get('aio_mode', 'import')
+        require(mode in ('import', 'manual'), 'INVALID_AIO_RECOVERY_MODE')
+        if mode == 'manual':
+            require(not any(safe_path(self.root / f'data/{service}/data/db.sqlite').exists()
+                            for service in ('aiostreams', 'aiometadata'))
+                    and not safe_path(self.root / '.generated/aio-import-complete.json').exists(),
+                    'MANUAL_AIO_IMPORT_CONFLICT')
+            self.state['aio_mode'] = 'manual'
+            self.state['aio_recovery'] = 'MANUAL_PENDING'
+            return
         if self.config.get('aio_payload'):
             path = private_file(self.config['aio_payload'], (self.root, self.manager, self.tooling))
         else:
@@ -598,7 +646,8 @@ class Recovery:
         self.step('NPM', self.npm)
         self.step('AIO', self.aio)
         # Always repeat real checks. A checkpoint alone never means ready.
-        self.run_script('dr.py', 'preflight', '--mode', 'fresh', root=True)
+        stack_preflight(self.root, self.state)
+        event('PREFLIGHT')
         command(['docker', 'compose', '--profile', 'all', 'config', '--quiet'], 'COMPOSE_VALIDATION_FAILED', cwd=self.root)
         self.state['preparation'] = 'PASS'
         self.state['application_recovery'] = 'NOT_VERIFIED'

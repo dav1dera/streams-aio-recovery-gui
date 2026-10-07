@@ -56,7 +56,10 @@ def start(root, home, tls=False):
     if state.get('target') != str(root) or state.get('machine_id') != Path('/etc/machine-id').read_text().strip() or state.get('preparation') != 'PASS':
         raise ValueError('PREPARED_REPLACEMENT_REQUIRED')
     # Do not let Compose adopt other workloads, same-name containers or old volumes.
-    call([sys.executable, '-B', root / 'scripts/dr.py', 'preflight', '--target', root, '--mode', 'fresh'], root)
+    checks_spec = importlib.util.spec_from_file_location('startup_recovery_checks', Path(__file__).with_name('recover.py'))
+    checks = importlib.util.module_from_spec(checks_spec)
+    checks_spec.loader.exec_module(checks)
+    checks.stack_preflight(root, state)
     compose = json.loads(call(['docker', 'compose', '--profile', 'all', 'config', '--format', 'json'], root))
     ids = call(['docker', 'ps', '-aq'], root).split()
     containers = json.loads(call(['docker', 'inspect', *[i.decode() for i in ids]], root)) if ids else []
