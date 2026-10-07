@@ -1,3 +1,13 @@
+La v0.3.8 corregge `INFISICAL_DEPLOYMENT_PROFILE_CHANGED` nella ripresa dopo un aggiornamento del programma. Le vecchie build Windows contenevano il profilo JSON con terminatori CRLF, mentre la build locale usava LF: impostazioni identiche producevano impronte SHA256 diverse.
+
+Il checkpoint ora lega database, ruolo PostgreSQL e immagini fissate a un’impronta canonica delle impostazioni. I due formati storici vengono riconosciuti soltanto se corrispondono al profilo già verificato: il checkpoint conserva l’impronta precedente e tutti i passi riusciti. Cambi reali al profilo e impronte sconosciute restano rifiutati. Il file del profilo viene inoltre distribuito sempre con righe LF. I controlli sui file installati, sul runtime, sulla release e sul materiale privato restano invariati.
+
+**Per riprendere:** chiudi il vecchio programma e apri **v0.3.8**. Conserva VM, release DR, commit e chiave age; scegli AIO manuale, Agent attivo e TLS disattivato per la prova. Premi **Ripristina entrambe le VM**. Non cancellare checkpoint o database: il restore Infisical già completato viene riutilizzato.
+
+I test riproducono entrambe le impronte dei programmi distribuiti, la ripresa senza rieseguire config/database, la seconda esecuzione senza riscritture e il rifiuto di cambi effettivi prima di modificare il checkpoint. Restano incluse le correzioni dell’Agent della v0.3.7. Il collaudo completo sulle VM reali resta da completare.
+
+## Correzioni precedenti incluse: v0.3.7
+
 La v0.3.7 corregge `PRIVATE_INPUT_REQUIRES_MODE_600` nel passaggio dai file dello stack all’Agent continuo. Il renderer del commit pubblico scelto crea gli env come `root:deployment-group 0640`; il programma precedente li sottoponeva al controllo `0600` delle chiavi private prima di poterli assegnare all’Agent.
 
 Il programma verifica il piano pubblico, la ricevuta di render e il percorso dentro `.secrets`. Solo un env dichiarato e già generato può passare da `0640` a `0600`, con proprietario dell’Agent. Prima di modificare i permessi verifica l’intero insieme: proprietari o gruppi estranei, accesso pubblico, scrittura di gruppo, bit speciali e link restano rifiutati. I contenuti rimangono identici. Il controllo delle chiavi private resta invariato.
