@@ -1,3 +1,13 @@
+La v0.3.6 corregge il blocco dell'Agent subito dopo **Preparazione completata · PASS**. OpenSSH restituisce la chiave pubblica insieme al commento `streams-aio-recovery-tunnel`; la versione precedente rifiutava quel formato e mostrava soltanto `REMOTE_OPERATION_FAILED`.
+
+Il programma ora separa il commento dal materiale della chiave e verifica tipo Ed25519, codifica e struttura prima di inviarla alla seconda VM. La chiave privata già creata viene riutilizzata. Il registro mostra l'inizio del passo Agent e conserva il codice pubblico dell'errore anche nei comandi che restituiscono metadati; stderr, chiavi e output arbitrari restano fuori dai report.
+
+**Per riprendere:** chiudi il vecchio programma e apri **v0.3.6**. Conserva le stesse VM, release DR, commit e chiave age. Mantieni la configurazione AIO manuale, l'Agent attivo e TLS disattivato nella prova, poi premi **Ripristina entrambe le VM**. Infisical, NPM e gli altri passi completati vengono verificati e riutilizzati.
+
+I test includono una vera chiave OpenSSH con commento e la sua riutilizzazione su Linux, chiavi malformate, errori frammentati sul trasporto SSH e rifiuto di output estranei ai codici pubblici. Il collaudo completo sulle VM reali resta da completare.
+
+## Correzioni precedenti incluse: v0.3.5
+
 La v0.3.5 aggiunge la configurazione manuale di AIOStreams e AIOMetadata. Nel passo **02 · Backup** seleziona **Configurerò AIOStreams e AIOMetadata manualmente**: puoi lasciare vuoti gli export AIO e `PRIVATE_DR_PAYLOAD`. La chiave privata age resta necessaria.
 
 Infisical, secret, stack, NPM e Agent seguono il recupero esistente. Le applicazioni AIO partono con database nuovi e le configuri o importi dalle loro interfacce dopo l'avvio. Il registro indica **DA IMPORTARE MANUALMENTE**, senza attestare un'importazione riuscita. I controlli sugli altri componenti restano attivi.
