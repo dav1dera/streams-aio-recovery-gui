@@ -1,8 +1,8 @@
-# Guida completa · Streams AIO Recovery 0.3.3
+# Guida completa · Streams AIO Recovery 0.3.5
 
 **Ricostruisci Infisical e lo stack Streams AIO su due VM nuove, da Windows.** Inserisci gli accessi SSH, scegli i backup e premi **Ripristina entrambe le VM**: il programma installa Docker, recupera Infisical, prepara lo stack e configura l’Agent continuo.
 
-[Scarica v0.3.4](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.4) · [Backup DR privati](https://github.com/dav1dera/streams-aio-dr/releases) · [Runbook dello stack](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/DISASTER-RECOVERY.md)
+[Scarica v0.3.5](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.5) · [Backup DR privati](https://github.com/dav1dera/streams-aio-dr/releases) · [Runbook dello stack](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/DISASTER-RECOVERY.md)
 
 **Stato:** test Linux, ripristino PostgreSQL 14 con dati sintetici, compilazione e avvio Windows superati. Il collaudo completo con i backup reali sulle due VM resta da eseguire. Servizi avviati e ripristino funzionale sono risultati distinti.
 
@@ -11,7 +11,7 @@
 ## Percorso rapido
 
 1. Crea **due VM vuote Ubuntu Server 26.04 LTS amd64** (anche 24.04 LTS), con SSH e un utente UID/GID 1000 abilitato a sudo. [Istruzioni Proxmox e ISO già caricata](PROXMOX.md).
-2. Prepara sul PC token GitHub di lettura, chiave privata age ed export AIO.
+2. Prepara sul PC token GitHub di lettura e chiave privata age. Gli export AIO servono solo se scegli di importarli automaticamente.
 3. Apri `StreamsAIO-Recovery.exe` e compila le prime tre schede.
 4. Premi **Verifica**, controlla release e commit, conferma le destinazioni nuove e premi **Ripristina entrambe le VM**.
 5. Al termine verifica login, Agent, applicazioni e collegamenti. Riattiva le automazioni di produzione soltanto dopo il collaudo e il passaggio alle nuove VM.
@@ -27,10 +27,32 @@
 | Token GitHub | Fine-grained token con **Contents: Read** per `streams-aio-dr` e `streams-aio-sanitized`. |
 | Release DR | Una release `dr-…` pubblicata nel repository privato dei backup. |
 | Chiave age | File identity privato PRIMARY o RECOVERY, custodito fuori da Git e dalle VM. |
-| Input AIO | Export JSON logici **AIOStreams 2.35.3** e **AIOMetadata 3.3.0**, oppure `PRIVATE_DR_PAYLOAD` completo. |
+| Input AIO | Facoltativi nella modalità manuale. Per l'importazione automatica: export JSON logici **AIOStreams 2.35.3** e **AIOMetadata 3.3.0**, oppure `PRIVATE_DR_PAYLOAD` completo. |
 | Binding AIO | Registro `/dr/AIO_PROFILE_BINDINGS` presente nell’Infisical recuperato. |
 
 Gli export AIO **non sono inclusi nei backup DR automatici**: conservali separatamente in modo privato e recuperabile. Esportali attraverso le applicazioni; per profili multipli e payload segui il [contratto AIO di export/import](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/AIO-EXPORT-IMPORT.md). SQLite grezzi e archivi non sostituiscono questi JSON.
+
+### Configurare AIO manualmente
+
+Nel passo **02 · Backup** seleziona **Configurerò AIOStreams e AIOMetadata manualmente**.
+Puoi lasciare vuoti i selettori dei due export e di PRIVATE_DR_PAYLOAD: il programma non li trasferisce.
+La chiave age resta necessaria per recuperare Infisical e NPM.
+
+Il ripristino recupera Infisical, legge i secret, prepara stack e permessi, ripristina NPM
+e avvia anche AIOStreams e AIOMetadata. I loro database vengono inizializzati dalle
+applicazioni, senza importare profili. Il registro mostra **Configurazioni AIO · DA
+IMPORTARE MANUALMENTE**. I controlli di NPM, sorgenti, prerequisiti e altri servizi
+rimangono attivi; non viene creato un falso certificato di importazione AIO riuscita.
+
+Dopo l'avvio apri le interfacce delle due applicazioni e crea o importa le configurazioni.
+Controlla password, link degli addon e collegamenti esterni. Nella modalità manuale
+non è garantita la conservazione automatica di UUID, alias o sessioni dei vecchi profili.
+
+Puoi scegliere questa modalità anche per riprendere da un errore AIO, se il vecchio
+tentativo non ha creato database AIO. Conserva le stesse VM, release e commit.
+Database AIO già presenti o un'importazione parziale fermano il cambio di modalità:
+non vengono cancellati o sovrascritti. Usa **v0.3.5**; l'eseguibile precedente continua
+a richiedere l'importazione automatica.
 
 Per la prima prova conserva le VM operative e assegna alle nuove VM IP diversi. Il programma rifiuta host con container, volumi o deployment preesistenti, anche se spenti. Non è un programma per aggiornare uno stack già operativo.
 
