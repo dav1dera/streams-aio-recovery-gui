@@ -25,6 +25,9 @@ if __name__ == '__main__':
         app = App()
         app.update()
         assert len(app.book.tabs()) == 5 and not app.lab.get() and not app.tls.get() and app.native_agent.get()
+        assert not app.aio_manual.get()
+        app.aio_manual.set(True)
+        assert app.aio_manual.get()
         for tab in range(5):
             app.nav[tab].invoke()
             app.update()

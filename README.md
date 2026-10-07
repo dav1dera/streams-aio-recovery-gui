@@ -6,7 +6,9 @@
 
 SSH, backup cifrati e configurazioni GitHub, in una procedura guidata.
 
-**[Scarica il programma · v0.3.4](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.4)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
+**[Scarica il programma · v0.3.5](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.5)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
+
+**Puoi configurare AIOStreams e AIOMetadata dopo il ripristino.** Nel passo **Backup** seleziona **Configurerò AIOStreams e AIOMetadata manualmente**: non servono export AIO o payload sul PC. I servizi partono con database nuovi e configurerai i profili dalle loro interfacce. Infisical, secret, stack e NPM seguono il recupero normale. Il registro indica **DA IMPORTARE MANUALMENTE**, senza dichiarare recuperate le configurazioni AIO.
 
 **La v0.3.4 legge il backup Agent prodotto con percorsi assoluti Linux.** Ricostruisce i percorsi conosciuti dentro una cartella privata, senza scrivere nei percorsi originali di `/etc`; link, attraversamenti e duplicati restano rifiutati. Per riprendere da `UNSAFE_AGENT_ARCHIVE`, conserva le stesse VM, release DR, commit e file privati: Infisical gia recuperato viene verificato e riutilizzato. Restano incluse le correzioni delle chiavi Windows, del download e di PostgreSQL. [Ripresa dopo un errore →](docs/USAGE.md#8-se-la-procedura-si-ferma).
 
@@ -26,7 +28,7 @@ Le schermate mostrano il programma reale con i campi vuoti. I test automatici us
 | **Accessi SSH** | IP, utente e password oppure file della chiave SSH per entrambe le VM. |
 | **Token GitHub di lettura** | Fine-grained token: **Contents: Read** per `streams-aio-dr` e `streams-aio-sanitized`. |
 | **Chiave privata age** | Identity PRIMARY o RECOVERY custodita fuori da Git. La chiave pubblica `age1…` non basta. |
-| **Configurazioni AIO** | Export JSON di **AIOStreams 2.35.3** e **AIOMetadata 3.3.0**, oppure un `PRIVATE_DR_PAYLOAD` completo. I binding dei profili devono essere presenti in Infisical. |
+| **Configurazioni AIO** | Facoltative se scegli la configurazione manuale. Per l’importazione automatica: export JSON di **AIOStreams 2.35.3** e **AIOMetadata 3.3.0**, oppure un `PRIVATE_DR_PAYLOAD` completo. I binding dei profili devono essere presenti in Infisical. |
 
 Gli export AIO vanno conservati separatamente: **le release DR automatiche non li includono**. Docker lo installa il programma. [Preparazione VM, token e verifica del download →](docs/USAGE.md#1-cosa-preparare)
 
