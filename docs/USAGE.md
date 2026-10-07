@@ -1,8 +1,10 @@
-# Guida completa · Streams AIO Recovery 0.3.6
+# Guida completa · Streams AIO Recovery 0.3.7
 
 **Ricostruisci Infisical e lo stack Streams AIO su due VM nuove, da Windows.** Inserisci gli accessi SSH, scegli i backup e premi **Ripristina entrambe le VM**: il programma installa Docker, recupera Infisical, prepara lo stack e configura l’Agent continuo.
 
-[Scarica v0.3.6](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.6) · [Backup DR privati](https://github.com/dav1dera/streams-aio-dr/releases) · [Runbook dello stack](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/DISASTER-RECOVERY.md)
+[Scarica v0.3.7](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.7) · [Backup DR privati](https://github.com/dav1dera/streams-aio-dr/releases) · [Runbook dello stack](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/DISASTER-RECOVERY.md)
+
+**PRIVATE_INPUT_REQUIRES_MODE_600 nel passo Agent:** chiudi il vecchio programma e apri **v0.3.7**. Conserva le stesse VM, release DR, commit e chiave age. Mantieni AIO manuale, Agent attivo e TLS disattivato per la prova, poi premi **Ripristina entrambe le VM**. La GUI riconosce i soli env `640` creati dal renderer di questo stack e li restringe a `600` prima dell’Agent; chiavi, contenuti e passi completati vengono conservati. Non occorre un chmod ricorsivo o un reset.
 
 **Arresto dopo Preparazione completata · PASS:** usa v0.3.6 per correggere il riconoscimento della chiave SSH del tunnel. Conserva le stesse VM, release DR, commit, chiave age e scelta AIO manuale, lascia Agent attivo e TLS disattivato nella prova, quindi premi **Ripristina entrambe le VM**. I passi riusciti vengono verificati e riutilizzati; la chiave del tunnel già generata viene conservata. Il registro indica l'inizio del passo Agent e mostra il suo errore preciso in caso di arresto.
 
