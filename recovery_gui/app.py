@@ -41,6 +41,7 @@ ERRORS = {
     'INCOMPLETE_STEP_REQUIRES_REVIEW': 'Un passo è rimasto incompleto. Conserva i dati e controlla il checkpoint prima di riprendere.',
     'AGENT_BOOTSTRAP_CONFIG_NOT_UNIQUE': 'Bootstrap Agent non riconosciuto. Usa i campi avanzati per i file Universal Auth.',
     'AGENT_CREDENTIAL_PATH_UNSUPPORTED': 'Il backup Agent usa percorsi non supportati. Fornisci i due file Universal Auth.',
+    'AGENT_TUNNEL_PUBLIC_KEY_INVALID': 'Il controllo della chiave SSH del tunnel è fallito. Conserva i checkpoint e usa la versione aggiornata della GUI.',
     'PRIVATE_INPUT_FILE_REQUIRED': 'Un file privato richiesto manca nel materiale recuperato.',
     'HTTPS_INFISICAL_ORIGIN_REQUIRED': 'Serve l’endpoint HTTPS Infisical raggiungibile dalla VM.',
     'INFISICAL_SNAPSHOT_FAILED': 'Autenticazione o lettura Infisical fallita. Nessun valore è stato registrato.',

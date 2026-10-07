@@ -61,6 +61,21 @@ def parse_event(line):
         return None
 
 
+def remote_failure_code(raw):
+    """Only fixed public codes may cross the metadata-command boundary."""
+    try:
+        item = json.loads(raw)
+        if isinstance(item, dict) and isinstance(item.get('error'), str) and item['error'] in ERROR_CODES:
+            return item['error']
+    except (ValueError, UnicodeDecodeError):
+        pass
+    for line in raw.decode('utf-8', 'replace').splitlines():
+        item = parse_event(line.strip())
+        if item and item['stage'] == 'REFUSED' and item['status'] == 'REFUSED' and item.get('code'):
+            return item['code']
+    return 'REMOTE_OPERATION_FAILED'
+
+
 @dataclass
 class Host:
     address: str
@@ -168,6 +183,7 @@ class SSH:
         stdin.flush()
         channel.shutdown_write()
         collected, pending, deadline = bytearray(), bytearray(), time.monotonic() + timeout
+        failure = None
         while True:
             if self.cancelled.is_set() or time.monotonic() > deadline:
                 channel.close()
@@ -181,6 +197,8 @@ class SSH:
                         raw, _, pending = pending.partition(b'\n')
                         item = parse_event(raw.decode('utf-8', 'replace').strip())
                         if item:
+                            if item['stage'] == 'REFUSED' and item.get('code') and failure is None:
+                                failure = item['code']
                             callback(item)
                     if len(pending) > 65536:
                         pending.clear()
@@ -194,15 +212,7 @@ class SSH:
             time.sleep(0.04)
         status = channel.recv_exit_status()
         if status != 0:
-            code = 'REMOTE_OPERATION_FAILED'
-            if not callback:
-                try:
-                    item = json.loads(collected)
-                    if isinstance(item, dict) and item.get('error') in ERROR_CODES:
-                        code = item['error']
-                except (ValueError, UnicodeDecodeError):
-                    pass
-            raise Failure(code)
+            raise Failure(failure or remote_failure_code(bytes(collected)))
         return bytes(collected)
 
     def check(self, fresh=True, role='stack'):
@@ -432,6 +442,7 @@ def restore_all(stack, server, request, callback, tls=False):
     with APIBridge(stack, server, server.restored_port()) as address:
         stack.prepare(dict(request, role='stack', infisical_address=address, ssh_bridge=True), callback)
     if request.get('native_agent',True):
+        callback(dict(stage='NATIVE_AGENT',status='RUNNING'))
         public=json.loads(stack.native('key',first['home'],first['home']+'/streams-aio'))['public_key']
         server.native('authorize',second['home'],'/opt/infisical',callback=callback,
                       metadata={'public_key':public})
