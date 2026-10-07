@@ -1,4 +1,5 @@
 """Install the pinned native Agent and an SSH-only API path on replacement VMs."""
+import base64
 import copy
 import json
 import os
@@ -40,6 +41,24 @@ def write_owned(path, raw, uid=1000, gid=1000):
     os.chown(path,uid,gid)
 
 
+def public_key_text(output):
+    """Canonical OpenSSH key without its optional, non-key comment."""
+    require(isinstance(output, str) and '\n' not in output.strip()
+            and '\r' not in output.strip(), 'AGENT_TUNNEL_PUBLIC_KEY_INVALID')
+    fields = output.strip().split(None, 2)
+    require(len(fields) >= 2 and fields[0] == 'ssh-ed25519'
+            and re.fullmatch(r'[A-Za-z0-9+/=]+', fields[1]),
+            'AGENT_TUNNEL_PUBLIC_KEY_INVALID')
+    try:
+        blob = base64.b64decode(fields[1], validate=True)
+    except ValueError:
+        raise Refused('AGENT_TUNNEL_PUBLIC_KEY_INVALID') from None
+    prefix = b'\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20'
+    require(len(blob) == len(prefix) + 32 and blob.startswith(prefix),
+            'AGENT_TUNNEL_PUBLIC_KEY_INVALID')
+    return ' '.join(fields[:2])
+
+
 def key(home, target):
     checkpoint(home,target)
     destination = safe_path(home/'agent-tunnel-key')
@@ -49,8 +68,8 @@ def key(home, target):
                  '-f',destination], 'AGENT_TUNNEL_KEY_CREATION_FAILED')
     private_file(destination)
     os.chown(destination,1000,1000)
-    public = command(['ssh-keygen','-y','-f',destination], 'AGENT_TUNNEL_KEY_CREATION_FAILED').decode().strip()
-    require(re.fullmatch(r'ssh-ed25519 [A-Za-z0-9+/=]+',public), 'AGENT_TUNNEL_PUBLIC_KEY_INVALID')
+    public = public_key_text(command(['ssh-keygen','-y','-f',destination],
+                                     'AGENT_TUNNEL_KEY_CREATION_FAILED').decode())
     # Public key only, consumed by the desktop without entering UI logs.
     print(json.dumps({'public_key':public}))
 

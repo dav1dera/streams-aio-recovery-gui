@@ -1,8 +1,10 @@
-# Guida completa · Streams AIO Recovery 0.3.5
+# Guida completa · Streams AIO Recovery 0.3.6
 
 **Ricostruisci Infisical e lo stack Streams AIO su due VM nuove, da Windows.** Inserisci gli accessi SSH, scegli i backup e premi **Ripristina entrambe le VM**: il programma installa Docker, recupera Infisical, prepara lo stack e configura l’Agent continuo.
 
-[Scarica v0.3.5](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.5) · [Backup DR privati](https://github.com/dav1dera/streams-aio-dr/releases) · [Runbook dello stack](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/DISASTER-RECOVERY.md)
+[Scarica v0.3.6](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.6) · [Backup DR privati](https://github.com/dav1dera/streams-aio-dr/releases) · [Runbook dello stack](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/DISASTER-RECOVERY.md)
+
+**Arresto dopo Preparazione completata · PASS:** usa v0.3.6 per correggere il riconoscimento della chiave SSH del tunnel. Conserva le stesse VM, release DR, commit, chiave age e scelta AIO manuale, lascia Agent attivo e TLS disattivato nella prova, quindi premi **Ripristina entrambe le VM**. I passi riusciti vengono verificati e riutilizzati; la chiave del tunnel già generata viene conservata. Il registro indica l'inizio del passo Agent e mostra il suo errore preciso in caso di arresto.
 
 **Stato:** test Linux, ripristino PostgreSQL 14 con dati sintetici, compilazione e avvio Windows superati. Il collaudo completo con i backup reali sulle due VM resta da eseguire. Servizi avviati e ripristino funzionale sono risultati distinti.
 
