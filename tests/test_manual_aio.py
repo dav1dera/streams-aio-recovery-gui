@@ -166,6 +166,22 @@ class ManualAIO(unittest.TestCase):
         self.assertNotIn('/not-selected-payload', sources)
         self.assertTrue(job.run.call_args.kwargs['sudo'])
 
+    def test_companion_is_uploaded_only_to_the_stack(self):
+        for role in ('stack', 'infisical'):
+            with self.subTest(role=role):
+                job = SSH.__new__(SSH)
+                job.check = MagicMock(return_value={'home': '/home/test'})
+                job.run, job.client = MagicMock(), MagicMock()
+                request = {name: 'synthetic' for name in ('github_token', 'public_commit', 'dr_tag',
+                           'infisical_address', 'project_id', 'environment')}
+                request.update(role=role, aio_mode='manual', supplemental_inputs='/private/companion.age')
+                with patch.object(SSH, '_put') as transfer:
+                    directory, raw = job.upload(request)
+                config = json.loads(raw)
+                sources = [Path(call.args[1]).as_posix() for call in transfer.call_args_list]
+                self.assertEqual('/private/companion.age' in sources, role == 'stack')
+                self.assertEqual('supplemental_inputs' in config, role == 'stack')
+
 
 if __name__ == '__main__':
     unittest.main()

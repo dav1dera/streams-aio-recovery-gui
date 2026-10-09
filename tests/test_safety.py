@@ -148,6 +148,9 @@ class Safety(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             (base/'key').write_bytes(b'AGE-SECRET-KEY-1CANARY\n')
+            (base/'bundle').mkdir()
+            for name in remote.BUNDLE_FILES:
+                (base/'bundle'/name).write_bytes(b'encrypted-fixture')
             counter = []
             def fake(args, code):
                 if args[0] == 'age-keygen':

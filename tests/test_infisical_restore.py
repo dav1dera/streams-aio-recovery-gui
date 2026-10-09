@@ -223,6 +223,37 @@ class InfisicalRestoreSafety(unittest.TestCase):
             self.assertEqual(parse_event('RECOVERY_EVENT '+json.dumps(dict(stage=stage,status='PASS')))['stage'],stage)
         self.assertIn('INFISICAL_RESTORE_FAILED',ERROR_CODES)
 
+    def test_schema2_server_resume_checks_request_pin_without_stack_clone(self):
+        job=server.InfisicalRecovery.__new__(server.InfisicalRecovery)
+        pin='b'*40
+        job.config={'dr_tag':'dr-20261009T043000Z','public_commit':pin,'aio_mode':'snapshot'}
+        job.state={'completed':['DOWNLOAD'],'tag':job.config['dr_tag']}
+        job.manager,job.bundle=Path('/manager'),Path('/ciphertext')
+        with (patch.object(server,'validate_bundle',return_value={'schema':2,'stack_commit':pin}),
+              patch.object(recover,'encrypted_assets',return_value={recover.AIO_ASSET:recover.AIO_PLAINTEXT})):
+            job.validate_server_resume()
+        for manifest in ({'schema':2,'stack_commit':'c'*40},{'schema':1}):
+            with (patch.object(server,'validate_bundle',return_value=manifest),
+                  patch.object(recover,'encrypted_assets',return_value={recover.AIO_ASSET:recover.AIO_PLAINTEXT})):
+                with self.assertRaises(server.Refused):job.validate_server_resume()
+
+    def test_server_resume_requires_complete_private_hash_inventory(self):
+        job=server.InfisicalRecovery.__new__(server.InfisicalRecovery)
+        job.state={'completed':['DECRYPT']}
+        job.bundle,job.private=Path('/ciphertext'),Path('/private')
+        assets={'agent.age':'agent.tar.gz',recover.AIO_ASSET:recover.AIO_PLAINTEXT}
+        for hashes in (None,{},[],{'agent.tar.gz':'a'*64},
+                       {'agent.tar.gz':'a'*64,recover.AIO_PLAINTEXT:'INVALID'}):
+            job.state['private_hashes']=hashes
+            with patch.object(recover,'encrypted_assets',return_value=assets):
+                with self.assertRaisesRegex(server.Refused,'PRIVATE_MATERIAL_CHANGED'):
+                    job.validate_server_resume()
+        job.state['private_hashes']={name:'a'*64 for name in assets.values()}
+        with (patch.object(recover,'encrypted_assets',return_value=assets),
+              patch.object(server,'private_file',side_effect=lambda p:p),
+              patch.object(server,'digest',return_value='a'*64)):
+            job.validate_server_resume()
+
     def test_github_token_is_not_in_docker_process_environment(self):
         with (patch.object(recover,'GITHUB_TOKEN','token-canary'),
              patch.dict(recover.os.environ,{'GH_TOKEN':'inherited-canary','GITHUB_TOKEN':'inherited-canary'}),
