@@ -357,10 +357,22 @@ class InfisicalRecovery(Recovery):
                     'RECOVERY_TREE_MODIFIED')
         if 'DOWNLOAD' in self.state['completed']:
             require(self.config['dr_tag'] == self.state['tag'], 'RECOVERY_TAG_CHANGED')
-            validate_bundle(self.manager, self.bundle, self.state['tag'])
+            manifest = validate_bundle(self.manager, self.bundle, self.state['tag'])
+            if manifest.get('schema') == 2:
+                require(manifest.get('stack_commit') == self.config['public_commit'], 'DR_STACK_COMMIT_MISMATCH')
+            if self.config.get('aio_mode') == 'snapshot':
+                from recover import AIO_ASSET, encrypted_assets
+                require(manifest.get('schema') == 2 and AIO_ASSET in encrypted_assets(self.bundle),
+                        'AIO_SNAPSHOT_BACKUP_REQUIRED')
         if 'DECRYPT' in self.state['completed']:
+            from recover import encrypted_assets
+            hashes = self.state.get('private_hashes')
+            expected = set(encrypted_assets(self.bundle).values())
+            require(isinstance(hashes, dict) and set(hashes) == expected
+                    and all(isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha)
+                            for sha in hashes.values()), 'PRIVATE_MATERIAL_CHANGED')
             require(all(digest(private_file(self.private / name)) == sha
-                        for name, sha in self.state['private_hashes'].items()), 'PRIVATE_MATERIAL_CHANGED')
+                        for name, sha in hashes.items()), 'PRIVATE_MATERIAL_CHANGED')
         if 'INFISICAL_CONFIG' in self.state['completed']:
             require(all(digest(private_file(self.root / name)) == sha
                     for name, sha in self.state['installed_config_hashes'].items()),
