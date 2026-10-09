@@ -3,6 +3,7 @@
 Only synthetic files are written; no network or credentials are used.
 """
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,18 @@ TAG = 'dr-20261004T023903Z'
 META = dict(tag_name=TAG, draft=False, assets=[
     dict(name=name, state='uploaded', size=7) for name in sorted(recovery.BUNDLE_FILES)])
 ROOT_POSIX = os.name == 'posix' and os.geteuid() == 0
+
+
+def verified_manifest(manager, stage, tag):
+    """Return the same schema-1 contract as a successful real verifier."""
+    assert tag == TAG
+    return dict(schema=1, managed_by='streams-aio-dr-managed:v1',
+                repository='dav1dera/streams-aio-dr', run=TAG[3:],
+                local_snapshot=TAG[3:], infisical_snapshot=TAG[3:],
+                source_commit='a' * 40, encryption='age', artifacts={
+                    name: dict(sha256=hashlib.sha256((stage / name).read_bytes()).hexdigest(),
+                               size=(stage / name).stat().st_size)
+                    for name in recovery.ASSETS})
 
 
 def fixture(home):
@@ -69,7 +82,7 @@ class DownloadGuards(unittest.TestCase):
             self.assertNotIn('tag', job.state)
             with patch.object(recovery.os, 'geteuid', return_value=1000, create=True), \
                  patch.object(recovery, 'command', side_effect=self.fake_command), \
-                 patch.object(recovery, 'validate_bundle') as verify:
+                 patch.object(recovery, 'validate_bundle', side_effect=verified_manifest) as verify:
                 job.download()
             self.assertTrue(old_stage.is_dir())
             self.assertNotEqual(verify.call_args.args[1], old_stage)
@@ -86,7 +99,7 @@ class DownloadGuards(unittest.TestCase):
             job = fixture(Path(folder))
             with patch.object(recovery.os, 'geteuid', return_value=1000, create=True), \
                  patch.object(recovery, 'command', side_effect=wrong_size), \
-                 patch.object(recovery, 'validate_bundle') as verify:
+                 patch.object(recovery, 'validate_bundle', side_effect=verified_manifest) as verify:
                 with self.assertRaisesRegex(recovery.Refused, '^DOWNLOADED_ASSET_SIZE_MISMATCH$'):
                     job.download()
             verify.assert_called_once()
@@ -146,6 +159,7 @@ class RealDownloadPermissions(unittest.TestCase):
                     info = (stage / asset).stat()
                     self.assertEqual(info.st_uid, 1000)
                     self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+                return verified_manifest(manager, stage, tag)
             with patch.object(recovery, 'command', side_effect=command), \
                  patch.object(recovery, 'validate_bundle', side_effect=verified) as verify:
                 job.download()

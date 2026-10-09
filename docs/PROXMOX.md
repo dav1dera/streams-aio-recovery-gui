@@ -1,17 +1,19 @@
-# Due VM di prova su Proxmox · Ubuntu 26.04
+# Due VM di prova su Proxmox · Recovery 0.4.0 preview
 
-Usa `ubuntu-26.04.1-live-server-amd64.iso` già caricata nello storage `local`. La GUI Recovery **v0.3.1 o successiva** accetta Ubuntu 26.04.x e 24.04.x amd64. Non serve scaricare Ubuntu 24.04 per questa prova.
+La nuova dashboard accetta **Ubuntu Server 26.04 o 24.04 amd64**, con i rispettivi codename `resolute` e `noble`. Per la prova puoi usare `ubuntu-26.04.1-live-server-amd64.iso` già caricata nello storage `local`; se il nome effettivo è diverso, sostituiscilo nei comandi sotto.
+
+Questa guida prepara due destinazioni pulite. Il recupero completo della 0.4.0, compresi AIO automatico, domini e CometNet pubblico, deve ancora essere collaudato sulle VM. Creare le VM non attesta l’equivalenza funzionale allo stack originale.
 
 ## 1. Creare le VM
 
 Puoi usare **Create VM** due volte dalla GUI Proxmox. Seleziona la ISO Ubuntu caricata, un disco su uno storage per immagini VM, controller **VirtIO SCSI**, rete **VirtIO** e il bridge della LAN. Usa nuovi VM ID assegnati da Proxmox.
 
-| VM nuova | Nome suggerito | Risorse iniziali per la prova | Utente Ubuntu |
+| VM nuova | Nome suggerito | Risorse iniziali per la prova | Esempio di utente Ubuntu |
 | --- | --- | --- | --- |
-| Stack | `streams-aio-dr-test` | 4 core, 8 GiB RAM, 80 GiB disco | `pi` |
-| Infisical | `infisical-dr-test` | 2 core, 4 GiB RAM, 32 GiB disco | `infiscal` |
+| Stack | `streams-aio-dr-test` | 4 core, 8 GiB RAM, 80 GiB disco | `test` |
+| Infisical | `infisical-dr-test` | 2 core, 4 GiB RAM, 32 GiB disco | `test2` |
 
-Sono allocazioni iniziali, da adattare alle risorse libere del nodo e al carico delle applicazioni. Controlla RAM e disco prima di avviare entrambe.
+Sono allocazioni iniziali, da adattare alle risorse libere del nodo e al carico delle applicazioni. Controlla RAM e disco prima di avviare entrambe. I nomi utente sono esempi: il nuovo profilo operativo usa l’identità SSH effettiva, con UID/GID 1000.
 
 Se preferisci la shell, apri **pve → Shell**. Controlla storage e bridge:
 
@@ -62,7 +64,7 @@ Apri **Console** per ciascuna nuova VM e completa l’installazione Ubuntu Serve
 
 1. Usa hostname distinti, per esempio quelli della tabella.
 2. Assegna IP diversi dalle VM operative; DHCP va bene per la prova, purché il PC raggiunga entrambe via SSH.
-3. Crea `pi` sullo stack e `infiscal` su Infisical come primi utenti: devono avere UID/GID 1000 e sudo.
+3. Crea il primo utente su ciascuna VM con UID/GID 1000 e sudo. Puoi usare `test` e `test2`, oppure altri nomi. Il recupero usa la home effettiva dell’utente SSH; non è legato a `/home/test` o a una release storica.
 4. Seleziona **Install OpenSSH server**. Usa password SSH oppure una chiave già gestita sul PC.
 5. Completa l’installazione sul disco della VM. Docker e gli strumenti di ripristino li installa il programma.
 6. Al riavvio imposta **Hardware → CD/DVD → Do not use any media** e **Options → Boot Order** con il disco `scsi0` per primo.
@@ -74,7 +76,7 @@ qm set ID_STACK --boot order=scsi0
 qm set ID_INFISICAL --boot order=scsi0
 ```
 
-## 3. Verificare e aprire Recovery
+## 3. Verificare le destinazioni
 
 Sulla console di ciascuna VM nuova:
 
@@ -88,8 +90,33 @@ hostname -I
 systemctl is-active ssh.service --no-pager
 ```
 
-Per la ISO indicata il sistema riporta `26.04 / resolute`; UID e GID devono essere `1000`, SSH `active`. Annota i due IP.
+Per la ISO indicata il sistema riporta `26.04 / resolute`; con Ubuntu 24.04 riporta `24.04 / noble`. UID e GID devono essere `1000`, SSH `active`. Annota i due IP e verifica che siano diversi dagli originali e tra loro.
 
-Apri l’eseguibile **v0.3.4**, inserisci accessi, token GitHub, chiave age ed export AIO, premi **Verifica** e segui la [guida completa](USAGE.md#3-compilare-il-programma-esempio-completo). La VM stack deve raggiungere la VM Infisical via SSH e le nuove VM devono avere accesso a Internet.
+Il PC Windows deve raggiungere entrambe via SSH. La VM stack deve raggiungere la VM Infisical via SSH; le nuove VM devono avere accesso a Internet per scaricare repository, immagini e dipendenze.
 
-Per la prima prova lascia TLS e automazioni di pubblicazione disattivati. Al termine verifica login Infisical, Agent/tunnel, NPM e le applicazioni prima di passare alle nuove VM.
+Prima del primo recupero puoi creare uno snapshot Proxmox delle due installazioni pulite. Per ripetere una simulazione da zero torna a quegli snapshot o crea nuove VM di test. **Crea da zero** nella GUI non cancella container, volumi o dati estranei e non reinstalla Ubuntu.
+
+## 4. Preparare il percorso dei domini
+
+La 0.4.0 usa NPM, HTTPS e il dominio reale di CometNet. La raggiungibilità SSH delle VM non dimostra che i domini puntino alla destinazione corretta.
+
+| Modalità della GUI | Preparazione della rete |
+| --- | --- |
+| **Prova affiancata alle VM operative** | Mantieni operative le VM originali e prepara un instradamento DNS del test verso le nuove VM. Deve essere visibile anche a Comet attraverso Gluetun/VPN. DDNS, Watchtower e Deunhealth restano esclusi. |
+| **Recupero della produzione** | Prepara DNS e port forwarding del router verso le VM sostitutive. I controller pubblici vengono attivati per ultimi, dopo i controlli dei domini. |
+
+Modificare soltanto il file hosts di Windows non cambia la risoluzione dei contenitori o della VPN. Un certificato valido servito dal server originale non basta: il recupero deve raggiungere il nuovo NPM dal percorso usato da CometNet. La prova P2P da Internet va verificata separatamente.
+
+La GUI non configura Proxmox, DNS o router. Il campo **Indirizzo IP previsto per i domini** registra la destinazione scelta; non crea il relativo instradamento. Per una prova affiancata non spostare il traffico pubblico della produzione solo per superare un controllo.
+
+## 5. Aprire Recovery
+
+Apri la **0.4.0 preview** e seleziona **Accessi e backup**:
+
+1. Inserisci i due accessi SSH e il token GitHub con Contents: Read sui repository dello stack e DR.
+2. Premi **Carica backup** e scegli una release completa schema 2, con snapshot AIO nativo. Il commit associato viene letto dal manifest.
+3. Seleziona il file della identity age privata PRIMARY o RECOVERY compatibile con quel backup. Non serve caricare export JSON AIO nel percorso normale.
+4. Scegli la modalità di recupero e l’indirizzo previsto per i domini.
+5. Torna a **Panoramica**: premi **Crea da zero** per le due VM pulite, oppure **Rileva e continua** per un tentativo compatibile già presente.
+
+Segui la [guida completa](USAGE.md). Prima di considerare terminata la prova, verifica login, profili AIO, Agent/tunnel, NPM/HTTPS, OAuth e CometNet, poi riavvia entrambe le VM e ripeti i controlli. [Elenco del collaudo finale](USAGE.md#collaudo-finale).

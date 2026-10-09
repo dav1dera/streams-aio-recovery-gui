@@ -196,6 +196,98 @@ def prepare_private_outputs(rows, root, plan, uid=1000, gid=1000):
             private_file(output)
 
 
+def install_cli(archive, library=Path('/usr/local/lib/streams-aio-recovery'), uid=0, gid=0):
+    """Only the checksum-verified public executable gets traversable parents."""
+    require(digest(archive) == CLI_SHA256, 'AGENT_CLI_SHA256_MISMATCH')
+    library = safe_path(library)
+    binary = library / 'infisical'
+    with tarfile.open(archive, 'r:gz') as tar:
+        members = [m for m in tar.getmembers() if m.name == 'infisical']
+        require(len(members) == 1 and members[0].isfile()
+                and 0 < members[0].size < 256 * 1024**2, 'AGENT_CLI_ARCHIVE_INVALID')
+        with tar.extractfile(members[0]) as source:
+            raw = source.read()
+    if library.exists():
+        info = library.stat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == uid and info.st_gid == gid
+                and stat.S_IMODE(info.st_mode) in (0o700, 0o755)
+                and set(library.iterdir()) <= {binary}, 'AGENT_CLI_LIBRARY_REFUSED')
+    if binary.exists():
+        info = binary.stat()
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                and info.st_uid == uid and info.st_gid == gid and binary.read_bytes() == raw,
+                'AGENT_EXISTING_INSTALLATION_CHANGED')
+    library.mkdir(mode=0o755, exist_ok=True)
+    # mkdir(mode=0755) alone becomes 0700 under the installer's umask 0077.
+    # Do not apply this to the private recovery venv or credential directories.
+    library.chmod(0o755)
+    write_owned(binary, raw, uid, gid)
+    binary.chmod(0o755)
+    return binary
+
+
+def first_render(agent, area, binary, user, uid=1000, gid=1000, dry_run=False):
+    """Require every fresh output before replacing any prepared env file.
+
+    The pinned CLI can report a write error while exiting successfully, so an
+    exit code and the existence of old destination files are insufficient.
+    """
+    with tempfile.TemporaryDirectory(prefix='first-render-', dir=area) as name:
+        directory = safe_path(Path(name))
+        os.chown(directory, uid, gid)
+        isolated = copy.deepcopy(agent)
+        isolated['infisical']['exit-after-auth'] = True
+        paths = []
+        for index, row in enumerate(isolated['templates']):
+            path = directory / ('output-' + str(index))
+            row['destination-path'] = str(path)
+            paths.append(path)
+        config = directory / 'config.json'
+        save(config, isolated)
+        os.chown(config, uid, gid)
+        # sudo may reset the caller's umask to 0022. The pinned CLI creates
+        # template files with os.Create (0666 before umask), so set 0077
+        # after changing user. Positional arguments preserve literal paths.
+        command(['sudo', '-H', '-u', user, '--', '/bin/sh', '-c',
+                 'umask 077; exec "$@"', 'streams-aio-agent',
+                 binary, 'agent', '--config', config],
+                'AGENT_FIRST_RENDER_FAILED', timeout=180)
+        material = []
+        for path in paths:
+            require(path.is_file() and not path.is_symlink(), 'AGENT_FIRST_RENDER_FAILED')
+            info = path.stat()
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                    and stat.S_IMODE(info.st_mode) == 0o600
+                    and info.st_uid == uid and info.st_gid == gid,
+                    'AGENT_FIRST_RENDER_FAILED')
+            material.append(path.read_bytes())
+        # The complete audit runs the actual installer's rendering path,
+        # including private permissions, without promoting any live output.
+        if dry_run:
+            return len(paths)
+        destinations = [safe_path(Path(row['destination-path'])) for row in agent['templates']]
+        for path in destinations:
+            if path.exists():
+                info = path.stat()
+                require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                        and stat.S_IMODE(info.st_mode) == 0o600 and info.st_uid == uid,
+                        'AGENT_PRIVATE_OUTPUT_PERMISSIONS_INVALID')
+        for path, raw in zip(destinations, material):
+            fd, temp = tempfile.mkstemp(prefix='.agent-render-', dir=path.parent)
+            try:
+                with os.fdopen(fd, 'wb') as output:
+                    output.write(raw)
+                    output.flush()
+                    os.fsync(output.fileno())
+                    os.fchmod(output.fileno(), 0o600)
+                    os.fchown(output.fileno(), uid, gid)
+                os.replace(temp, path)
+            finally:
+                if os.path.exists(temp):
+                    os.unlink(temp)
+        return len(paths)
+
+
 def install(home,root,config):
     import pwd
     import yaml
@@ -265,29 +357,15 @@ def install(home,root,config):
         command(['curl','--fail','--silent','--show-error','--location','--proto','=https',
                  '--proto-redir','=https','--max-time','180','--output',archive,CLI_URL], 'AGENT_CLI_DOWNLOAD_FAILED')
     require(digest(archive) == CLI_SHA256, 'AGENT_CLI_SHA256_MISMATCH')
-    library = safe_path(Path('/usr/local/lib/streams-aio-recovery'))
-    library.mkdir(mode=0o755,exist_ok=True)
-    binary = library/'infisical'
-    with tarfile.open(archive,'r:gz') as tar:
-        members = [member for member in tar.getmembers() if member.name == 'infisical' and member.isfile()]
-        require(len(members) == 1 and 0 < members[0].size < 256*1024**2, 'AGENT_CLI_ARCHIVE_INVALID')
-        with tar.extractfile(members[0]) as source:
-            raw = source.read()
-        write_owned(binary,raw,0,0)
-        binary.chmod(0o755)
-    require(command([binary,'--version'],'AGENT_CLI_VERSION_MISMATCH').decode().strip() == 'infisical version '+VERSION,
+    binary = install_cli(archive)
+    require(command(['sudo','-H','-u',user,'--',binary,'--version'],
+                    'AGENT_CLI_VERSION_MISMATCH').decode().strip() == 'infisical version '+VERSION,
             'AGENT_CLI_VERSION_MISMATCH')
     once = copy.deepcopy(agent)
     once['infisical']['exit-after-auth'] = True
     save(area/'agent-once.json',once)
     os.chown(area/'agent-once.json',1000,1000)
-    command(['sudo','-H','-u',user,'--',binary,'agent','--config',area/'agent-once.json'],
-            'AGENT_FIRST_RENDER_FAILED',timeout=180)
-    for row in rows:
-        output = safe_path(Path(row['destination-path']))
-        require(output.is_file(), 'AGENT_FIRST_RENDER_FAILED')
-        output.chmod(0o600)
-        os.chown(output,1000,1000)
+    first_render(agent, area, binary, user)
     raw = ('[Unit]\nDescription=Recovered Infisical native Agent\n'
            'Requires=streams-aio-infisical-tunnel.service\nAfter=streams-aio-infisical-tunnel.service\n'
            '[Service]\nType=simple\nUser='+user+'\nGroup='+user+'\nWorkingDirectory='+str(root)+

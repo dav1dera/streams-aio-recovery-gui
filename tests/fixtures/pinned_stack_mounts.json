@@ -1,0 +1,385 @@
+{
+  "source_commit": "28f6ca7cc6f5fd10418fc0af2926815927ef98c8",
+  "source_files": {
+    "docker-compose.yml": "6e75aa0c07282fbef2b03608d3115534330f9d04",
+    "config/compose.dr.yaml": "ceb28dae0cb2a3d21e146622156f81b2f7ea6b68"
+  },
+  "model": {
+    "name": "streams-aio",
+    "services": {
+      "aiomanager": {
+        "volumes": [
+          {
+            "source": "/STACK/data/aiomanager/data",
+            "target": "/app/data",
+            "type": "bind"
+          }
+        ]
+      },
+      "aiometadata": {
+        "volumes": [
+          {
+            "source": "/STACK/data/aiometadata/data",
+            "target": "/app/addon/data",
+            "type": "bind"
+          }
+        ]
+      },
+      "aiostreams": {
+        "volumes": [
+          {
+            "source": "/STACK/data/aiostreams/data",
+            "target": "/app/data",
+            "type": "bind"
+          }
+        ]
+      },
+      "cloudflare-ddns": {
+        "volumes": []
+      },
+      "comet": {
+        "tmpfs": [
+          "/tmp:size=64m,mode=1777"
+        ],
+        "volumes": [
+          {
+            "source": "/STACK/data/comet/data",
+            "target": "/app/data",
+            "type": "bind"
+          }
+        ]
+      },
+      "cometnet": {
+        "tmpfs": [
+          "/tmp:size=64m,mode=1777"
+        ],
+        "volumes": [
+          {
+            "source": "/STACK/data/comet/data",
+            "target": "/app/data",
+            "type": "bind"
+          }
+        ]
+      },
+      "deunhealth": {
+        "volumes": [
+          {
+            "source": "/var/run/docker.sock",
+            "target": "/var/run/docker.sock",
+            "type": "bind"
+          }
+        ]
+      },
+      "dnscrypt-proxy": {
+        "volumes": [
+          {
+            "source": "/STACK/data/dnscrypt-proxy/data",
+            "target": "/config",
+            "type": "bind"
+          }
+        ]
+      },
+      "easyproxy": {
+        "volumes": [
+          {
+            "source": "/STACK/data/easyproxy/data",
+            "target": "/data",
+            "type": "bind"
+          }
+        ]
+      },
+      "gluetun": {
+        "devices": [
+          "/dev/net/tun:/dev/net/tun"
+        ],
+        "volumes": []
+      },
+      "gost": {
+        "volumes": []
+      },
+      "headplane": {
+        "volumes": [
+          {
+            "source": "/STACK/data/headplane/data/config.yaml",
+            "target": "/etc/headplane/config.yaml",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/data/headplane/data",
+            "target": "/var/lib/headplane",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/data/headscale/data/config/config.yaml",
+            "target": "/etc/headscale/config.yaml",
+            "type": "bind"
+          },
+          {
+            "source": "/var/run/docker.sock",
+            "target": "/var/run/docker.sock",
+            "type": "bind"
+          }
+        ]
+      },
+      "headscale": {
+        "volumes": [
+          {
+            "source": "/STACK/data/headscale/data/config",
+            "target": "/etc/headscale",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/data/headscale/data/lib",
+            "target": "/var/lib/headscale",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/data/headscale/data/run",
+            "target": "/var/run/headscale",
+            "type": "bind"
+          }
+        ]
+      },
+      "honey": {
+        "volumes": [
+          {
+            "source": "/STACK/data/honey/data/config",
+            "target": "/app/dist/config",
+            "type": "bind"
+          }
+        ]
+      },
+      "jackett": {
+        "volumes": [
+          {
+            "source": "/STACK/data/jackett/data",
+            "target": "/config",
+            "type": "bind"
+          }
+        ]
+      },
+      "mediaflow-proxy-light": {
+        "volumes": []
+      },
+      "microwarp": {
+        "volumes": [
+          {
+            "source": "warp-data",
+            "target": "/etc/wireguard",
+            "type": "volume"
+          }
+        ]
+      },
+      "npm": {
+        "volumes": [
+          {
+            "source": "/STACK/data/npm/data",
+            "target": "/data",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/data/npm/data/letsencrypt",
+            "target": "/etc/letsencrypt",
+            "type": "bind"
+          }
+        ]
+      },
+      "oauth2-proxy": {
+        "volumes": [
+          {
+            "source": "/STACK/data/oauth2-proxy/allowed-emails.txt",
+            "target": "/etc/oauth2-proxy/allowed-emails.txt",
+            "type": "bind"
+          }
+        ]
+      },
+      "pgbouncer": {
+        "volumes": [
+          {
+            "source": "/STACK/data/pgbouncer/data/pgbouncer.ini",
+            "target": "/etc/pgbouncer/pgbouncer.ini",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/.generated/pgbouncer/userlist.txt",
+            "target": "/etc/pgbouncer/userlist.txt",
+            "type": "bind"
+          }
+        ]
+      },
+      "portainer": {
+        "volumes": [
+          {
+            "source": "portainer-data",
+            "target": "/data",
+            "type": "volume"
+          },
+          {
+            "source": "/var/run/docker.sock",
+            "target": "/var/run/docker.sock",
+            "type": "bind"
+          }
+        ]
+      },
+      "postgres": {
+        "volumes": [
+          {
+            "source": "/STACK/data/postgres/init",
+            "target": "/docker-entrypoint-initdb.d",
+            "type": "bind"
+          },
+          {
+            "source": "pgdata",
+            "target": "/var/lib/postgresql/data",
+            "type": "volume"
+          },
+          {
+            "source": "/STACK/data/postgres/postgresql.conf",
+            "target": "/var/lib/postgresql/data/postgresql.conf",
+            "type": "bind"
+          },
+          {
+            "source": "postgres-cluster",
+            "target": "/var/lib/postgresql",
+            "type": "volume"
+          }
+        ]
+      },
+      "redis": {
+        "volumes": [
+          {
+            "source": "redis-data",
+            "target": "/data",
+            "type": "volume"
+          }
+        ]
+      },
+      "seanime": {
+        "volumes": [
+          {
+            "source": "/STACK/data/seanime/data/main/anime",
+            "target": "/anime",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/data/seanime/data/main/downloads",
+            "target": "/downloads",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/data/seanime/data/main",
+            "target": "/mnt",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/data/seanime/data/main/config",
+            "target": "/root/.config/Seanime",
+            "type": "bind"
+          }
+        ]
+      },
+      "seanime-shared": {
+        "volumes": [
+          {
+            "source": "/STACK/data/seanime/data/shared/anime",
+            "target": "/anime",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/data/seanime/data/shared/downloads",
+            "target": "/downloads",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/data/seanime/data/shared",
+            "target": "/mnt",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/data/seanime/data/shared/config",
+            "target": "/root/.config/Seanime",
+            "type": "bind"
+          }
+        ]
+      },
+      "streamvix": {
+        "volumes": []
+      },
+      "stremthru": {
+        "volumes": [
+          {
+            "source": "stremthru-data",
+            "target": "/app/data",
+            "type": "volume"
+          }
+        ]
+      },
+      "tailscale": {
+        "devices": [
+          "/dev/net/tun:/dev/net/tun"
+        ],
+        "volumes": [
+          {
+            "source": "/STACK/data/tailscale/data/state",
+            "target": "/var/lib/tailscale",
+            "type": "bind"
+          },
+          {
+            "source": "/dev/net/tun",
+            "target": "/dev/net/tun",
+            "type": "bind"
+          }
+        ]
+      },
+      "teamspeak": {
+        "volumes": [
+          {
+            "source": "teamspeak-data",
+            "target": "/var/tsserver",
+            "type": "volume"
+          }
+        ]
+      },
+      "tvvoo": {
+        "volumes": []
+      },
+      "watchtower": {
+        "volumes": [
+          {
+            "source": "/var/run/docker.sock",
+            "target": "/var/run/docker.sock",
+            "type": "bind"
+          },
+          {
+            "source": "/STACK/.generated/watchtower/config.json",
+            "target": "/config.json",
+            "type": "bind"
+          }
+        ]
+      }
+    },
+    "volumes": {
+      "pgdata": {
+        "name": "streams-aio_pgdata"
+      },
+      "portainer-data": {
+        "name": "streams-aio_portainer-data"
+      },
+      "postgres-cluster": {
+        "name": "streams-aio_postgres-cluster"
+      },
+      "redis-data": {
+        "name": "streams-aio_redis-data"
+      },
+      "stremthru-data": {
+        "name": "streams-aio_stremthru-data"
+      },
+      "teamspeak-data": {
+        "name": "streams-aio_teamspeak-data"
+      },
+      "warp-data": {
+        "name": "streams-aio_warp-data"
+      }
+    }
+  }
+}

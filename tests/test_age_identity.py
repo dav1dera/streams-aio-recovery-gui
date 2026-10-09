@@ -1,6 +1,8 @@
 """Identity text handling and real age round trips with disposable keys only."""
 import codecs
+import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -108,11 +110,34 @@ class NativeAge(unittest.TestCase):
             self.identities.append(identity)
         self.bundle = self.root / 'bundle'
         self.bundle.mkdir()
-        for asset in remote.ASSETS:
-            encrypted = subprocess.run(['age', '--encrypt', '--recipient', recipients[0],
-                                        '--recipient', recipients[1], '--output', str(self.bundle / asset)],
+        self.recipients = recipients
+        self.write_bundle(schema=1)
+
+    def write_bundle(self, schema):
+        assets = dict(remote.ASSETS)
+        if schema == 2:
+            assets[remote.AIO_ASSET] = remote.AIO_PLAINTEXT
+        for path in self.bundle.iterdir():
+            path.unlink()
+        for asset in assets:
+            encrypted = subprocess.run(['age', '--encrypt', '--recipient', self.recipients[0],
+                                        '--recipient', self.recipients[1], '--output', str(self.bundle / asset)],
                                        input=b'synthetic-disposable-payload', capture_output=True)
             self.assertEqual(encrypted.returncode, 0, 'Synthetic encryption failed')
+        manifest = dict(schema=schema, managed_by='streams-aio-dr-managed:v1',
+                        repository='dav1dera/streams-aio-dr', run='20261004T023903Z',
+                        local_snapshot='20261004T023903Z', infisical_snapshot='20261004T023903Z',
+                        source_commit='a' * 40, encryption='age', artifacts={
+                            name: dict(sha256=hashlib.sha256((self.bundle / name).read_bytes()).hexdigest(),
+                                       size=(self.bundle / name).stat().st_size)
+                            for name in assets})
+        if schema == 2:
+            manifest['stack_commit'] = 'b' * 40
+        (self.bundle / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+        checksums = ''.join(hashlib.sha256((self.bundle / name).read_bytes()).hexdigest()
+                            + '  ' + name + '\n' for name in sorted(set(assets) | {'manifest.json'}))
+        (self.bundle / 'SHA256SUMS').write_text(checksums, encoding='ascii')
+        return assets
 
     def test_primary_and_recovery_with_windows_encodings_decrypt_complete_set(self):
         for index in (0, 1):
@@ -140,6 +165,20 @@ class NativeAge(unittest.TestCase):
         self.assertFalse((self.root / 'private').exists())
         self.assertTrue(list(self.root.glob('decryption-*')))
         self.assertFalse(list(self.root.glob('age-identity-*')))
+
+    def test_schema_two_snapshot_is_decrypted_for_primary_and_recovery(self):
+        assets = self.write_bundle(schema=2)
+        for index in (0, 1):
+            destination = self.root / ('snapshot-private-' + str(index))
+            remote.decrypt_all(self.identities[index], self.bundle, destination)
+            self.assertEqual({p.name for p in destination.iterdir()}, set(assets.values()))
+            for path in destination.iterdir():
+                self.assertEqual(path.read_bytes(), b'synthetic-disposable-payload')
+                if os.name != 'nt':
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        with self.assertRaisesRegex(remote.Refused, '^AGE_NO_MATCHING_RECIPIENT$'):
+            remote.decrypt_all(self.identities[2], self.bundle, self.root / 'snapshot-unrelated')
+        self.assertFalse((self.root / 'snapshot-unrelated').exists())
 
 
 if __name__ == '__main__':

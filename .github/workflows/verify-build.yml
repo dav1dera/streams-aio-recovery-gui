@@ -20,8 +20,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - run: python -m pip install -r requirements.txt 'PyYAML==6.0.3'
       - run: python -B -m unittest discover -s tests -v
+      - name: Native SQLite and NPM integration with real root-owned fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          recovery_python=$(python -c 'import sys; print(sys.executable)')
+          root_temp=$(mktemp -d "$RUNNER_TEMP/recovery-root-fixtures.XXXXXX")
+          sudo chown root:root "$root_temp"
+          sudo chmod 700 "$root_temp"
+          for test_file in test_snapshot_recovery_flow.py test_npm_topology.py test_npm_topology_flow.py; do
+            sudo env TMPDIR="$root_temp" TEMP="$root_temp" TMP="$root_temp" "$recovery_python" -B -m unittest discover -s tests -p "$test_file" -v
+          done
+      - name: Verify the NPM domain and route helpers
+        run: |
+          node --experimental-vm-modules tests/check_domain_probe.mjs
+          node --experimental-vm-modules tests/check_route_probe.mjs
       - name: Restore a real PostgreSQL 14 dump and roles using synthetic data
         run: python -B -m unittest discover -s tests -p test_postgres_roundtrip.py -v
         env:
@@ -61,6 +79,8 @@ jobs:
           RECOVERY_AGE_INTEGRATION=1 /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_age_identity.py -v
           /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_agent_archive.py -v
           /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_deployment_checkpoint.py -v
+          /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_agent_installation.py -v
+          /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_runtime_resume.py -v
           bash -n remote/bootstrap.sh
           python3 - <<'PY'
           import re, subprocess
@@ -83,7 +103,7 @@ jobs:
       - name: Check executable and bundled GUI dependencies
         shell: pwsh
         run: |
-          $app = Start-Process -FilePath ./dist/StreamsAIO-Recovery.exe -ArgumentList '--self-test' -PassThru
+          $app = Start-Process -FilePath ./dist/StreamsAIO-Recovery.exe -ArgumentList '--self-test' -WindowStyle Hidden -PassThru
           if (-not $app.WaitForExit(60000)) { $app.Kill(); throw 'Executable startup timed out' }
           if ($app.ExitCode -ne 0) { throw 'Executable startup failed' }
           $hash = (Get-FileHash -Algorithm SHA256 dist/StreamsAIO-Recovery.exe).Hash.ToLower()
