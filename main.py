@@ -22,7 +22,8 @@ if __name__ == '__main__':
         required = ('bootstrap.sh', 'recover.py', 'probe.py', 'start.py',
                     'requirements-dr.txt', 'requirements-new-vm.txt', 'infisical_server.py','infisical_inventory.py','infisical-deployment.json',
                     'native_agent.py', 'aio_snapshot.py', 'runtime_profile.py',
-                    'operational_profile.py', 'npm_topology.py', 'npm-domain-probe.mjs')
+                    'operational_profile.py', 'npm_topology.py', 'npm-domain-probe.mjs',
+                    'npm-route-probe.mjs')
         assert all((resources() / name).is_file() for name in required)
         app = App()
         try:

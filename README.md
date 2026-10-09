@@ -94,9 +94,9 @@ L’instradamento della prova deve funzionare anche dal contenitore Comet, attra
 
 ## Backup giornaliero
 
-La configurazione giornaliera è stata pubblicata nella repository privata DR: esecuzione alle **04:30 nel fuso della VM**, ritardo casuale fino a 10 minuti e recupero delle esecuzioni perse. La politica conserva **cinque release verificate**, quindi normalmente cinque punti giornalieri; esecuzioni manuali aggiuntive consumano lo stesso numero di punti.
+Il timer giornaliero è stato **installato e verificato sull’host originale il 9 ottobre 2026**: esecuzione alle **04:30 nel fuso della VM**, ritardo casuale fino a 10 minuti e recupero delle esecuzioni perse. Il timer è attivo e abilitato; al controllo la prossima esecuzione risultava il **10 ottobre alle 04:35:05 CEST**. La politica conserva **cinque release verificate**, quindi normalmente cinque punti giornalieri; esecuzioni manuali aggiuntive consumano lo stesso numero di punti.
 
-**L’applicazione del timer alla VM originale e la pubblicazione di un nuovo backup completo con AIO restano da verificare dal vivo.** Il file aggiornato nella repository non dimostra che il timer remoto sia già cambiato. Il backup settimanale precedente e le vecchie release non vengono considerati automaticamente aggiornati. [Verifiche del backup](docs/USAGE.md#backup-giornaliero).
+La modifica della frequenza ha conservato lo stato applicativo verificato dell’originale. **La pubblicazione e la decifratura di un nuovo backup completo con AIO e collegamenti NPM restano da confermare.** Le vecchie release non acquisiscono questi dati aggiornando il timer. [Verifiche del backup](docs/USAGE.md#backup-giornaliero).
 
 ## Cosa è stato verificato
 
@@ -107,7 +107,8 @@ La configurazione giornaliera è stata pubblicata nella repository privata DR: e
 | Prova precedente 0.3.17 | Avvio dei 28 servizi previsto dalla simulazione riuscito il 9 ottobre; AIO manuale, CometNet locale, tre controller esclusi. |
 | Nuova esecuzione 0.4.0 da VM vuote | **Da eseguire.** |
 | Login, profili AIO, OAuth, P2P pubblico e ripartenza dopo riavvio | **Da eseguire.** |
-| Backup completo AIO e timer giornaliero applicato sull’originale | **Da verificare dal vivo.** |
+| Timer giornaliero applicato sull’originale | **Verificato il 9 ottobre 2026**: attivo, abilitato, calendario giornaliero; stato applicativo conservato. |
+| Nuovo backup completo AIO e collegamenti NPM | **Pubblicazione e decifratura da confermare.** |
 
 Il successo della prova 0.3.17 rimane un riferimento storico; non certifica il nuovo recupero con domini pubblici e AIO automatico.
 
