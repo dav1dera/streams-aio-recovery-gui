@@ -25,6 +25,8 @@ def database(path):
         db.close()
 
 
+@unittest.skipUnless(os.name == 'nt' or os.geteuid() == 0,
+                     'Real root-private topology integration runs in the dedicated CI ownership step')
 class NPMTopology(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)

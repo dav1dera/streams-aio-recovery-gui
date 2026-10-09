@@ -36,6 +36,8 @@ release_fixture = module(DR / 'tests/test_dr_releases.py', 'snapshot_flow_releas
 RUN, COMMIT = native_fixture.RUN, native_fixture.COMMIT
 
 
+@unittest.skipUnless(os.name == 'nt' or os.geteuid() == 0,
+                     'Real root-owned recovery integration runs in the dedicated CI ownership step')
 class SnapshotRecoveryFlow(unittest.TestCase):
     def test_vendored_release_manager_matches_reviewed_sibling(self):
         for name in DR_FILES:

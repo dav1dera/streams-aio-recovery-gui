@@ -20,6 +20,8 @@ native_fixture=load(ROOT/'tests/test_aio_snapshot.py','topology_native_fixture')
 npm_fixture=load(ROOT/'tests/test_npm_topology.py','topology_npm_fixture')
 
 
+@unittest.skipUnless(os.name == 'nt' or os.geteuid() == 0,
+                     'Real native/NPM ownership integration runs in the dedicated CI ownership step')
 class NativeNPMFlow(unittest.TestCase):
     def setUp(self):
         self.native=native_fixture.NativeAIO('runTest');self.native.setUp()

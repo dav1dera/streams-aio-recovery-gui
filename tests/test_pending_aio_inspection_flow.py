@@ -37,6 +37,7 @@ class PendingNativeFlow(unittest.TestCase):
     interrupted_link = 2
 
     def setUp(self):
+        unprivileged_posix = os.name != 'nt' and os.geteuid() != 0
         self.flow = flow_fixture.SnapshotRecoveryFlow('runTest')
         self.flow.setUp()
         self.addCleanup(self.flow.doCleanups)
@@ -75,15 +76,15 @@ class PendingNativeFlow(unittest.TestCase):
         original_stat, original_read = Path.stat,Path.read_text
         def metadata(path,*args,**kwargs):
             info = original_stat(path,*args,**kwargs)
-            if os.name != 'nt':
+            if os.name != 'nt' and not unprivileged_posix:
                 return info
             values = {name:getattr(info,name) for name in dir(info) if name.startswith('st_')}
             if path == self.home:
-                values.update(st_mode=stat.S_IFDIR|0o700,st_uid=1000)
+                values.update(st_mode=stat.S_IFDIR|0o700,st_uid=1000,st_gid=1000)
             elif path.is_relative_to(self.home) or path.name.startswith('aio-snapshot-') \
                     or path.name in ('deployment.json','npm-deployment.json'):
                 if stat.S_ISREG(info.st_mode):
-                    values.update(st_mode=stat.S_IFREG|0o600,st_uid=0)
+                    values.update(st_mode=stat.S_IFREG|0o600,st_uid=0,st_gid=0)
             elif path.name == 'db.sqlite':
                 values.update(st_mode=stat.S_IFREG|0o600,st_uid=1000,st_gid=1000)
             return N(**values)
@@ -113,9 +114,18 @@ class PendingNativeFlow(unittest.TestCase):
             patch.object(probe.pwd,'getpwuid',return_value=self.user,create=True),
             patch.dict(sys.modules,{'pwd':N(getpwuid=lambda uid:self.user)}),
             patch.object(os,'geteuid',return_value=0,create=True),
+            patch.object(os,'getegid',return_value=0,create=True),
             patch.object(os,'uname',return_value=N(machine='x86_64'),create=True),
             patch.object(probe.shutil,'which',return_value='docker'),
             patch.object(policy.subprocess,'run',side_effect=docker)]
+        if unprivileged_posix:
+            # The recovery process runs as root against UID/GID 1000. Ordinary
+            # GitHub safety CI cannot chown. Adapt only ownership inside this
+            # synthetic fixture; real modes, bytes, links and journals remain.
+            def fixture_chown(path,uid,gid,**kwargs):
+                self.assertTrue(Path(path).absolute().is_relative_to(self.flow.base))
+                self.assertIn((uid,gid),((0,0),(1000,1000)))
+            patches.append(patch.object(os,'chown',side_effect=fixture_chown))
         for item in patches:
             item.start();self.addCleanup(item.stop)
         if os.name != 'nt':
