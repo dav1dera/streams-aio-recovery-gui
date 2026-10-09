@@ -38,8 +38,8 @@ jobs:
           done
       - name: Verify the NPM domain and route helpers
         run: |
-          node tests/check_domain_probe.mjs
-          node tests/check_route_probe.mjs
+          node --experimental-vm-modules tests/check_domain_probe.mjs
+          node --experimental-vm-modules tests/check_route_probe.mjs
       - name: Restore a real PostgreSQL 14 dump and roles using synthetic data
         run: python -B -m unittest discover -s tests -p test_postgres_roundtrip.py -v
         env:
