@@ -1,4 +1,4 @@
-"""Tk desktop wizard. Worker threads never call Tk; all dialogs use a UI queue."""
+"""Desktop dashboard entry point and public presentation text."""
 import json
 from pathlib import Path
 import queue
@@ -8,8 +8,10 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import webbrowser
 
-from .backend import Failure, GitHub, Host, SSH, SHA, TAG, require, restore_all
+from .backend import (Failure, GitHub, Host, SSH, SHA, TAG, require, restore_all, check_first_boot_resume,
+                      validate_test_reset_choice, inspect_test_reset, test_reset_recovery_point)
 from .codes import ERROR_CODES
+from .startup_diagnostic import lines as startup_diagnostic_lines
 from . import __version__
 
 TEXT = {
@@ -24,9 +26,71 @@ TEXT = {
     'INFISICAL_DATABASE': 'Ruoli e database Infisical',
     'INFISICAL_SERVER': 'Avvio e controllo API Infisical',
     'NATIVE_AGENT': 'Agent continuo e tunnel SSH permanente',
+    'RUNTIME_PROFILE': 'Compatibilità del primo avvio',
+    'COMETNET_TRIAL': 'CometNet locale per la simulazione',
+    'IMAGES': 'Immagini Docker del backup',
+    'APPLICATION_CHECKS': 'Verifica dei servizi avviati',
+    'TEST_RESET_STACK': 'Nuova simulazione: archiviazione e pulizia dello stack di test',
+    'TEST_RESET_INFISICAL': 'Nuova simulazione: archiviazione e pulizia Infisical di test',
 }
 ERRORS = {
-    'AGE_IDENTITY_FILE_INVALID': 'Il file della chiave age è troppo grande o non valido.',
+    'NPM_TOPOLOGY_BACKUP_REQUIRED': 'Questo backup non include i collegamenti verificati di NPM alle due VM. Scegli un nuovo backup completo; il programma conserva il tentativo presente.',
+    'NPM_TOPOLOGY_ADDRESS_INVALID': 'Un indirizzo dei collegamenti NPM non è valido. Controlla gli indirizzi delle due VM in Accessi e backup; i domini e gli accessi restano conservati.',
+    'NPM_TOPOLOGY_TARGET_INVALID': 'NPM richiede due destinazioni distinte e valide per stack e Infisical. Controlla gli indirizzi delle VM in Accessi e backup.',
+    'NPM_TOPOLOGY_SOURCE_INVALID': 'Il backup dei collegamenti NPM non corrisponde allo stack di origine. Serve un nuovo punto di recupero completo verificato.',
+    'NPM_TOPOLOGY_INVALID': 'La copia dei collegamenti NPM non supera il controllo di formato, commit o integrità. Seleziona un backup completo coerente.',
+    'NPM_TOPOLOGY_DATABASE_INVALID': 'Il database NPM non è leggibile nel formato previsto. Il programma lo conserva e ferma il ripristino dei collegamenti.',
+    'NPM_TOPOLOGY_DATABASE_IDENTITY_REQUIRED': 'Proprietà o permessi del database NPM non corrispondono all’utente previsto. Il programma conserva il database e ferma l’adattamento dei collegamenti.',
+    'NPM_TOPOLOGY_SCHEMA_UNSUPPORTED': 'Questa versione del database NPM non è compatibile con i collegamenti registrati nel backup. Serve un backup e una versione della GUI compatibili.',
+    'NPM_TOPOLOGY_ENDPOINT_UNPROVEN': 'Una destinazione NPM non è associabile con certezza a un servizio del backup. Il programma conserva la route e richiede un backup verificato.',
+    'NPM_TOPOLOGY_SERVICE_UNPROVEN': 'Un servizio indicato da NPM non è riconosciuto nel punto di recupero. Il programma conserva i collegamenti e ferma l’adattamento.',
+    'NPM_TOPOLOGY_UNCLASSIFIED_REFERENCE': 'Una configurazione personalizzata NPM contiene un indirizzo che richiede una verifica esplicita. Non viene sostituito automaticamente.',
+    'NPM_TOPOLOGY_ALREADY_MOUNTED': 'Un container sta già usando il database NPM. I collegamenti non vengono modificati durante l’uso: conserva il tentativo e consulta gli esiti.',
+    'NPM_TOPOLOGY_SOURCE_DRIFT': 'Le route NPM sono cambiate rispetto alla copia verificata. Il programma conserva database e ricevute; non sostituisce le modifiche presenti.',
+    'NPM_TOPOLOGY_EVIDENCE_REQUIRED': 'La ricevuta dei collegamenti NPM è assente o non corrisponde al checkpoint. Conserva il tentativo per verificarlo prima della ripresa.',
+    'NPM_TOPOLOGY_JOURNAL_INVALID': 'La ricevuta del passaggio NPM interrotto non è compatibile con questo recupero. Database e copie precedenti restano conservati.',
+    'NPM_TOPOLOGY_APPLY_FAILED': 'I collegamenti NPM non hanno superato il controllo dopo l’adattamento. Salva gli esiti e conserva il tentativo prima di continuare.',
+    'NPM_TOPOLOGY_PATH_INVALID': 'Un file NPM è un collegamento o non rispetta il percorso previsto. Il programma conserva lo stato e ferma il recupero.',
+    'NPM_TOPOLOGY_PRIVATE_FILE_REQUIRED': 'I permessi di un file privato NPM non corrispondono a quelli previsti. Il programma conserva i dati e ferma il recupero.',
+    'OPERATIONAL_DEPLOYMENT_REFUSED': 'Destinazione, modalità o checkpoint non corrispondono al recupero scelto. Controlla Accessi e backup e conserva gli esiti del passaggio interrotto prima di riprendere.',
+    'PUBLIC_DOMAIN_TARGET_MISMATCH': 'Il dominio raggiunge una destinazione diversa dalla VM recuperata. Controlla DNS, inoltro porte e instradamento del test: un pannello originale raggiungibile non prova il recupero.',
+    'PUBLIC_DOMAIN_CONFIGURATION_REQUIRED': 'Controlla in Accessi e backup l’indirizzo previsto per i domini. Il recupero richiede anche la configurazione pubblica CometNet, il suo indirizzo WSS e la route NPM corrispondente nel backup.',
+    'PUBLIC_DOMAIN_PROBE_FAILED': 'Il dominio non ha superato la verifica HTTPS sulla VM recuperata. Controlla instradamento, NPM e certificati; il controllo di raggiungibilità resta attivo.',
+    'PUBLIC_DOMAIN_PROBE_CLEANUP_REQUIRED': 'Il controllo del dominio richiede di verificare la rimozione del marcatore temporaneo NPM. Il recupero si ferma per conservare lo stato.',
+    'PUBLIC_CONTROLLER_CUTOVER_REQUIRED': 'I controller che aggiornano DNS e immagini richiedono la modalità Recupero della produzione. Nella prova affiancata restano esclusi.',
+    'OPERATIONAL_TLS_REQUIRED': 'Il recupero completo richiede HTTPS. Riprendi dalla GUI aggiornata, che esegue la verifica TLS prima di avviare CometNet pubblico.',
+    'OPERATIONAL_PROFILE_TRANSACTION_FAILED': 'L’applicazione del profilo di recupero si è interrotta. Il programma conserva il checkpoint e le copie precedenti: controlla gli esiti prima di riprendere.',
+    'AIO_SNAPSHOT_REQUIRED': 'Questo backup non include le configurazioni AIO automatiche. Seleziona un backup completo recente; gli export singoli non sostituiscono la copia verificata richiesta dal recupero operativo.',
+    'AIO_SNAPSHOT_BACKUP_REQUIRED': 'La release selezionata non contiene la copia cifrata AIO richiesta. Scegli un backup completo recente prima di iniziare il recupero.',
+    'DR_STACK_COMMIT_MISMATCH': 'Il commit inserito non è quello associato al backup. Ricarica il punto di recupero in Accessi e backup per usare il commit verificato dalla release.',
+    'DR_BUNDLE_VERIFICATION_FAILED': 'Il backup non ha superato il controllo del manifest e delle impronte dei file. Ricarica il punto selezionato; il materiale già presente resta conservato.',
+    'AIO_SNAPSHOT_ENCRYPTION_KEY_MISMATCH': 'La chiave applicativa recuperata non corrisponde alla copia AIO. Il database viene conservato e il recupero si ferma per evitare profili illeggibili.',
+    'AIO_SNAPSHOT_EXISTING_DATABASE_REFUSED': 'Sono già presenti dati AIO senza una ricevuta di importazione compatibile. Il programma li conserva e non li sovrascrive.',
+    'AIO_SNAPSHOT_SCHEMA_UNSUPPORTED': 'Lo schema della copia AIO non corrisponde alle applicazioni previste dal backup. Serve un punto di recupero compatibile.',
+    'AIO_SNAPSHOT_SOURCE_CHANGED': 'Le applicazioni AIO sono cambiate durante la creazione della copia. Serve un nuovo backup completo verificato prima del recupero.',
+    'AIO_SNAPSHOT_IMAGE_MISMATCH': 'Le immagini AIO della copia non corrispondono a quelle fissate nel backup. Seleziona un backup completo coerente; i database presenti vengono conservati.',
+    'AIO_SNAPSHOT_MARKER_INVALID': 'La ricevuta AIO non corrisponde ai dati recuperati. Il programma conserva i database e ferma l’importazione per verificarne lo stato.',
+    'AIO_SNAPSHOT_JOURNAL_INVALID': 'La ricevuta dell’importazione AIO interrotta non corrisponde alla copia verificata. I database presenti restano conservati; salva gli esiti prima di riprendere.',
+    'AIO_SNAPSHOT_ARCHIVE_INVALID': 'La copia AIO non è leggibile come backup nativo. Seleziona un punto completo verificato; i dati presenti restano conservati.',
+    'AIO_SNAPSHOT_ARCHIVE_UNSAFE': 'La copia AIO contiene file o collegamenti fuori dal formato previsto. Il recupero si ferma prima di installarli.',
+    'AIO_SNAPSHOT_DIGEST_MISMATCH': 'Un database AIO non corrisponde all’impronta registrata nel backup. Seleziona una copia completa verificata.',
+    'AIO_SNAPSHOT_MANIFEST_INVALID': 'L’inventario interno della copia AIO non rispetta il formato previsto. Seleziona un backup completo compatibile.',
+    'AIO_SNAPSHOT_DATABASE_MISMATCH': 'Schema o contenuto del database AIO non corrispondono all’inventario verificato. La copia non viene installata.',
+    'AIO_SNAPSHOT_RESTORED_DATABASE_CHANGED': 'Un database AIO è cambiato prima dell’avvio previsto. Il programma conserva i dati e ferma la ripresa per verificarli.',
+    'AIO_SNAPSHOT_DATABASE_OWNER_CHANGED': 'La proprietà dei database AIO è cambiata. Il programma conserva i file e ferma la verifica.',
+    'AIO_SNAPSHOT_TARGET_MOUNTED': 'Un container sta già usando i database AIO. Il ripristino non li sostituisce durante l’uso; conserva il tentativo e consulta gli esiti.',
+    'AIO_SNAPSHOT_INSTALL_FAILED': 'L’installazione AIO si è interrotta. Il programma conserva le copie e la ricevuta; Rileva e continua verifica se il tentativo può riprendere.',
+    'SELECT_GITHUB_RECOVERY_POINT': 'Apri Accessi e backup, carica i backup e seleziona un punto di recupero. Il commit viene associato alla release verificata.',
+    'AGE_IDENTITY_FILE_REQUIRED': 'Apri Accessi e backup e scegli con Sfoglia il file della chiave privata PRIMARY o RECOVERY. Non incollare la chiave nel campo del percorso.',
+    'SSH_ADDRESS_REQUIRED': 'Apri Accessi e backup e completa indirizzo, utente e accesso SSH di entrambe le VM. La porta SSH è nelle opzioni avanzate.',
+    'GITHUB_TOKEN_REQUIRED': 'Apri Accessi e backup e inserisci il token GitHub con permesso Contents: Read sui due repository del recupero.',
+    'FOREIGN_RECOVERY_STATE': 'Il recupero presente non corrisponde alla VM, al backup o al commit selezionato. Seleziona il punto originale del tentativo; i dati vengono conservati.',
+    'FOREIGN_CONTAINER_REFUSED': 'La VM contiene container che non appartengono al recupero verificato. Usa la destinazione corretta: il programma conserva le risorse esistenti.',
+    'FOREIGN_VOLUME_REFUSED': 'La VM contiene volumi che non appartengono al recupero verificato. I dati esistenti vengono conservati.',
+    'COMETNET_TRIAL_SCOPE_REFUSED': 'La modalità locale CometNet richiede il checkpoint della prova previsto. Conserva lo stato per verificarlo.',
+    'COMETNET_TRIAL_TLS_REFUSED': 'Questa simulazione usa CometNet locale. Lascia disattivata la casella dei certificati e HTTPS; il passaggio ai domini pubblici richiede una verifica separata.',
+    'COMETNET_TRIAL_TRANSACTION_FAILED': 'La registrazione di CometNet locale è fallita. Il checkpoint precedente e le copie vengono conservati.',
+    'AGE_IDENTITY_FILE_INVALID': 'Il file scelto come chiave è un collegamento o supera 64 KiB. Nel campo Chiave age seleziona il file di testo della identity privata; il file integrativo .age va nel suo campo separato.',
     'AGE_IDENTITY_ENCODING_INVALID': 'Salva la chiave privata originale in un file di testo UTF-8 o UTF-16.',
     'AGE_PRIVATE_IDENTITY_REQUIRED': 'Serve la chiave privata originale completa AGE-SECRET-KEY-1…, salvata in un file. Non aggiungere il prefisso a un altro codice.',
     'AGE_PUBLIC_KEY_NOT_IDENTITY': 'Il file contiene una chiave pubblica age1…. Seleziona il file della chiave privata PRIMARY o RECOVERY.',
@@ -37,8 +101,9 @@ ERRORS = {
     'SSH_CONNECTION_FAILED': 'La VM non risponde via SSH.',
     'SSH_HOST_KEY_CHANGED': 'La chiave SSH è cambiata: verifica la VM dalla console prima di aggiornare known_hosts.',
     'FRESH_DOCKER_HOST_REQUIRED': 'Sono presenti container o volumi. Usa una VM nuova.',
-    'EXISTING_STACK_REFUSED': 'È già presente uno stack. La destinazione non viene sovrascritta.',
-    'INCOMPLETE_STEP_REQUIRES_REVIEW': 'Un passo è rimasto incompleto. Conserva i dati e controlla il checkpoint prima di riprendere.',
+    'EXISTING_STACK_REFUSED': 'È presente un tentativo di recupero. Scegli Rileva e continua per verificarlo e riprendere; Crea da zero richiede destinazioni vuote.',
+    'INCOMPLETE_STEP_REQUIRES_REVIEW': 'Un passo di scrittura è rimasto incompleto e non può essere ripetuto automaticamente. Conserva lo stato e consulta gli esiti per verificare quel passaggio prima della ripresa.',
+    'RECOVERY_OPERATION_INCOMPLETE': 'Il checkpoint registra un’operazione ancora incompleta. Il programma conserva lo stato e richiede di verificarla prima di proseguire.',
     'AGENT_BOOTSTRAP_CONFIG_NOT_UNIQUE': 'Bootstrap Agent non riconosciuto. Usa i campi avanzati per i file Universal Auth.',
     'AGENT_CREDENTIAL_PATH_UNSUPPORTED': 'Il backup Agent usa percorsi non supportati. Fornisci i due file Universal Auth.',
     'AGENT_TUNNEL_PUBLIC_KEY_INVALID': 'Il controllo della chiave SSH del tunnel è fallito. Conserva i checkpoint e usa la versione aggiornata della GUI.',
@@ -53,7 +118,55 @@ ERRORS = {
     'MANUAL_AIO_IMPORT_CONFLICT': 'Sono già presenti database o un’importazione AIO. Il programma li conserva e ferma il cambio di modalità.',
     'AIO_EXPORT_PROFILE_AMBIGUOUS': 'Il profilo dell’export non è identificabile. Seleziona un payload DR esplicito.',
     'APPLICATION_START_REFUSED': 'Avvio o verifica applicativa fallita. Conserva lo stato e controlla la VM.',
+    'APPLICATION_IMAGE_DOWNLOAD_FAILED': 'Download di un’immagine Docker fallito. Controlla rete e accesso al registro; il checkpoint resta conservato.',
+    'APPLICATION_PINNED_IMAGES_REQUIRED': 'Il piano contiene un’immagine priva del digest del backup. L’avvio è stato fermato.',
+    'SERVICE_HEALTHCHECK_REQUIRED': 'Una dipendenza non ha il controllo di salute richiesto, anche dopo il download delle immagini.',
+    'APPLICATION_HEALTH_WAIT_FAILED': 'Un gruppo di servizi non è diventato pronto entro il tempo previsto. Salva gli esiti; lo stato sulla VM è conservato.',
+    'APPLICATION_IMAGE_PLATFORM_REFUSED': 'Una delle immagini non corrisponde alla piattaforma Linux amd64 richiesta dal backup.',
+    'APPLICATION_FINAL_CHECK_FAILED': 'Un servizio è assente, fermo o non sano al controllo finale. Salva gli esiti; il checkpoint resta conservato.',
+    'PGBOUNCER_NOT_READY': 'PgBouncer non risponde sulla propria porta. L’avvio dei servizi dipendenti è stato fermato.',
+    'RECOVERY_SUPPLEMENT_INVALID': 'Il file integrativo cifrato non rispetta il formato atteso. Seleziona il companion verificato per questo backup.',
+    'RECOVERY_SUPPLEMENT_SCOPE_CHANGED': 'Il file integrativo appartiene a una release o a un commit diverso.',
+    'OAUTH_ALLOWLIST_INVALID': 'La lista email OAuth non è valida. Nessun valore è stato registrato.',
+    'OAUTH_ALLOWLIST_SUPPLEMENT_REQUIRED': 'La copia Infisical non contiene la lista email autorizzate. Completa la voce nell’originale e crea un nuovo backup. Un companion cifrato compatibile può essere selezionato in Opzioni avanzate per i vecchi tentativi.',
+    'COMETNET_DATABASE_NOT_PROVISIONED': 'La connessione CometNet richiede un database o un utente non creato dal piano SQL del backup. Correggi il mapping in Infisical prima dell’avvio.',
+    'RUNTIME_PROFILE_SCOPE_REFUSED': 'Il profilo del primo avvio non corrisponde a utente, macchina o punto di recupero. Controlla il backup scelto e conserva il checkpoint per verificarlo.',
+    'RUNTIME_PROFILE_SQL_CHANGED': 'Il controllo di lettura dell’inizializzazione PostgreSQL è fallito. Nessun permesso viene aperto automaticamente.',
+    'RUNTIME_PROFILE_COMMAND_FAILED': 'Un comando di preparazione del primo avvio è fallito. Il checkpoint resta conservato; questo codice generico non distingue download, Compose o letture locali.',
+    'RUNTIME_PROFILE_POSTGRES_PULL_FAILED': 'Download dell’immagine PostgreSQL fissata nel backup fallito. Controlla la connessione e scegli Rileva e continua; il checkpoint è conservato.',
+    'RUNTIME_PROFILE_DNS_PULL_FAILED': 'Download dell’immagine DNSCrypt fissata nel backup fallito. Controlla la connessione e scegli Rileva e continua; il checkpoint è conservato.',
+    'RUNTIME_PROFILE_OAUTH_PULL_FAILED': 'Download dell’immagine OAuth2 Proxy fissata nel backup fallito. Controlla la connessione e scegli Rileva e continua; il checkpoint è conservato.',
+    'RUNTIME_PROFILE_PGBOUNCER_PULL_FAILED': 'Download dell’immagine PgBouncer fissata nel backup fallito. Controlla la connessione e scegli Rileva e continua; il checkpoint è conservato.',
+    'RUNTIME_PROFILE_IMAGE_CACHE_INSPECT_FAILED': 'Docker non ha potuto controllare le immagini già presenti sulla VM. Il programma non considera questo errore una semplice immagine mancante.',
+    'RUNTIME_PROFILE_IMAGE_CACHE_INVALID': 'Le informazioni dell’immagine locale non corrispondono al digest o alla piattaforma Linux amd64 del backup. Nessuna immagine alternativa è stata usata.',
+    'RUNTIME_PROFILE_IMAGE_INSPECT_FAILED': 'Il controllo locale dei metadati di un’immagine Docker è fallito. Il checkpoint resta conservato.',
+    'RUNTIME_PROFILE_IMAGE_SAVE_FAILED': 'Docker non ha potuto leggere l’archivio locale di un’immagine per verificarne utenti e permessi. Il passo non è un download.',
+    'RUNTIME_PROFILE_IMAGE_ARCHIVE_REFUSED': 'L’archivio locale dell’immagine non supera la verifica di digest, piattaforma o contenuti. Il checkpoint resta conservato; nessuna immagine alternativa viene usata.',
+    'RUNTIME_PROFILE_COMPOSE_CONFIG_FAILED': 'Docker Compose non ha potuto leggere la configurazione dello stack. Il problema riguarda il Compose o i suoi file di input, non necessariamente la connessione al registro immagini.',
+    'RUNTIME_PROFILE_COMPOSE_CONFIG_INVALID': 'Docker Compose ha restituito dati non leggibili come configurazione JSON. Il profilo non viene installato.',
+    'RUNTIME_PROFILE_COMPOSE_VERSION_FAILED': 'La lettura della versione del plugin Docker Compose è fallita.',
+    'RUNTIME_PROFILE_GIT_READ_FAILED': 'La lettura dello stack come utente della VM è fallita. Conserva il checkpoint e i file per verificare accesso e proprietà.',
+    'RUNTIME_PROFILE_DOCKER_RESOURCE_CHECK_FAILED': 'Docker non ha potuto leggere container o volumi durante il controllo del primo avvio. Nessuna risorsa viene cancellata da questo controllo.',
+    'RUNTIME_PROFILE_FRESH_HOST_REQUIRED': 'Il controllo Docker ha trovato container o un volume non vuoto. Il profilo del primo avvio non viene applicato a questo stato; i dati sono conservati.',
+    'RUNTIME_PROFILE_PRESTART_CHECKPOINT_REQUIRED': 'Il recupero precedente ha già tentato l’avvio senza il profilo di compatibilità. Per la prova .29/.30 seleziona «Ricomincia il test da zero», poi Verifica e Ripristina entrambe le VM. Questa scelta archivia i dati e rimuove i container e i volumi del tentativo precedente.',
+    'TEST_RESET_SCOPE_REFUSED': 'La nuova simulazione è limitata a test@192.168.178.29 e test2@192.168.178.30, al backup dr-20261006T210601Z e commit 28f6ca7…. Usa AIO manuale e TLS disattivato.',
+    'TEST_RESET_METADATA_REFUSED': 'Il controllo della nuova simulazione ha restituito metadati inattesi. L’operazione è stata fermata.',
+    'TEST_RESET_BOTH_VMS_REQUIRED': 'Con «Ricomincia il test da zero» usa Ripristina entrambe le VM. Prepara stack e Avvia servizi servono a riprendere un recupero esistente.',
+    'TEST_RESET_SPACE_REQUIRED': 'Lo spazio sulla VM non basta per conservare e verificare tutti i dati dei volumi. Libera spazio prima di riprovare; le copie esistenti restano conservate.',
+    'TEST_RESET_FILESYSTEM_REFUSED': 'Le cartelle da archiviare e l’archivio non sono sullo stesso filesystem. La pulizia automatica si ferma per conservare i dati.',
+    'TEST_RESET_ALREADY_RUNNING': 'Un altro recupero o una pulizia sono già in corso. Attendi la fine prima di riprovare.',
+    'TEST_RESET_CHECKPOINT_REFUSED': 'Il tentativo presente non corrisponde al recupero verificato per questa prova. Nessuna pulizia automatica viene autorizzata da quel checkpoint.',
+    'TEST_RESET_FOREIGN_CONTAINER': 'Sono presenti container estranei al recupero di test. La pulizia automatica si ferma.',
+    'TEST_RESET_FOREIGN_VOLUME': 'Sono presenti volumi estranei o con proprietà non verificate. La pulizia automatica si ferma.',
+    'TEST_RESET_BIND_SCOPE_REFUSED': 'Un collegamento del container non corrisponde al Compose del recupero. Il programma riconosce il dispositivo TUN, il socket Docker e i file temporanei dichiarati; altri percorsi richiedono un controllo prima della pulizia.',
+    'TEST_RESET_ARCHIVE_CHANGED': 'Una copia o i dati da archiviare sono cambiati durante la verifica. Conserva lo stato e le copie; il controllo non viene saltato.',
+    'TEST_RESET_TICKET_CHANGED': 'Lo stato è cambiato dopo il controllo preliminare. Premi Verifica e riprova mantenendo le stesse destinazioni.',
+    'RECOVERY_AIO_MODE_CHANGED': 'La modalità AIO è diversa da quella del checkpoint. Conserva lo stato prima di cambiare modalità.',
+    'MANUAL_AIO_INPUT_CONTRACT_INVALID': 'Il piano di input non consente la configurazione AIO manuale richiesta.',
     'REMOTE_OPERATION_FAILED': 'La VM ha fermato il comando. Se presente, il codice del passo è indicato nel registro.',
+    'SSH_CHANNEL_CLOSED': 'Il canale SSH si è chiuso senza comunicare l’esito del comando. Conserva il tentativo e verifica connessione e stato della VM prima di ripetere l’avvio.',
+    'REMOTE_EXIT_137': 'Il comando remoto è terminato con codice 137. Il solo esito non ne identifica la causa: controlla stato della VM e memoria, conservando i dati.',
+    'REMOTE_EXIT_143': 'Il comando remoto è terminato con codice 143. Il checkpoint e i dati restano conservati; verifica il tentativo prima di riprendere.',
     'UBUNTU_LTS_VERSION_REQUIRED': 'Usa Ubuntu Server 26.04 o 24.04 amd64.',
     'UBUNTU_CODENAME_MISMATCH': 'Versione e nome della distribuzione Ubuntu non corrispondono.',
     'SEPARATE_RECOVERY_VMS_REQUIRED': 'Stack e Infisical devono essere due VM nuove distinte.',
@@ -64,604 +177,59 @@ ERRORS = {
 }
 
 
-class ScrollPage(ttk.Frame):
-    """Keep every input reachable at small window sizes and higher DPI."""
-    def __init__(self, parent):
-        super().__init__(parent, style='Page.TFrame')
-        self.canvas = tk.Canvas(self, bg='#f5f7fb', highlightthickness=0)
-        scrollbar = ttk.Scrollbar(self, orient='vertical', command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side='right', fill='y')
-        self.canvas.pack(side='left', fill='both', expand=True)
-        self.content = ttk.Frame(self.canvas, style='Page.TFrame', padding=(0, 0, 16, 8))
-        item = self.canvas.create_window(0, 0, anchor='nw', window=self.content)
-        self.content.bind('<Configure>', lambda e:self.canvas.configure(scrollregion=self.canvas.bbox('all')))
-        self.canvas.bind('<Configure>', lambda e:self.canvas.itemconfigure(item, width=e.width))
+for message, codes in (
+    ('La copia AIO non contiene database integri e profili nel formato previsto. Scegli un backup completo verificato; i file presenti restano conservati.',
+     ('AIO_SNAPSHOT_DATABASE_CORRUPT','AIO_SNAPSHOT_DATABASE_INVALID','AIO_SNAPSHOT_DATABASE_SIZE_INVALID',
+      'AIO_SNAPSHOT_FOREIGN_KEY_INVALID','AIO_SNAPSHOT_CONFIGURATION_MISSING')),
+    ('Versione, immagini o percorso dei database AIO non corrispondono al backup. Serve un punto completo compatibile con lo stack recuperato.',
+     ('AIO_SNAPSHOT_BIND_LAYOUT_REQUIRED','AIO_SNAPSHOT_COMPOSE_INVALID','AIO_SNAPSHOT_DEPLOYMENT_INVALID',
+      'AIO_SNAPSHOT_IMAGE_CHECK_FAILED','AIO_SNAPSHOT_PINNED_IMAGE_REQUIRED','AIO_SNAPSHOT_SQLITE_LAYOUT_REQUIRED')),
+    ('Le chiavi applicative AIO richieste sono assenti o non valide. Controlla gli input Infisical del backup; i database non vengono sostituiti.',
+     ('AIO_SNAPSHOT_ENVIRONMENT_INVALID','AIO_SNAPSHOT_SECRET_KEY_REQUIRED')),
+    ('Un file privato AIO non rispetta percorso, tipo o permessi previsti. Il recupero conserva i dati e ferma l’importazione.',
+     ('AIO_SNAPSHOT_FILE_INVALID','AIO_SNAPSHOT_PRIVATE_OUTPUT_REQUIRED','AIO_SNAPSHOT_REQUIRES_MODE_600','AIO_SNAPSHOT_SYMLINK_REFUSED')),
+    ('La copia AIO non appartiene al punto di recupero selezionato. Ricarica release e commit associati in Accessi e backup.',
+     ('AIO_SNAPSHOT_SCOPE_CHANGED','AIO_SNAPSHOT_SCOPE_INVALID')),
+    ('Le applicazioni AIO non erano disponibili o sono cambiate durante il backup. Serve una nuova copia completa prodotta e verificata dall’originale.',
+     ('AIO_SNAPSHOT_CAPTURE_TIMEOUT','AIO_SNAPSHOT_CAPTURE_WINDOW_INVALID','AIO_SNAPSHOT_SOURCE_CONTAINER_REQUIRED',
+      'AIO_SNAPSHOT_SOURCE_ENV_CHANGED','AIO_SNAPSHOT_SOURCE_IMAGE_CHANGED','AIO_SNAPSHOT_SOURCE_MOUNT_CHANGED',
+      'AIO_SNAPSHOT_SOURCE_NOT_RUNNING')),
+    ('Docker non ha permesso di verificare quali servizi usano i database AIO. Controlla lo stato della VM e scegli Rileva e continua dopo aver risolto la causa.',
+     ('AIO_SNAPSHOT_DOCKER_CHECK_FAILED',)),
+):
+    for code in codes:
+        ERRORS.setdefault(code,message)
 
 
-class App(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title('Streams AIO · Recovery')
-        self.geometry('1180x800')
-        self.minsize(980, 700)
-        self.configure(bg='#f5f7fb')
-        self.events = queue.Queue()
-        self.cancelled = threading.Event()
-        self.busy = False
-        self.prepared = False
-        self.vars = {}
-        self.files = {'aiostreams_exports': [], 'aiometadata_exports': []}
-        self.safe_report = []
-        self.return_page = None
-        self.active_phase = None
-        self.protocol('WM_DELETE_WINDOW', self.close_app)
-        self._theme()
-        sidebar = tk.Frame(self, bg='#101b30', width=222)
-        sidebar.pack(side='left', fill='y')
-        sidebar.pack_propagate(False)
-        brand = tk.Canvas(sidebar, width=42, height=42, bg='#101b30', highlightthickness=0)
-        brand.pack(anchor='w', padx=24, pady=(30, 15))
-        brand.create_rectangle(2, 2, 40, 40, fill='#4b63f0', outline='')
-        brand.create_line(12, 25, 21, 15, 30, 25, fill='white', width=3)
-        brand.create_line(21, 16, 21, 31, fill='white', width=3)
-        tk.Label(sidebar, text='STREAMS AIO', bg='#101b30', fg='#f8fafc',
-                 font=('Segoe UI', 12, 'bold')).pack(anchor='w', padx=24)
-        tk.Label(sidebar, text='Recovery workspace', bg='#101b30', fg='#8e9bb2',
-                 font=('Segoe UI', 10)).pack(anchor='w', padx=24, pady=(4, 26))
-        tk.Label(sidebar, text='IL TUO PERCORSO', bg='#101b30', fg='#718198',
-                 font=('Segoe UI', 8, 'bold')).pack(anchor='w', padx=24, pady=(0, 10))
-        self.nav = []
-        self.titles = ['VM e GitHub', 'Backup', 'Nuova VM Infisical', 'Opzioni', 'Ripristino']
-        self.descriptions = ['Collega la VM stack e scegli il punto di recupero.',
-                             'Scegli dal PC la chiave age e le configurazioni AIO.',
-                             'Collega la seconda VM: recupereremo prima i segreti.',
-                             'Completa solo le opzioni che ti servono.',
-                             'Controlla le destinazioni, poi avvia il recupero.']
-        for index, label in enumerate(self.titles):
-            button = tk.Button(sidebar, text=f'  {index+1:02d}    {label}', anchor='w',
-                               font=('Segoe UI', 10), bg='#101b30', fg='#a4b0c4',
-                               activebackground='#243454', activeforeground='white',
-                               relief='flat', bd=0, padx=12, pady=13, cursor='hand2',
-                               command=lambda i=index:self.book.select(i))
-            button.pack(fill='x', padx=12, pady=3)
-            self.nav.append(button)
-        tk.Label(sidebar, text=f'v{__version__}  /  WINDOWS', bg='#101b30', fg='#718198',
-                 font=('Segoe UI', 8)).pack(side='bottom', anchor='w', padx=24, pady=22)
-        note = tk.Frame(sidebar, bg='#192842', padx=13, pady=13)
-        note.pack(side='bottom', fill='x', padx=18, pady=6)
-        tk.Label(note, text='Una prova, due VM nuove', bg='#192842', fg='#dbe5f7',
-                 font=('Segoe UI', 9, 'bold'), anchor='w').pack(fill='x')
-        tk.Label(note, text='Le VM operative possono\nrestare disponibili.', bg='#192842', fg='#91a1ba',
-                 font=('Segoe UI', 9), justify='left').pack(anchor='w', pady=(6, 0))
-        workspace = ttk.Frame(self, style='Page.TFrame', padding=(28, 22, 20, 16))
-        workspace.pack(side='left', fill='both', expand=True)
-        top = ttk.Frame(workspace, style='Page.TFrame')
-        top.pack(fill='x')
-        self.step_text = tk.StringVar()
-        ttk.Label(top, textvariable=self.step_text, style='Eyebrow.TLabel').pack(side='left')
-        ttk.Button(top, text='Apri la guida ↗', style='Link.TButton', command=lambda:webbrowser.open(
-            'https://github.com/dav1dera/streams-aio-recovery-gui/blob/main/README.md')).pack(side='right')
-        self.page_title = tk.StringVar()
-        self.page_description = tk.StringVar()
-        ttk.Label(workspace, textvariable=self.page_title, style='Title.TLabel').pack(anchor='w', pady=(12, 4))
-        ttk.Label(workspace, textvariable=self.page_description, style='Muted.TLabel').pack(anchor='w', pady=(0, 18))
-        self.book = ttk.Notebook(workspace, style='Wizard.TNotebook')
-        self.book.pack(fill='both', expand=True)
-        self.pages = [ScrollPage(self.book) for _ in range(5)]
-        for page, title in zip(self.pages, self.titles):
-            self.book.add(page, text=title)
-        self._connections(self.pages[0].content)
-        self._backups(self.pages[1].content)
-        self._infisical(self.pages[2].content)
-        self._advanced(self.pages[3].content)
-        self._run(self.pages[4].content)
-        footer = ttk.Frame(workspace, style='Page.TFrame', padding=(0, 14, 0, 0))
-        footer.pack(fill='x')
-        self.status = tk.StringVar(value='Pronto. Nessuna operazione avviata.')
-        ttk.Label(footer, textvariable=self.status, style='Status.TLabel', wraplength=490).pack(side='left')
-        self.next_button = ttk.Button(footer, text='Continua →', style='Accent.TButton', command=lambda:self._move(1))
-        self.next_button.pack(side='right')
-        self.previous_button = ttk.Button(footer, text='← Indietro', command=lambda:self._move(-1))
-        self.previous_button.pack(side='right', padx=(8, 10))
-        self.book.bind('<<NotebookTabChanged>>', self._page_changed)
-        self.bind_all('<MouseWheel>', self._wheel, add='+')
-        self._page_changed()
-        self.after(100, self.poll)
-
-    def _theme(self):
-        style = ttk.Style(self)
-        style.theme_use('clam')
-        style.configure('.', font=('Segoe UI', 10), background='#ffffff', foreground='#18243b')
-        style.configure('Page.TFrame', background='#f5f7fb')
-        style.configure('Card.TFrame', background='#ffffff', relief='solid', borderwidth=1,
-                        bordercolor='#e2e8f2')
-        style.configure('Wizard.TNotebook', background='#f5f7fb', borderwidth=0, padding=0,
-                        bordercolor='#f5f7fb', lightcolor='#f5f7fb', darkcolor='#f5f7fb')
-        style.layout('Wizard.TNotebook.Tab', [])
-        style.configure('TLabel', background='#ffffff')
-        style.configure('Title.TLabel', font=('Segoe UI', 24, 'bold'), background='#f5f7fb', foreground='#15223b')
-        style.configure('Eyebrow.TLabel', font=('Segoe UI', 9, 'bold'), background='#f5f7fb', foreground='#4963db')
-        style.configure('Muted.TLabel', background='#f5f7fb', foreground='#6c7a90')
-        style.configure('Status.TLabel', font=('Segoe UI', 9), background='#f5f7fb', foreground='#6c7a90')
-        style.configure('CardTitle.TLabel', font=('Segoe UI', 12, 'bold'))
-        style.configure('CardHint.TLabel', font=('Segoe UI', 9), foreground='#6c7a90')
-        style.configure('Field.TLabel', font=('Segoe UI', 9), foreground='#526178')
-        style.configure('TEntry', padding=(10, 8), fieldbackground='#f8faff', bordercolor='#dce3ef',
-                        lightcolor='#dce3ef', darkcolor='#dce3ef', insertcolor='#18243b')
-        style.map('TEntry', bordercolor=[('focus', '#6b80f5')], lightcolor=[('focus', '#6b80f5')],
-                  darkcolor=[('focus', '#6b80f5')])
-        style.configure('TCombobox', padding=(8, 8), fieldbackground='#f8faff', background='#edf1f9',
-                        bordercolor='#dce3ef', arrowcolor='#596880')
-        style.map('TCombobox', fieldbackground=[('readonly', '#f8faff')], foreground=[('readonly', '#18243b')])
-        style.configure('TButton', padding=(14, 9), background='#ffffff', foreground='#36445d',
-                        borderwidth=1, bordercolor='#dce3ef', relief='flat')
-        style.map('TButton', background=[('active', '#edf1fb'), ('disabled', '#eef1f6')],
-                  foreground=[('disabled', '#9da7b8')])
-        style.configure('Accent.TButton', background='#4963e9', foreground='white', borderwidth=0)
-        style.map('Accent.TButton', background=[('active', '#3a50c8'), ('disabled', '#c1caec')],
-                  foreground=[('disabled', '#ffffff')])
-        style.configure('Link.TButton', padding=(8, 4), background='#f5f7fb', foreground='#4963db', borderwidth=0)
-        style.configure('TCheckbutton', background='#ffffff', font=('Segoe UI', 9))
-        style.map('TCheckbutton', background=[('active', '#ffffff')])
-        style.configure('Horizontal.TProgressbar', background='#4963e9', troughcolor='#e9edf5',
-                        borderwidth=0, thickness=4)
-
-    def _page_changed(self, event=None):
-        index = self.book.index(self.book.select())
-        self.after_idle(lambda:self.pages[index].canvas.yview_moveto(0))
-        self.step_text.set(f'PASSO {index+1:02d} DI 05  /  RECUPERO DELLO STACK')
-        self.page_title.set(self.titles[index])
-        self.page_description.set(self.descriptions[index])
-        for i, button in enumerate(self.nav):
-            button.configure(bg='#283b63' if i==index else '#101b30',
-                             fg='#ffffff' if i==index else '#a4b0c4',
-                             font=('Segoe UI', 10, 'bold') if i==index else ('Segoe UI', 10))
-        if hasattr(self, 'next_button'):
-            self.previous_button.configure(state='disabled' if index==0 else 'normal')
-            self.next_button.configure(state='disabled' if index==4 else 'normal')
-        if hasattr(self, 'summary'):
-            self.summary.set('Stack: '+(self.var('host').get() or 'da configurare')+'    ·    Infisical: '+
-                             (self.var('infisical_host').get() or 'da configurare')+'\nBackup: '+
-                             (self.var('dr_tag').get() or 'da selezionare'))
-
-    def _move(self, direction):
-        self.book.select(max(0, min(4, self.book.index(self.book.select())+direction)))
-
-    def _wheel(self, event):
-        if isinstance(event.widget, (ttk.Entry, ttk.Combobox, tk.Text)):
-            return
-        page = self.pages[self.book.index(self.book.select())]
-        if page.content.winfo_reqheight() > page.canvas.winfo_height():
-            page.canvas.yview_scroll(-int(event.delta/120), 'units')
-
-    def card(self, parent, title, hint=''):
-        outer = ttk.Frame(parent, style='Card.TFrame', padding=16)
-        outer.pack(fill='x', pady=(0, 12))
-        ttk.Label(outer, text=title, style='CardTitle.TLabel').pack(anchor='w')
-        if hint:
-            ttk.Label(outer, text=hint, style='CardHint.TLabel', wraplength=760).pack(anchor='w', pady=(5, 0))
-        body = ttk.Frame(outer)
-        body.pack(fill='x', pady=(10, 0))
-        return body
-
-    def var(self, key, default=''):
-        if key not in self.vars:
-            self.vars[key] = tk.StringVar(value=default)
-        return self.vars[key]
-
-    def entry(self, parent, label, key, row, default='', secret=False, browse=False, column=0, span=1):
-        block = ttk.Frame(parent)
-        block.grid(row=row, column=column, columnspan=span, sticky='ew', padx=(0, 12), pady=(0, 10))
-        ttk.Label(block, text=label, style='Field.TLabel').pack(anchor='w', pady=(0, 5))
-        field = ttk.Frame(block)
-        field.pack(fill='x')
-        entry = ttk.Entry(field, textvariable=self.var(key, default), show='•' if secret else '', width=20)
-        entry.pack(side='left', fill='x', expand=True)
-        if browse:
-            ttk.Button(field, text='Sfoglia…', command=lambda:self.select_file(key)).pack(side='right', padx=(8, 0))
-        parent.columnconfigure(column, weight=1)
-        return entry
-
-    def _connections(self, tab):
-        vm = self.card(tab, 'La nuova VM stack', 'Ubuntu 26.04 o 24.04 amd64 · utente UID/GID 1000 · SSH e sudo')
-        self.entry(vm, 'Host / IP SSH', 'host', 0)
-        self.entry(vm, 'Utente', 'user', 0, default='pi', column=1)
-        self.entry(vm, 'Porta', 'port', 0, default='22', column=2)
-        self.entry(vm, 'Password SSH', 'password', 1, secret=True)
-        self.entry(vm, 'Chiave SSH (in alternativa)', 'ssh_key', 1, browse=True, column=1, span=2)
-        git = self.card(tab, 'GitHub e punto di recupero', 'Token fine-grained · Contents: Read per streams-aio-dr e streams-aio-sanitized')
-        self.entry(git, 'Token GitHub', 'github_token', 0, secret=True, span=2)
-        ttk.Button(git, text='Carica release da GitHub', command=self.load_choices).grid(row=0, column=2, sticky='es', pady=(0, 12))
-        release = ttk.Frame(git)
-        release.grid(row=1, column=0, sticky='ew', padx=(0, 12), pady=(0, 12))
-        ttk.Label(release, text='Release DR pubblicata', style='Field.TLabel').pack(anchor='w', pady=(0, 5))
-        self.tags = ttk.Combobox(release, textvariable=self.var('dr_tag'), state='readonly', width=23)
-        self.tags.pack(fill='x')
-        self.entry(git, 'Commit dello stack', 'public_commit', 1, column=1, span=2)
-        ttk.Label(tab, text='Scegli release e commit coerenti: i due repository vengono aggiornati separatamente.',
-                  style='Muted.TLabel', wraplength=790).pack(anchor='w', pady=2)
-
-    def _backups(self, tab):
-        self.aio_manual = tk.BooleanVar(value=False)
-        manual = self.card(tab, 'Configurazioni AIO', 'Puoi importarle dopo l’avvio dalle interfacce delle applicazioni.')
-        ttk.Checkbutton(manual, text='Configurerò AIOStreams e AIOMetadata manualmente',
-                        variable=self.aio_manual).grid(row=0, column=0, sticky='w')
-        age = self.card(tab, 'La chiave del tuo backup', 'Usa la identity privata PRIMARY o RECOVERY custodita fuori da Git.')
-        self.entry(age, 'Chiave age PRIMARY o RECOVERY', 'age_identity', 0, browse=True)
-        aio = self.card(tab, 'Le configurazioni AIO', 'Gli export JSON non sono inclusi nelle release DR automatiche.')
-        for index, (key, title) in enumerate((('aiostreams_exports', 'AIOStreams · 2.35.3'),
-                                             ('aiometadata_exports', 'AIOMetadata · 3.3.0'))):
-            box = ttk.Frame(aio, style='Card.TFrame', padding=14)
-            box.grid(row=0, column=index, sticky='nsew', padx=(0, 12))
-            aio.columnconfigure(index, weight=1)
-            ttk.Label(box, text=title, font=('Segoe UI', 11, 'bold')).pack(anchor='w')
-            ttk.Label(box, textvariable=self.var(key, 'Nessun file selezionato'), style='CardHint.TLabel').pack(anchor='w', pady=10)
-            ttk.Button(box, text='Scegli JSON…', command=lambda k=key:self.select_many(k)).pack(anchor='w')
-        payload = self.card(tab, 'Hai già un payload completo?', 'In alternativa ai due gruppi di export, seleziona il PRIVATE_DR_PAYLOAD.')
-        self.entry(payload, 'PRIVATE_DR_PAYLOAD (alternativa)', 'aio_payload', 0, browse=True)
-        ttk.Label(tab, text='Per più profili, gli export devono corrispondere ai binding presenti in Infisical.',
-                  style='Muted.TLabel', wraplength=790).pack(anchor='w')
-
-    def _infisical(self, tab):
-        vm = self.card(tab, 'La nuova VM Infisical', 'Una seconda VM Ubuntu 26.04 o 24.04 amd64. Le chiavi applicative arrivano dal backup.')
-        self.entry(vm, 'Host / IP SSH', 'infisical_host', 0)
-        self.entry(vm, 'Utente', 'infisical_user', 0, default='infiscal', column=1)
-        self.entry(vm, 'Porta SSH', 'infisical_port', 0, default='22', column=2)
-        self.entry(vm, 'Password SSH', 'infisical_password', 1, secret=True)
-        self.entry(vm, 'Chiave SSH (in alternativa)', 'infisical_key', 1, browse=True, column=1, span=2)
-        self.entry(vm, 'Passphrase chiave SSH', 'infisical_key_password', 2, secret=True)
-        self.entry(vm, 'Password sudo (se diversa)', 'infisical_sudo_password', 2, secret=True, column=1, span=2)
-        info = self.card(tab, 'I tuoi segreti, sul server recuperato')
-        ttk.Label(info, text='Infisical v0.165.16  ·  PostgreSQL 14.24  ·  Redis', font=('Segoe UI', 11, 'bold')).pack(anchor='w')
-        ttk.Label(info, text='Database, chiavi e Universal Auth vengono recuperati dalla release cifrata.\n'
-                  'Il collegamento tra le VM passa da SSH e prosegue anche senza Windows.',
-                  style='CardHint.TLabel', wraplength=760, justify='left').pack(anchor='w', pady=(10, 4))
-
-    def _advanced(self, tab):
-        access = self.card(tab, 'Accesso alla VM stack', 'Compila soltanto se sudo usa una password diversa o la chiave SSH ha una passphrase.')
-        self.entry(access, 'Password sudo (se diversa)', 'sudo_password', 0, secret=True)
-        self.entry(access, 'Passphrase chiave SSH', 'key_password', 0, secret=True, column=1)
-        advanced = self.card(tab, 'Infisical già disponibile? Opzioni avanzate',
-                             'Per il recupero delle due VM lascia questi campi vuoti: useremo il backup Agent.')
-        self.entry(advanced, 'Endpoint HTTPS Infisical', 'infisical_address', 0, span=2)
-        self.entry(advanced, 'Project ID (opzionale)', 'project_id', 1)
-        self.entry(advanced, 'Ambiente (opzionale)', 'environment', 1, column=1)
-        self.entry(advanced, 'File Universal Auth client-id', 'client_id_file', 2, browse=True)
-        self.entry(advanced, 'File Universal Auth client-secret', 'client_secret_file', 2, browse=True, column=1)
-
-    def _run(self, tab):
-        self.lab = tk.BooleanVar(value=False)
-        self.tls = tk.BooleanVar(value=False)
-        self.native_agent = tk.BooleanVar(value=True)
-        self.summary = tk.StringVar()
-        action = self.card(tab, 'Rivedi e avvia')
-        ttk.Label(action, textvariable=self.summary, style='CardHint.TLabel', wraplength=760).pack(anchor='w', pady=(0, 10))
-        ttk.Checkbutton(action, text='Confermo che le VM selezionate sono nuove e destinate a questa prova.',
-                        variable=self.lab).pack(anchor='w', pady=(0, 6))
-        ttk.Checkbutton(action, text='Installa l’Agent continuo e il tunnel SSH permanente tra le VM.',
-                        variable=self.native_agent).pack(anchor='w', pady=(0, 6))
-        ttk.Checkbutton(action, text='Riemetti TLS e verifica HTTPS NPM (Cloudflare/ACME reali).',
-                        variable=self.tls).pack(anchor='w', pady=(0, 8))
-        actions = ttk.Frame(action)
-        actions.pack(fill='x')
-        self.buttons = []
-        for text, fn, style in [('Verifica', self.verify, 'TButton'),
-                                ('Ripristina entrambe le VM', self.one_click, 'Accent.TButton')]:
-            button = ttk.Button(actions, text=text, command=fn, style=style)
-            button.pack(side='left', padx=(0, 10))
-            self.buttons.append(button)
-        self.phase_labels = {}
-        phases = ttk.Frame(tab, style='Page.TFrame')
-        phases.pack(fill='x', pady=(0, 8))
-        for index, name in enumerate(('Infisical', 'Stack', 'Agent', 'Servizi')):
-            phases.columnconfigure(index, weight=1)
-            box = ttk.Frame(phases, style='Card.TFrame', padding=(12, 10))
-            box.grid(row=0, column=index, sticky='nsew', padx=(0, 8))
-            ttk.Label(box, text=name, font=('Segoe UI', 9, 'bold')).pack(anchor='w')
-            label = ttk.Label(box, text='Da avviare', style='CardHint.TLabel')
-            label.pack(anchor='w', pady=(3, 0))
-            self.phase_labels[name] = label
-        self.progress = ttk.Progressbar(tab, mode='indeterminate')
-        self.progress.pack(fill='x', pady=(0, 8))
-        log_card = ttk.Frame(tab, style='Card.TFrame', padding=12)
-        log_card.pack(fill='x')
-        toolbar = ttk.Frame(log_card)
-        toolbar.pack(fill='x')
-        ttk.Label(toolbar, text='Attività del ripristino', style='CardTitle.TLabel').pack(side='left')
-        save = ttk.Button(toolbar, text='Salva esiti', command=self.save_report)
-        save.pack(side='right')
-        self.buttons.append(save)
-        self.log = tk.Text(log_card, height=4, bg='#f8faff', fg='#526178', relief='flat',
-                           font=('Consolas', 9), padx=12, pady=8, wrap='word', state='disabled')
-        self.log.pack(fill='x', pady=(10, 0))
-        self.log.tag_configure('ok', foreground='#148569')
-        self.log.tag_configure('error', foreground='#bf4250')
-        self.write_log('Nessuna operazione avviata. Gli esiti compariranno qui.')
-        separate = ttk.Frame(tab, style='Page.TFrame')
-        separate.pack(fill='x', pady=(8, 4))
-        for text, fn in [('Prepara stack', self.prepare), ('Avvia servizi', self.start_services)]:
-            button = ttk.Button(separate, text=text, command=fn)
-            button.pack(side='left', padx=(0, 8))
-            self.buttons.append(button)
-        self.cancel_button = ttk.Button(separate, text='Interrompi', command=lambda:self.cancelled.set(), state='disabled')
-        self.cancel_button.pack(side='right')
-        ttk.Label(tab, text='Dopo l’avvio verifica login, enrollment e HTTPS. I timer di pubblicazione restano disattivati.',
-                  style='Muted.TLabel', wraplength=790).pack(anchor='w', pady=(4, 0))
-
-    def phase_event(self, stage, status):
-        name = ('Infisical' if stage.startswith('INFISICAL_') else 'Agent' if stage=='NATIVE_AGENT'
-                else 'Servizi' if stage in ('STARTED', 'TLS') else 'Stack' if stage in
-                ('INITIALIZE', 'INPUTS', 'RENDER', 'EMPTY_STATE', 'NPM', 'AIO', 'PREFLIGHT', 'PREPARED') else None)
-        if stage == 'REFUSED':
-            name = self.active_phase
-        if name:
-            self.active_phase = name
-            done = stage in ('INFISICAL_SERVER', 'PREPARED', 'NATIVE_AGENT', 'STARTED', 'TLS') and status=='PASS'
-            label = 'Configurazioni AIO manuali' if stage=='AIO' and status=='SKIPPED' else 'Fermato' if status=='REFUSED' else 'Completato' if done else 'In corso'
-            color = '#bf4250' if status=='REFUSED' else '#148569' if done else '#4963db'
-            self.phase_labels[name].configure(text=label, foreground=color)
+def validate_first_boot_choice(data):
+    """Reject unsupported scoped compatibility before modifying either host."""
+    require(data.get('user') == 'test'
+            and data.get('dr_tag') == 'dr-20261006T210601Z'
+            and data.get('public_commit') == '28f6ca7cc6f5fd10418fc0af2926815927ef98c8',
+            'RUNTIME_PROFILE_SCOPE_REFUSED')
 
 
-    def select_file(self, key):
-        path = filedialog.askopenfilename(title='Seleziona il file privato', parent=self)
-        if path:
-            self.var(key).set(path)
+def host_check_message(info, role='stack'):
+    label = 'VM stack' if role == 'stack' else 'VM Infisical'
+    message = (label + ' verificata: ' + info['os'] + ' amd64; '
+               + str(info['containers']) + ' container, ' + str(info['volumes']) + ' volumi Docker.')
+    if info.get('existing_recovery'):
+        phases = info.get('recovery') or {}
+        if role == 'infisical':
+            return message + (' Recupero Infisical completato nel checkpoint.'
+                              if phases.get('infisical_completed') is True else ' Recupero Infisical parziale presente.')
+        attempted = phases.get('application_start_attempted')
+        startup = ('avvio già tentato' if attempted is True else
+                   'avvio non ancora tentato' if attempted is False else 'fase di avvio da verificare')
+        message += (' Recupero precedente presente: '
+                    + ('preparazione completata' if phases.get('prepared') is True else 'preparazione parziale')
+                    + ', ' + startup + '. Profilo di compatibilità '
+                    + ('presente' if phases.get('runtime_profile_recorded') is True else 'assente')
+                    + ' nel checkpoint.')
+    return message
 
-    def select_many(self, key):
-        paths = filedialog.askopenfilenames(title='Seleziona gli export logici JSON', parent=self,
-                                           filetypes=[('JSON', '*.json'), ('Tutti i file', '*')])
-        if paths:
-            self.files[key] = list(paths)
-            self.var(key).set(f'{len(paths)} file selezionati')
 
-    def snapshot(self):
-        return {key: variable.get().strip() if key not in ('password', 'sudo_password', 'key_password', 'infisical_password',
-                                                         'infisical_key_password', 'infisical_sudo_password')
-                else variable.get() for key, variable in self.vars.items()}
-
-    @staticmethod
-    def host(data):
-        try:
-            return Host(data['host'], data['user'], int(data['port']), data['password'],
-                        data['ssh_key'], data['key_password'], data['sudo_password'])
-        except ValueError:
-            raise Failure('SSH_ADDRESS_REQUIRED') from None
-
-    @staticmethod
-    def infisical_host(data):
-        try:
-            return Host(data['infisical_host'], data['infisical_user'], int(data['infisical_port']),
-                        data['infisical_password'], data['infisical_key'], data['infisical_key_password'],
-                        data['infisical_sudo_password'])
-        except ValueError:
-            raise Failure('SSH_ADDRESS_REQUIRED') from None
-
-    def key_dialog(self, host, fingerprint):
-        done = threading.Event()
-        answer = []
-        self.events.put(('key', (host, fingerprint, done, answer)))
-        while not done.wait(0.1):
-            if self.cancelled.is_set():
-                return False
-        return bool(answer and answer[0])
-
-    def job(self, action, return_page=None):
-        if self.busy:
-            return
-        self.busy = True
-        self.return_page = return_page
-        self.cancelled.clear()
-        self.book.select(4)
-        self.progress.start(15)
-        self.cancel_button.configure(state='normal')
-        for button in self.buttons:
-            button.configure(state='disabled')
-        self.status.set('Operazione in corso. Le credenziali non vengono registrate.')
-        def worker():
-            try:
-                action()
-            except Failure as error:
-                code = str(error)
-                self.events.put(('error', code if code in ERROR_CODES else 'OPERATION_STOPPED'))
-            except Exception:
-                self.events.put(('error', 'OPERATION_STOPPED'))
-            finally:
-                self.events.put(('done', None))
-        threading.Thread(target=worker, daemon=True).start()
-
-    def load_choices(self):
-        token = self.var('github_token').get()
-        def action():
-            self.events.put(('choices', GitHub(token).choices()))
-        self.job(action, return_page=0)
-
-    def verify(self):
-        data = self.snapshot()
-        def action():
-            tags, commit = GitHub(data['github_token']).choices()
-            ssh = SSH(self.host(data), self.key_dialog, self.cancelled)
-            try:
-                info = ssh.check()
-                self.events.put(('message', 'VM stack verificata: ' + info['os'] + ' amd64; nessun container o volume esistente.'))
-                self.events.put(('choices', (tags, data.get('public_commit') or commit)))
-            finally:
-                ssh.close()
-            if data.get('infisical_host'):
-                host = self.infisical_host(data)
-                other = SSH(host, self.key_dialog, self.cancelled)
-                try:
-                    other.check(role='infisical')
-                    self.events.put(('message', 'Nuova destinazione Infisical verificata. Nessun servizio modificato.'))
-                finally:
-                    other.close()
-        self.job(action)
-
-    def one_click(self):
-        data = self.snapshot()
-        data['aio_mode'] = 'manual' if self.aio_manual.get() else 'import'
-        try:
-            self.host(data).validate()
-            self.infisical_host(data).validate()
-            require(self.lab.get(), 'FRESH_VM_CONFIRMATION_REQUIRED')
-            require(bool(SHA.fullmatch(data['public_commit'])) and bool(TAG.fullmatch(data['dr_tag'])), 'SELECT_GITHUB_RECOVERY_POINT')
-            require(Path(data['age_identity']).is_file(), 'AGE_IDENTITY_FILE_REQUIRED')
-            require(data['aio_mode'] == 'manual' or bool(data.get('aio_payload') or (self.files['aiostreams_exports'] and self.files['aiometadata_exports'])),
-                    'AIO_EXPORTS_OR_PAYLOAD_REQUIRED')
-            require(bool(data['client_id_file']) == bool(data['client_secret_file']), 'BOTH_UNIVERSAL_AUTH_FILES_REQUIRED')
-        except Failure as error:
-            messagebox.showinfo('Completa gli input', str(error), parent=self)
-            return
-        summary = ('Nuovo stack: ' + data['host'] + '\nNuovo Infisical: ' + data['infisical_host']
-                   + '\nRelease: ' + data['dr_tag'] + '\nCommit: ' + data['public_commit'][:12]
-                   + '\n\nInstallerà Docker su entrambe le VM e ripristinerà Infisical in /opt/infisical.\n'
-                   'Poi leggerà i segreti recuperati, preparerà lo stack e avvierà i servizi.\n'
-                   'Chiave age ed export resteranno in storage privato sulle nuove VM.\n'
-                   'DNS, timer, DDNS, Watchtower ed enrollment richiedono il collaudo successivo.\n'
-                   + ('Installerà anche l’Agent e una chiave SSH dedicata, limitata all’API Infisical.'
-                      if self.native_agent.get() else 'Agent continuo escluso da questa prova.'))
-        if not messagebox.askokcancel('Ripristina le due VM nuove', summary, parent=self):
-            return
-        data.update({k:list(v) for k,v in self.files.items()})
-        data['native_agent']=self.native_agent.get()
-        tls = self.tls.get()
-        def action():
-            stack = SSH(self.host(data), self.key_dialog, self.cancelled)
-            server = None
-            try:
-                server = SSH(self.infisical_host(data), self.key_dialog, self.cancelled)
-                restore_all(stack, server, data, lambda item:self.events.put(('stage',item)), tls)
-                self.events.put(('message','Infisical recuperato, segreti letti dalla nuova VM e stack avviato. Ora verifica gli accessi applicativi.'))
-                if data['aio_mode'] == 'manual':
-                    self.events.put(('message', 'AIOStreams e AIOMetadata avviati vuoti: configura o importa i profili dalle loro interfacce.'))
-            finally:
-                stack.close()
-                if server is not None:
-                    server.close()
-        self.job(action)
-
-    def prepare(self):
-        data = self.snapshot()
-        data['aio_mode'] = 'manual' if self.aio_manual.get() else 'import'
-        try:
-            self.host(data).validate()
-            require(self.lab.get(), 'FRESH_VM_CONFIRMATION_REQUIRED')
-            require(bool(SHA.fullmatch(data['public_commit'])) and bool(TAG.fullmatch(data['dr_tag'])), 'SELECT_GITHUB_RECOVERY_POINT')
-            require(Path(data['age_identity']).is_file(), 'AGE_IDENTITY_FILE_REQUIRED')
-            require(data['aio_mode'] == 'manual' or bool(data.get('aio_payload') or (self.files['aiostreams_exports'] and self.files['aiometadata_exports'])),
-                    'AIO_EXPORTS_OR_PAYLOAD_REQUIRED')
-            require(bool(data['client_id_file']) == bool(data['client_secret_file']), 'BOTH_UNIVERSAL_AUTH_FILES_REQUIRED')
-        except Failure as error:
-            messagebox.showinfo('Completa gli input', str(error), parent=self)
-            return
-        summary = ('VM: ' + data['user'] + '@' + data['host'] + '\n'
-                   'Release: ' + data['dr_tag'] + '\nCommit: ' + data['public_commit'][:12] + '\n\n'
-                   'Installerà Docker e dipendenze e preparerà ~/streams-aio.\n'
-                   'Trasferirà la chiave age e gli export via SSH in una cartella privata.\n'
-                   'Non avvierà container né installerà timer. Infisical deve già essere raggiungibile.')
-        if not messagebox.askokcancel('Prepara questa VM', summary, parent=self):
-            return
-        data.update({k: list(v) for k, v in self.files.items()})
-        def action():
-            ssh = SSH(self.host(data), self.key_dialog, self.cancelled)
-            try:
-                ssh.prepare(data, lambda item: self.events.put(('stage', item)))
-            finally:
-                ssh.close()
-        self.job(action)
-
-    def start_services(self):
-        data, tls = self.snapshot(), self.tls.get()
-        if not self.lab.get():
-            messagebox.showinfo('Seleziona la VM di prova', 'Conferma la destinazione nella scheda Ripristino.', parent=self)
-            return
-        if not messagebox.askokcancel('Avvia sulla VM nuova',
-                'Avvio per dipendenze su ' + data['host'] + '.\nWatchtower, DDNS e deunhealth restano esclusi.\n'
-                + ('Richiederà certificati reali Cloudflare/ACME.\n' if tls else '')
-                + 'La verifica backend richiede un ripristino preparato su questa stessa VM.', parent=self):
-            return
-        def action():
-            ssh = SSH(self.host(data), self.key_dialog, self.cancelled)
-            try:
-                ssh.start(tls, lambda item: self.events.put(('stage', item)))
-            finally:
-                ssh.close()
-        self.job(action)
-
-    def write_log(self, text, tag=None):
-        self.log.configure(state='normal')
-        self.log.insert('end', text + '\n', tag)
-        self.log.see('end')
-        self.log.configure(state='disabled')
-
-    def poll(self):
-        while True:
-            try:
-                kind, value = self.events.get_nowait()
-            except queue.Empty:
-                break
-            if kind == 'key':
-                host, fingerprint, done, answer = value
-                answer.append(messagebox.askyesno('Verifica la VM SSH', 'Host: ' + host + '\n' + fingerprint
-                    + '\n\nConfronta l’impronta con la console della VM. Riconosci questa chiave?', parent=self))
-                done.set()
-            elif kind == 'choices':
-                tags, commit = value
-                old = self.var('dr_tag').get()
-                self.tags['values'] = tags
-                if old not in tags:
-                    self.var('dr_tag').set(tags[0])
-                self.var('public_commit').set(commit)
-                self.write_log('GitHub verificato. Release pubblicate caricate; controlla il punto scelto.', 'ok')
-                self.status.set('GitHub pronto. Configura la VM e seleziona i backup.')
-            elif kind == 'stage':
-                self.safe_report.append(value)
-                stage, status = value['stage'], value['status']
-                self.phase_event(stage, status)
-                display_status = 'DA IMPORTARE MANUALMENTE' if status == 'SKIPPED' else status
-                self.write_log(TEXT[stage] + ' · ' + display_status + ((' · ' + value['code']) if value.get('code') else ''),
-                               'error' if status == 'REFUSED' else ('ok' if status == 'PASS' else None))
-                if status == 'REFUSED' and value.get('code') in ERRORS:
-                    self.write_log(ERRORS[value['code']], 'error')
-                self.status.set(TEXT[stage] + ': ' + display_status)
-                if stage == 'PREPARED' and status == 'PASS':
-                    self.prepared = True
-                    self.write_log('Ora puoi avviare i servizi. Il ripristino funzionale e l’Agent continuo sono ancora da verificare.')
-                if stage == 'STARTED' and status == 'PASS':
-                    self.write_log('Servizi avviati. Verifica login, enrollment e HTTPS; i timer restano disattivati.')
-            elif kind == 'message':
-                self.write_log(value, 'ok')
-            elif kind == 'error':
-                self.safe_report.append(dict(stage='REFUSED', status='REFUSED', code=value))
-                self.phase_event('REFUSED', 'REFUSED')
-                self.write_log(value + ' · ' + ERRORS.get(value, 'Procedura fermata; dati di recupero conservati.'), 'error')
-                self.status.set('Procedura fermata: ' + value)
-            elif kind == 'done':
-                self.busy = False
-                self.progress.stop()
-                self.cancel_button.configure(state='disabled')
-                for button in self.buttons:
-                    button.configure(state='normal')
-                if self.return_page is not None:
-                    self.book.select(self.return_page)
-                    self.return_page = None
-        self.after(100, self.poll)
-
-    def save_report(self):
-        path = filedialog.asksaveasfilename(title='Salva gli esiti senza credenziali', defaultextension='.json', parent=self)
-        if path:
-            Path(path).write_text(json.dumps(dict(schema=1, events=self.safe_report,
-                scope='SERVER_RESTORE_AND_STACK_START; FUNCTIONAL_DR_NOT_VERIFIED'), indent=2) + '\n', encoding='utf-8')
-
-    def close_app(self):
-        if self.busy and not messagebox.askokcancel('Operazione in corso',
-                'Chiudere interrompe la connessione; non annulla quanto già fatto sulla VM. I dati vengono conservati.', parent=self):
-            return
-        self.cancelled.set()
-        for key in ('password', 'github_token', 'sudo_password', 'key_password', 'infisical_password',
-                    'infisical_key_password','infisical_sudo_password'):
-            self.var(key).set('')
-        self.destroy()
+from .ui_dashboard import App
 
 
 def main():
