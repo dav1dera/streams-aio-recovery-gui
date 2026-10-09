@@ -2,122 +2,117 @@
 
 # Streams AIO Recovery
 
-### Il tuo stack, di nuovo operativo. Da Windows a due VM nuove.
+### Il tuo stack, pronto a ripartire.
 
-SSH, backup cifrati e configurazioni GitHub, in una procedura guidata.
+Una GUI Windows per recuperare Infisical, configurazioni AIO, NPM e servizi su due VM Ubuntu.
 
-**[Scarica il programma · v0.3.8](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.3.8)** · **[Guida completa](docs/USAGE.md)** · **[Backup DR](https://github.com/dav1dera/streams-aio-dr/releases)**
-
-**La v0.3.8 corregge la ripresa da `INFISICAL_DEPLOYMENT_PROFILE_CHANGED`.** Le vecchie build Windows e quella locale avevano lo stesso profilo JSON con terminatori di riga diversi. Il programma ora confronta le impostazioni effettive e riconosce i due formati già distribuiti. Mantiene database, chiavi e passi completati; un cambio reale di immagini, database o ruolo PostgreSQL resta bloccato. Riprendi sulle stesse VM con la stessa release DR, commit e chiave age.
-
-**La v0.3.7 corregge i permessi nel passaggio all’Agent.** Il renderer dello stack crea gli env privati come `640`; l’Agent li prende in carico come `600`. La GUI verifica che siano file generati dal piano e dalla ricevuta di questo recupero, poi ne restringe i permessi e assegna il proprietario dell’Agent. Le chiavi private mantengono il requisito `600`; file estranei, link e permessi più aperti restano rifiutati. Riprendi sulle stesse VM con la stessa release, commit e chiave age.
-
-**La v0.3.6 corregge il passaggio dalla preparazione all'Agent continuo.** Riconosce il commento aggiunto da OpenSSH alla chiave del tunnel, conserva la chiave già creata e mostra i codici di errore dell'Agent anche quando il comando restituisce metadati. Per riprendere dopo **Preparazione completata · PASS**, conserva le stesse VM, release e commit e premi **Ripristina entrambe le VM** nella nuova GUI.
-
-**Puoi configurare AIOStreams e AIOMetadata dopo il ripristino.** Nel passo **Backup** seleziona **Configurerò AIOStreams e AIOMetadata manualmente**: non servono export AIO o payload sul PC. I servizi partono con database nuovi e configurerai i profili dalle loro interfacce. Infisical, secret, stack e NPM seguono il recupero normale. Il registro indica **DA IMPORTARE MANUALMENTE**, senza dichiarare recuperate le configurazioni AIO.
-
-**La v0.3.4 legge il backup Agent prodotto con percorsi assoluti Linux.** Ricostruisce i percorsi conosciuti dentro una cartella privata, senza scrivere nei percorsi originali di `/etc`; link, attraversamenti e duplicati restano rifiutati. Per riprendere da `UNSAFE_AGENT_ARCHIVE`, conserva le stesse VM, release DR, commit e file privati: Infisical gia recuperato viene verificato e riutilizzato. Restano incluse le correzioni delle chiavi Windows, del download e di PostgreSQL. [Ripresa dopo un errore →](docs/USAGE.md#8-se-la-procedura-si-ferma).
+**0.4.0 preview · [Guida pratica](docs/USAGE.md) · [VM in Proxmox](docs/PROXMOX.md) · [Versioni precedenti](docs/RELEASE-NOTES.md)**
 
 </div>
 
-![Schermata reale: VM stack e punto di recupero GitHub](docs/screenshots/01-vm-github.jpg)
+![Dashboard reale della 0.4.0: le due azioni di recupero e lo stato delle fasi](docs/screenshots/00-dashboard-v040.png)
 
-**Inserisci gli accessi delle due VM, scegli i backup e premi «Ripristina entrambe le VM».** Il programma installa Docker, recupera Infisical, ricostruisce lo stack e configura l’Agent continuo. Non serve Python sul PC.
+## Due pulsanti, un percorso
 
-Le schermate mostrano il programma reale con i campi vuoti. I test automatici usano dati sintetici; **il collaudo completo con i tuoi backup reali sulle nuove VM resta da eseguire**.
-
-## Prima di aprirlo
-
-| Ti serve | Prepara così |
+| **Crea da zero** | **Rileva e continua** |
 | --- | --- |
-| **Due VM nuove** | Ubuntu Server **26.04 LTS amd64** (anche **24.04 LTS**), SSH attivo, utente UID/GID **1000** e sudo su ciascuna. Per la prova usa IP diversi dalle VM operative. |
-| **Accessi SSH** | IP, utente e password oppure file della chiave SSH per entrambe le VM. |
-| **Token GitHub di lettura** | Fine-grained token: **Contents: Read** per `streams-aio-dr` e `streams-aio-sanitized`. |
-| **Chiave privata age** | Identity PRIMARY o RECOVERY custodita fuori da Git. La chiave pubblica `age1…` non basta. |
-| **Configurazioni AIO** | Facoltative se scegli la configurazione manuale. Per l’importazione automatica: export JSON di **AIOStreams 2.35.3** e **AIOMetadata 3.3.0**, oppure un `PRIVATE_DR_PAYLOAD` completo. I binding dei profili devono essere presenti in Infisical. |
+| Parti da due VM vuote con SSH disponibile. Il programma installa Docker e ricostruisce lo stack dal backup completo. | Il programma controlla entrambe le VM, riconosce il recupero scelto e riprende i passi compatibili senza azzerare i dati. |
 
-Gli export AIO vanno conservati separatamente: **le release DR automatiche non li includono**. Docker lo installa il programma. [Preparazione VM, token e verifica del download →](docs/USAGE.md#1-cosa-preparare)
+Configura gli accessi una volta nella sessione, carica un backup e torna alla **Panoramica**. Le schede mostrano Infisical, Stack, AIO, Agent, Domini e Servizi; gli errori indicano il passaggio da correggere. **Salva esiti** esporta il registro dei controlli.
 
-**Hai già caricato `ubuntu-26.04.1-live-server-amd64.iso` su Proxmox? Puoi usare quella.** [Crea le due VM e abilita SSH →](docs/PROXMOX.md). Usa l’eseguibile **v0.3.1 o successivo**: la v0.3.0 accetta soltanto Ubuntu 24.04. Il bootstrap sceglie il repository Docker della versione installata (`resolute` per 26.04, `noble` per 24.04), senza mescolare le distribuzioni. [Requisiti ufficiali Docker](https://docs.docker.com/engine/install/ubuntu/).
+**Stato della preview:** il nuovo flusso è implementato e sottoposto a test locali. Il recupero completo della 0.4.0 da VM vuote, i login AIO e il collegamento CometNet pubblico devono ancora essere collaudati sulle VM. Questa versione non certifica ancora una copia operativa identica alla produzione. [Cosa manca alla verifica finale](docs/USAGE.md#collaudo-finale).
 
-Gli screenshot illustrano l’interfaccia v0.3.0; nella v0.3.1 le indicazioni Ubuntu includono anche 26.04.
-
-## Cinque passi, un ripristino
-
-### 01 · Collega lo stack e scegli il backup
-
-Nella schermata **VM e GitHub** mostrata sopra inserisci l’accesso alla nuova VM stack e il token. Premi **Carica release da GitHub**, poi controlla **Release DR pubblicata** e **Commit dello stack**.
-
-Il caricamento propone la release più recente e il commit pubblico corrente. Sono aggiornati separatamente: per recuperare uno stato precedente scegli il commit completo coerente con quella release.
-
-### 02 · Seleziona la chiave e scegli come configurare AIO
-
-In **Backup**, usa **Sfoglia…** per la chiave privata age. Per configurare AIO dopo l'avvio, seleziona **Configurerò AIOStreams e AIOMetadata manualmente** e lascia vuoti gli export e il payload. Per importarli automaticamente, usa **Scegli JSON…** per i due gruppi di export; un payload DR completo sostituisce entrambi i gruppi.
-
-![Schermata reale: chiave age ed export AIO](docs/screenshots/02-backup.jpg)
-
-### 03 · Collega la seconda VM
-
-In **Nuova VM Infisical**, inserisci l’accesso alla seconda macchina. Le chiavi applicative, il progetto, i secret e Universal Auth arrivano dal backup: non occorre reinserirli a mano.
-
-![Schermata reale: accesso alla nuova VM Infisical](docs/screenshots/03-infisical.jpg)
-
-### 04 · Completa solo le opzioni necessarie
-
-In **Opzioni**, compila la password sudo dello stack se diversa da SSH e l’eventuale passphrase della chiave. Per recuperare **entrambe le VM**, lascia vuoti endpoint, progetto, ambiente e file Universal Auth: il programma usa il backup Agent.
-
-<details>
-<summary>Mostra la schermata delle opzioni</summary>
-
-![Schermata reale: opzioni di accesso e modalità avanzata](docs/screenshots/04-options.jpg)
-
-</details>
-
-### 05 · Verifica e avvia
-
-Premi **Verifica** e confronta le impronte SSH con quelle delle console delle VM. Controlla le destinazioni, conferma che sono nuove e lascia attivo **Installa l’Agent continuo e il tunnel SSH permanente**. Alla prima prova lascia TLS disattivato.
-
-Premi **Ripristina entrambe le VM** e conferma il riepilogo. Tieni il PC collegato finché la procedura termina. Le quattro schede mostrano lo stato delle fasi; **Salva esiti** conserva un report senza credenziali.
-
-![Schermata reale: riepilogo, fasi e attività del ripristino](docs/screenshots/05-restore.jpg)
-
-**Interrompi** chiude la connessione e conserva il lavoro parziale; non annulla le scritture già fatte. Se la procedura si ferma, salva gli esiti e consulta la [guida agli errori](docs/USAGE.md#8-se-la-procedura-si-ferma).
-
-## Cosa viene recuperato
+## Cosa recupera
 
 ```mermaid
 flowchart LR
-    A[GitHub + chiave age] --> B[Nuova VM Infisical]
-    B --> C[Secret e configurazioni]
-    D[Commit pubblico + export AIO] --> E[Nuova VM stack]
-    C --> E
-    E --> F[Agent continuo + avvio servizi]
+    B[Backup privato cifrato] --> I[Infisical]
+    G[Commit associato al backup] --> S[Stack e immagini fissate]
+    I --> S
+    B --> A[Database AIO nativi]
+    S --> A
+    A --> T[Agent e tunnel SSH]
+    T --> N[NPM e HTTPS]
+    N --> C[CometNet con il tuo dominio]
+    C --> V[Verifica dei servizi]
 ```
 
-| Componente | Risultato |
+| Componente | Comportamento del nuovo percorso |
 | --- | --- |
-| **Infisical** | Configurazione, chiavi applicative, ruoli e database originali. Redis riparte vuoto. |
-| **Stack** | Compose, immagini e configurazioni dal commit pubblico scelto; secret dal nuovo Infisical. |
-| **Agent** | CLI **0.43.137**, mapping privati e tunnel SSH permanente tra le VM. Continua anche dopo aver chiuso Windows. |
-| **NPM e applicazioni AIO** | Database NPM dalla release cifrata. AIO parte vuoto nella modalità manuale; nell'importazione automatica usa i file scelti sul PC. TLS è opzionale. |
-| **Altri dati runtime** | Ripartono secondo il piano di inizializzazione. Il DR ricostruisce il sistema senza clonare ogni database. |
+| **Infisical** | Recupera configurazione privata, chiavi applicative, ruoli e database; verifica l’API. |
+| **Stack** | Usa il commit registrato nel backup, ricostruisce configurazioni e permessi e controlla le immagini fissate per digest. |
+| **AIOStreams e AIOMetadata** | Ripristina gli snapshot nativi SQLite con profili, identità, hash delle password e dati OAuth presenti nel backup. Verifica immagini e chiavi di cifratura associate. |
+| **Agent** | Installa l’Agent continuo e il tunnel SSH permanente verso Infisical. |
+| **NPM e domini** | Recupera NPM, riemette TLS secondo la configurazione prevista e controlla HTTPS sulla destinazione recuperata. |
+| **CometNet** | Usa l’indirizzo WSS e i parametri reali da Infisical; NPM e HTTPS vengono preparati prima del suo controllo di raggiungibilità. |
+| **Controller pubblici** | Cloudflare DDNS, Watchtower e Deunhealth vengono attivati per ultimi nel recupero della produzione; restano esclusi nella prova affiancata. |
 
-Il programma rifiuta destinazioni già occupate e mantiene i controlli SSH, SHA256 e di compatibilità. Le credenziali non vengono salvate sul PC; il materiale privato trasferito resta fuori dai clone Git sulle VM.
+Comet, CometNet, StremThru e le cache già dichiarate ricostruibili ripartono vuoti: credenziali e configurazioni vengono recuperate, mentre scraping, indici e cache si ricostruiscono. Lo snapshot AIO non comprende l’intero PostgreSQL o tutti i volumi Docker. Gli stati opzionali di altri servizi, come registrazioni di nodi o account locali, devono essere verificati nell’inventario finale. [Dati conservati e dati ricostruibili](docs/USAGE.md#dati-conservati-e-dati-ricostruibili).
 
-## Quando ha finito
+## Cosa serve
 
-Prova il login Infisical, la lettura dei secret, NPM, i profili AIO e i servizi che usi. Chiudi la GUI e verifica che Agent e tunnel restino attivi. Un container `healthy` non prova da solo il recupero completo.
+| Input | Cosa preparare |
+| --- | --- |
+| **Due VM** | Ubuntu Server **26.04 o 24.04 amd64**, OpenSSH, sudo e utente UID/GID 1000. Possono avere nomi utente diversi. Docker viene installato dalla GUI. |
+| **Accessi SSH** | IP, utente e password Ubuntu, oppure chiave SSH, per ciascuna VM. Sudo e passphrase si compilano nelle opzioni solo quando necessari. |
+| **Token GitHub** | Fine-grained con **Contents: Read** su `dav1dera/streams-aio-dr` e `dav1dera/streams-aio-sanitized`. |
+| **Identity age privata** | File PRIMARY o RECOVERY compatibile con il backup, contenente `AGE-SECRET-KEY-1…`. Una chiave pubblica `age1…` non decifra. |
+| **Backup completo** | Release privata con manifest **schema 2** e `aio-state.tar.gz.age`. Il commit coerente viene caricato dal manifest. |
+| **Instradamento dei domini** | DNS e router devono già portare il traffico alla destinazione prevista per la modalità scelta. |
 
-I timer di push/backup e Watchtower, DDNS e deunhealth restano disattivati nella prova. Riattivali dopo il collaudo e il passaggio alle nuove VM. L’Agent aggiorna i file privati; la ricreazione dei container richiede un’azione esplicita durante la prova.
+<details>
+<summary>Schermata reale: Accessi e backup</summary>
 
-**Backup abituale:** locale → GitHub. **Questo programma:** GitHub → nuove VM.
+![Configurazione della 0.4.0: accessi alle due VM e selezione del backup](docs/screenshots/01-setup-v040.png)
 
-## Guide e sviluppo
+</details>
 
-- [Guida completa: preparazione, esempio compilato, controlli finali ed errori](docs/USAGE.md)
-- [Runbook dello stack](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/DISASTER-RECOVERY.md)
-- [Sincronizzazione pubblica da locale](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/SEAMLESS-PUBLIC-SYNC.md)
-- [Backup DR privati e retention](https://github.com/dav1dera/streams-aio-dr/blob/main/README.md)
-- [Test e compilazione Windows](https://github.com/dav1dera/streams-aio-recovery-gui/actions/workflows/verify-build.yml)
+Il percorso normale non richiede export JSON AIO, companion o client secret Infisical da inserire a mano. Le credenziali dell’Agent vengono recuperate dal backup. I vecchi backup senza snapshot AIO possono essere riconosciuti, ma non soddisfano il nuovo recupero automatico completo.
 
-Per eseguire il sorgente usa Python 3.11+ con Tcl/Tk e le dipendenze di `requirements.txt`. Per compilare su Windows usa `build.ps1`; i [comandi di sviluppo](docs/USAGE.md#compatibilità-e-sviluppo) sono nella guida completa.
+La GUI lavora su VM già create: installazione di Ubuntu, creazione delle VM in Proxmox e instradamento del router restano preparativi esterni. Non modifica automaticamente DNS o port forwarding. Immagini e layout non compatibili vengono segnalati, anziché essere adattati senza verifica.
+
+## Prova affiancata o recupero della produzione?
+
+| | **Prova affiancata alle VM operative** | **Recupero della produzione** |
+| --- | --- | --- |
+| VM originali | Rimangono operative. | Il traffico deve essere destinato alle VM sostitutive. |
+| Domini | Stessi nomi del backup, con instradamento DNS dedicato al test. | Stessi nomi del backup, instradati alla destinazione di produzione. |
+| NPM / HTTPS / CometNet | Controllati sulla nuova destinazione; CometNet usa il dominio reale. | Controllati sulla nuova destinazione prima dell’attivazione finale. |
+| DDNS / Watchtower / Deunhealth | Esclusi per evitare azioni concorrenti alla produzione. | Attivati per ultimi dopo la verifica dei domini. |
+
+L’instradamento della prova deve funzionare anche dal contenitore Comet, attraverso Gluetun/VPN: modificare soltanto il file hosts di Windows non basta. Il programma prova la destinazione con una risposta temporanea univoca di NPM, così il certificato del server originale non può far passare per riuscito il recupero. Il traffico P2P da Internet richiede una prova esterna distinta.
+
+## Primo utilizzo
+
+1. Prepara le VM e apri **Accessi e backup**.
+2. Inserisci i due accessi SSH e il token; premi **Carica backup** e scegli un punto completo. Il relativo commit viene compilato automaticamente.
+3. Scegli il file della identity age privata, la destinazione del recupero e l’**Indirizzo IP previsto per i domini**.
+4. Torna a **Panoramica** e premi **Crea da zero**. Per un tentativo già avviato usa **Rileva e continua** con gli stessi backup e destinazioni.
+5. Al termine esegui i login e le prove applicative della [guida pratica](docs/USAGE.md). Conserva gli esiti insieme al punto di recupero.
+
+**Crea da zero non è un pulsante di cancellazione.** Una VM con risorse estranee o un checkpoint incompatibile viene fermata prima del ripristino. Per simulare di nuovo un disastro completo, ripristina uno snapshot pulito delle sole VM di test o creane due nuove.
+
+## Backup giornaliero
+
+La configurazione giornaliera è stata pubblicata nella repository privata DR: esecuzione alle **04:30 nel fuso della VM**, ritardo casuale fino a 10 minuti e recupero delle esecuzioni perse. La politica conserva **cinque release verificate**, quindi normalmente cinque punti giornalieri; esecuzioni manuali aggiuntive consumano lo stesso numero di punti.
+
+**L’applicazione del timer alla VM originale e la pubblicazione di un nuovo backup completo con AIO restano da verificare dal vivo.** Il file aggiornato nella repository non dimostra che il timer remoto sia già cambiato. Il backup settimanale precedente e le vecchie release non vengono considerati automaticamente aggiornati. [Verifiche del backup](docs/USAGE.md#backup-giornaliero).
+
+## Cosa è stato verificato
+
+| Evidenza | Stato |
+| --- | --- |
+| Nuova dashboard, selezione del backup coerente, snapshot AIO e profilo operativo | Implementati; test locali. |
+| Ripresa, controlli di proprietà, ordine NPM → CometNet e prova della destinazione | Test locali; collaudo integrato sulle VM pendente. |
+| Prova precedente 0.3.17 | Avvio dei 28 servizi previsto dalla simulazione riuscito il 9 ottobre; AIO manuale, CometNet locale, tre controller esclusi. |
+| Nuova esecuzione 0.4.0 da VM vuote | **Da eseguire.** |
+| Login, profili AIO, OAuth, P2P pubblico e ripartenza dopo riavvio | **Da eseguire.** |
+| Backup completo AIO e timer giornaliero applicato sull’originale | **Da verificare dal vivo.** |
+
+Il successo della prova 0.3.17 rimane un riferimento storico; non certifica il nuovo recupero con domini pubblici e AIO automatico.
+
+## Codice e build
+
+Il programma usa Python/Tk e SSH. L’eseguibile include gli strumenti remoti, senza chiavi, token o backup reali. Per compilarlo usa `build.ps1`; per i test Python usa `python -B -m unittest discover -s tests`. Alcuni controlli richiedono Linux/Docker; i test saltati non sono verifiche dal vivo. I test del helper NPM sono in `tests/check_domain_probe.mjs`.
+
+Le versioni delle applicazioni devono corrispondere al backup e al profilo di compatibilità verificato. Un nuovo commit dello stack non implica supporto automatico per qualsiasi nuova immagine Docker.

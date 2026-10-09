@@ -7,6 +7,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Python environment creation failed' }
 if ($LASTEXITCODE -ne 0) { throw 'A working Python Tcl/Tk installation is required to build the GUI' }
 & "$projectRoot\.venv\Scripts\python.exe" -m pip install -r requirements-build.txt
 if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
-& "$projectRoot\.venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed --name StreamsAIO-Recovery --add-data 'remote;remote' main.py
+& "$projectRoot\.venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean StreamsAIO-Recovery.spec
 if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
 Get-FileHash -Algorithm SHA256 -LiteralPath "$projectRoot\dist\StreamsAIO-Recovery.exe"
