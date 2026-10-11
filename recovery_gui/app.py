@@ -164,6 +164,7 @@ ERRORS = {
     'RECOVERY_AIO_MODE_CHANGED': 'La modalità AIO è diversa da quella del checkpoint. Conserva lo stato prima di cambiare modalità.',
     'MANUAL_AIO_INPUT_CONTRACT_INVALID': 'Il piano di input non consente la configurazione AIO manuale richiesta.',
     'REMOTE_OPERATION_FAILED': 'La VM ha fermato il comando. Se presente, il codice del passo è indicato nel registro.',
+    'REMOTE_SCRIPT_FORMAT_INVALID': 'Il programma contiene uno script Ubuntu in un formato errato. Usa il pacchetto corretto e scegli Rileva e continua. Questo controllo precede le modifiche alle VM.',
     'SSH_CHANNEL_CLOSED': 'Il canale SSH si è chiuso senza comunicare l’esito del comando. Conserva il tentativo e verifica connessione e stato della VM prima di ripetere l’avvio.',
     'REMOTE_EXIT_137': 'Il comando remoto è terminato con codice 137. Il solo esito non ne identifica la causa: controlla stato della VM e memoria, conservando i dati.',
     'REMOTE_EXIT_143': 'Il comando remoto è terminato con codice 143. Il checkpoint e i dati restano conservati; verifica il tentativo prima di riprendere.',

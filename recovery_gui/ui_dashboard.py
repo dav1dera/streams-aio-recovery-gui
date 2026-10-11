@@ -12,6 +12,7 @@ from . import __version__, backend
 from .backend import Failure, GitHub, Host, SHA, TAG, require
 from .codes import ERROR_CODES
 from .startup_diagnostic import lines as startup_diagnostic_lines
+from .external_dependencies import lines as external_dependency_lines
 from .ui_state import PHASES, phase_for, phase_status, machine_status, error_destination, operational_request
 
 
@@ -74,6 +75,7 @@ class App(tk.Tk):
         self.hero_status = tk.StringVar(value='Il tuo stack, pronto a ripartire.')
         self.hero_detail = tk.StringVar(value='Infisical, configurazioni AIO, NPM, domini e servizi in un unico percorso.')
         self.infrastructure_verified = False
+        self.external_unavailable = 0
         self.summary = tk.StringVar(value='Nessun punto di recupero selezionato')
         self.phase_detail = tk.StringVar(value='I controlli iniziano quando scegli un’azione.')
         self.failure_title, self.failure_detail = tk.StringVar(), tk.StringVar()
@@ -290,9 +292,13 @@ class App(tk.Tk):
             box.grid(row=2, column=index, sticky='ew', padx=(0, 12), pady=(3, 0))
             ttk.Label(box, text=label, style='Field.TLabel').pack(anchor='w')
             ttk.Label(box, textvariable=self.var(key, 'Nessun file selezionato'), style='CardHint.TLabel').pack(anchor='w', pady=6)
-            button = ttk.Button(box, text='Scegli JSON…', command=lambda k=key: self.select_many(k))
-            button.pack(anchor='w')
-            self.buttons.append(button)
+            actions = ttk.Frame(box)
+            actions.pack(anchor='w')
+            button = ttk.Button(actions, text='Scegli JSON…', command=lambda k=key: self.select_many(k))
+            button.pack(side='left')
+            clear = ttk.Button(actions, text='Rimuovi', command=lambda k=key: self.clear_many(k))
+            clear.pack(side='left', padx=(7, 0))
+            self.buttons.extend((button, clear))
 
     def var(self, key, default=''):
         if key not in self.vars:
@@ -351,6 +357,10 @@ class App(tk.Tk):
             self.files[key] = list(paths)
             self.var(key).set(f'{len(paths)} file selezionati')
 
+    def clear_many(self, key):
+        self.files[key] = []
+        self.var(key).set('Nessun file selezionato')
+
     def snapshot(self):
         secrets = {'password', 'sudo_password', 'key_password', 'infisical_password', 'infisical_key_password', 'infisical_sudo_password'}
         return {key: variable.get() if key in secrets else variable.get().strip() for key, variable in self.vars.items()}
@@ -382,6 +392,7 @@ class App(tk.Tk):
             return
         self.busy, self.return_page, self.last_error = True, return_page, None
         self.infrastructure_verified = False
+        self.external_unavailable = 0
         self.failure_box.pack_forget()
         self.cancelled.clear()
         self.book.select(0)
@@ -427,18 +438,20 @@ class App(tk.Tk):
     def recover(self, action):
         data = operational_request(self.snapshot(), action, self.files)
         try:
-            try:
-                address = ipaddress.ip_address(data.get('domain_target_address', ''))
-            except ValueError:
-                raise Failure('PUBLIC_DOMAIN_CONFIGURATION_REQUIRED') from None
-            require(str(address) == data['domain_target_address'] and not address.is_unspecified
-                    and not address.is_multicast, 'PUBLIC_DOMAIN_CONFIGURATION_REQUIRED')
-            require(data['routing_mode'] in ('parallel_test', 'production_recovery'), 'OPERATIONAL_DEPLOYMENT_REFUSED')
+            if action == 'fresh':
+                try:
+                    address = ipaddress.ip_address(data.get('domain_target_address', ''))
+                except ValueError:
+                    raise Failure('PUBLIC_DOMAIN_CONFIGURATION_REQUIRED') from None
+                require(str(address) == data['domain_target_address'] and not address.is_unspecified
+                        and not address.is_multicast, 'PUBLIC_DOMAIN_CONFIGURATION_REQUIRED')
+                require(data['routing_mode'] in ('parallel_test', 'production_recovery'), 'OPERATIONAL_DEPLOYMENT_REFUSED')
             self.host(data).validate()
             self.infisical_host(data).validate()
             require(data['host'] != data['infisical_host'], 'SEPARATE_RECOVERY_VMS_REQUIRED')
-            require(bool(SHA.fullmatch(data['public_commit'])) and bool(TAG.fullmatch(data['dr_tag'])), 'SELECT_GITHUB_RECOVERY_POINT')
-            require(self.backup_has_aio is not False, 'AIO_SNAPSHOT_REQUIRED')
+            if action == 'fresh':
+                require(bool(SHA.fullmatch(data['public_commit'])) and bool(TAG.fullmatch(data['dr_tag'])), 'SELECT_GITHUB_RECOVERY_POINT')
+                require(self.backup_has_aio is not False, 'AIO_SNAPSHOT_REQUIRED')
             require(Path(data['age_identity']).is_file(), 'AGE_IDENTITY_FILE_REQUIRED')
             require(not Path(data['age_identity']).is_symlink() and Path(data['age_identity']).stat().st_size <= 65536, 'AGE_IDENTITY_FILE_INVALID')
             require(not data.get('supplemental_inputs') or Path(data['supplemental_inputs']).is_file(), 'RECOVERY_SUPPLEMENT_INVALID')
@@ -451,9 +464,17 @@ class App(tk.Tk):
             try:
                 stack = backend.SSH(self.host(data), self.key_dialog, self.cancelled)
                 server = backend.SSH(self.infisical_host(data), self.key_dialog, self.cancelled)
-                detected = backend.inspect_recovery(stack, server, data)
+                job_request = data
+                if action == 'resume':
+                    job_request = backend.resolve_resume_request(stack, server, data)
+                    point = GitHub(data['github_token']).point(job_request['dr_tag'])
+                    require(point['public_commit'] == job_request['public_commit'], 'DR_STACK_COMMIT_MISMATCH')
+                    require(point['aio_snapshot'] is True, 'AIO_SNAPSHOT_BACKUP_REQUIRED')
+                    self.events.put(('resumed_selection', dict(point=point,
+                        routing_mode=job_request['routing_mode'], domain_target_address=job_request['domain_target_address'])))
+                detected = backend.inspect_recovery(stack, server, job_request)
                 self.events.put(('detected', detected))
-                backend.restore_all(stack, server, data, lambda item: self.events.put(('stage', item)), tls=True)
+                backend.restore_all(stack, server, job_request, lambda item: self.events.put(('stage', item)), tls=True)
                 self.events.put(('finished', None))
             finally:
                 if stack is not None:
@@ -519,6 +540,17 @@ class App(tk.Tk):
                 self.write_log('Backup pubblicati caricati. Verifica release e commit associati.', 'ok')
                 self.hero_status.set('Scegli come ripartire')
                 self.hero_detail.set('Accessi e punto di recupero sono nella configurazione.')
+            elif kind == 'resumed_selection':
+                point = value['point']
+                self.var('dr_tag').set(point['tag'])
+                self.var('public_commit').set(point['public_commit'])
+                self.var('routing_mode').set(value['routing_mode'])
+                self.var('domain_target_address').set(value['domain_target_address'])
+                self.routing_label.set('Prova affiancata alle VM operative' if value['routing_mode'] == 'parallel_test'
+                                       else 'Recupero della produzione')
+                self.backup_has_aio = True
+                self._page_changed()
+                self.write_log('Riprendo il backup '+point['tag']+' e l’instradamento già verificati sulle VM.', 'ok')
             elif kind == 'point':
                 self.var('dr_tag').set(value['tag'])
                 self.var('public_commit').set(value['public_commit'])
@@ -544,11 +576,12 @@ class App(tk.Tk):
                          'NPM_TOPOLOGY': 'Collegamenti NPM alle nuove VM',
                          'OPERATIONAL_PROFILE': 'Configurazione per i domini del recupero',
                          'PUBLIC_DOMAINS': 'NPM, HTTPS e dominio CometNet',
+                         'EXTERNAL_UPSTREAMS': 'Collegamenti a dispositivi esterni',
                          'PUBLIC_CONTROLLERS': 'Servizi automatici della produzione',
                          'OPERATIONAL_READY': 'Controlli dell’infrastruttura', 'AIO_BACKUP': 'Configurazioni AIO dal backup',
                          'AIO_DATABASES': 'Dati AIO dal backup'}
                 label = self.stage_text.get(stage, extra.get(stage, 'Passaggio del recupero'))
-                display = {'RUNNING': 'in corso', 'PASS': 'verificato', 'SKIPPED': 'non completato', 'REFUSED': 'fermato'}.get(status, status)
+                display = {'RUNNING': 'in corso', 'PASS': 'verificato', 'SKIPPED': 'non completato', 'REFUSED': 'fermato', 'WARNING': 'da controllare'}.get(status, status)
                 self.write_log(label + ' · ' + display + ((' · ' + value['code']) if value.get('code') else ''),
                                'error' if status == 'REFUSED' else 'ok' if status == 'PASS' else None)
                 self.phase_detail.set(label + ' · ' + display)
@@ -558,10 +591,17 @@ class App(tk.Tk):
                 if stage == 'REFUSED' and value.get('code') == 'APPLICATION_HEALTH_WAIT_FAILED' and 'diagnostic' in value:
                     for line in startup_diagnostic_lines(value['diagnostic']):
                         self.write_log(line, 'error')
+                if stage == 'EXTERNAL_UPSTREAMS':
+                    self.external_unavailable = len(value['diagnostic']['unavailable'])
+                    for line in external_dependency_lines(value['diagnostic']):
+                        self.write_log(line)
                 if stage == 'OPERATIONAL_READY' and status == 'PASS':
                     self.infrastructure_verified = True
                     self.hero_status.set('Infrastruttura ripristinata')
                     self.hero_detail.set('Servizi e domini hanno superato i controlli. Restano da verificare login, profili AIO e collegamenti alle applicazioni.')
+                    if self.external_unavailable:
+                        self.hero_status.set('Stack ripristinato · collegamenti esterni da controllare')
+                        self.hero_detail.set(str(self.external_unavailable)+' dispositivi esterni non rispondono. I collegamenti NPM sono conservati. Restano da verificare login e profili applicativi.')
             elif kind == 'error':
                 self.safe_report.append(dict(stage='REFUSED', status='REFUSED', code=value))
                 self.phase_event('REFUSED', 'REFUSED')

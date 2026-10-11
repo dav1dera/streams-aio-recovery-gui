@@ -18,8 +18,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
 from urllib.parse import urlsplit
 from .codes import ERROR_CODES
-from .recovery_inspection import inspect_recovery
+from .recovery_inspection import inspect_recovery, resolve_resume_request
 from .startup_diagnostic import safe as safe_startup_diagnostic
+from .external_dependencies import validate as validate_external_dependencies
 
 PUBLIC = 'dav1dera/streams-aio-sanitized'
 PRIVATE = 'dav1dera/streams-aio-dr'
@@ -27,7 +28,7 @@ STAGES = {'DEPENDENCIES', 'CLONES', 'DOWNLOAD', 'DECRYPT', 'INITIALIZE', 'INPUTS
           'RENDER', 'EMPTY_STATE', 'NPM', 'AIO', 'PREFLIGHT', 'PREPARED', 'STARTED', 'REFUSED', 'TLS',
           'INFISICAL_CONFIG', 'INFISICAL_DATABASE', 'INFISICAL_SERVER', 'NATIVE_AGENT',
           'RUNTIME_PROFILE', 'COMETNET_TRIAL', 'IMAGES', 'APPLICATION_CHECKS', 'TEST_RESET_STACK', 'TEST_RESET_INFISICAL',
-          'OPERATIONAL_PROFILE', 'PUBLIC_DOMAINS', 'PUBLIC_CONTROLLERS', 'OPERATIONAL_READY', 'AIO_BACKUP', 'NPM_TOPOLOGY'}
+          'OPERATIONAL_PROFILE', 'PUBLIC_DOMAINS', 'PUBLIC_CONTROLLERS', 'OPERATIONAL_READY', 'AIO_BACKUP', 'NPM_TOPOLOGY', 'EXTERNAL_UPSTREAMS'}
 CODE = re.compile(r'[A-Z][A-Z0-9_]{0,100}\Z')
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 TAG = re.compile(r'dr-[0-9]{8}T[0-9]{6}Z\Z')
@@ -52,11 +53,30 @@ def resources():
     return Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1])) / 'remote'
 
 
+def validate_remote_shell_scripts():
+    """Check packaged bytes, before a remote command can change either VM."""
+    try:
+        folder = resources()
+        scripts = list(folder.glob('*.sh'))
+        require(folder.joinpath('bootstrap.sh') in scripts, 'REMOTE_SCRIPT_FORMAT_INVALID')
+        for script in scripts:
+            raw = script.read_bytes()
+            require(raw.startswith(b'#!/usr/bin/env bash\n') and raw.endswith(b'\n')
+                    and b'\r' not in raw, 'REMOTE_SCRIPT_FORMAT_INVALID')
+    except OSError:
+        raise Failure('REMOTE_SCRIPT_FORMAT_INVALID') from None
+
+
 def parse_event(line):
     if not line.startswith('RECOVERY_EVENT '):
         return None
     try:
         item = json.loads(line[len('RECOVERY_EVENT '):])
+        if (isinstance(item,dict) and set(item)=={'stage','status','diagnostic'}
+                and item.get('stage')=='EXTERNAL_UPSTREAMS' and item.get('status') in ('PASS','WARNING')):
+            diagnostic=validate_external_dependencies(item['diagnostic'])
+            require((item['status']=='WARNING')==bool(diagnostic['unavailable']),'INVALID_EVENT')
+            return dict(stage='EXTERNAL_UPSTREAMS',status=item['status'],diagnostic=diagnostic)
         if (isinstance(item, dict) and set(item) == {'stage', 'status', 'code', 'diagnostic'}
                 and item.get('stage') == 'REFUSED' and item.get('status') == 'REFUSED'
                 and item.get('code') == 'APPLICATION_HEALTH_WAIT_FAILED'):
@@ -338,6 +358,7 @@ class SSH:
         return home + '/.local/share/streams-aio-' + ('infisical-recovery' if role == 'infisical' else 'recovery')
 
     def upload(self, request):
+        validate_remote_shell_scripts()
         role = request.get('role', 'stack')
         home = (self.check(role=role) if role != 'stack' else self.check())['home']
         area = self.area(home, role)
@@ -364,7 +385,7 @@ os.chown(stage,1000,1000)
             sftp.mkdir(remote + '/remote', mode=0o700)
             for name in ('bootstrap.sh', 'recover.py', 'probe.py', 'requirements-dr.txt', 'requirements-new-vm.txt', 'start.py',
                          'infisical_server.py', 'infisical_inventory.py', 'infisical-deployment.json', 'native_agent.py', 'runtime_profile.py',
-                         'aio_snapshot.py', 'operational_profile.py', 'npm_topology.py', 'npm-domain-probe.mjs',
+                         'aio_snapshot.py', 'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
                          'npm-route-probe.mjs'):
                 self._put(sftp, resources() / name, remote + '/remote/' + name)
             config = {key: request[key] for key in ('github_token', 'public_commit', 'dr_tag',
@@ -462,7 +483,7 @@ os.chown(stage,1000,1000)
         area=self.area(home,role)
         sftp=self.client.open_sftp()
         try:
-            for name in ('native_agent.py','recover.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs'):
+            for name in ('native_agent.py','recover.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs'):
                 self._put(sftp,resources()/name,area+'/'+name)
         finally:
             sftp.close()
@@ -477,7 +498,7 @@ os.chown(stage,1000,1000)
         area = home + '/.local/share/streams-aio-recovery'
         sftp = self.client.open_sftp()
         try:
-            for name in ('start.py','recover.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs'):
+            for name in ('start.py','recover.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs'):
                 self._put(sftp, resources() / name, area + '/' + name)
         finally:
             sftp.close()
@@ -657,6 +678,7 @@ def restart_test_hosts(stack, server, request, callback, tls=False):
 
 def restore_all(stack, server, request, callback, tls=False):
     """Preflight both hosts before any upload/install; restore Infisical first."""
+    validate_remote_shell_scripts()
     operational = request.get('operational_profile') is True
     if operational:
         import ipaddress

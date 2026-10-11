@@ -6,6 +6,101 @@ passes the existing strict probe before the caller can restore or start it.
 import json
 
 
+CHECKPOINT_SELECTION = r'''
+import ipaddress,json,os,pwd,re,stat,sys
+from pathlib import Path
+runner=Path(sys.argv[1]);target=Path(sys.argv[2]);role=sys.argv[3];machine=sys.argv[4]
+try:
+    if os.geteuid()!=0 or role not in ('stack','infisical'):raise ValueError()
+    user=pwd.getpwuid(1000)
+    expected=Path(user.pw_dir)/'.local/share'/('streams-aio-infisical-recovery' if role=='infisical' else 'streams-aio-recovery')
+    expected_target=Path('/opt/infisical') if role=='infisical' else Path(user.pw_dir)/'streams-aio'
+    path=runner/'state.json'
+    if user.pw_gid!=1000 or runner!=expected or target!=expected_target:raise ValueError()
+    if any(p.is_symlink() for p in (path,*path.parents)):raise ValueError()
+    if not path.exists():
+        print(json.dumps({'present':False}));raise SystemExit(0)
+    directory=runner.stat();info=path.stat()
+    if not stat.S_ISDIR(directory.st_mode) or directory.st_uid!=1000 or stat.S_IMODE(directory.st_mode)!=0o700:raise ValueError()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o600 or info.st_size>1048576:raise ValueError()
+    state=json.loads(path.read_bytes())
+    if not isinstance(state,dict) or type(state.get('schema')) is not int or state['schema']!=1 or state.get('runner_version')!='0.2.0':raise ValueError()
+    if state.get('machine_id')!=machine or machine!=Path('/etc/machine-id').read_text().strip() or state.get('target')!=str(target):raise ValueError()
+    commit=state.get('tooling_commit');tag=state.get('tag')
+    if not isinstance(commit,str) or not re.fullmatch(r'[0-9a-f]{40}',commit):raise ValueError()
+    if 'public_commit' in state and state['public_commit']!=commit:raise ValueError()
+    if tag is not None and (not isinstance(tag,str) or not re.fullmatch(r'dr-[0-9]{8}T[0-9]{6}Z',tag)):raise ValueError()
+    result=dict(present=True,tag=tag,public_commit=commit,routing_mode=None,domain_target_address=None)
+    record=state.get('operational_deployment')
+    if record is not None:
+        if role!='stack' or not isinstance(record,dict):raise ValueError()
+        address=str(ipaddress.ip_address(record.get('domain_target_address')))
+        expected=dict(schema=1,routing_mode=record.get('routing_mode'),domain_target_address=address,uid=1000,gid=1000,user=user.pw_name,home=user.pw_dir,target=str(target),machine_id=machine,tag=tag,public_commit=commit,tooling_commit=commit)
+        if record!=expected or type(record.get('schema')) is not int or record.get('routing_mode') not in ('parallel_test','production_recovery'):raise ValueError()
+        if ipaddress.ip_address(address).is_unspecified or ipaddress.ip_address(address).is_multicast:raise ValueError()
+        result.update(routing_mode=record['routing_mode'],domain_target_address=address)
+    print(json.dumps(result))
+except Exception:
+    print(json.dumps({'refused':True}))
+'''
+
+
+def resolve_resume_request(stack, server, request):
+    """Select the existing deployment without modifying either checkpoint.
+
+    Discovery is followed by the complete existing scope and ownership checks.
+    GitHub verifies the discovered release again before any restore operation.
+    """
+    from .backend import Failure, SHA, TAG, require
+    if request.get('recovery_action') != 'resume':
+        return dict(request)
+    selections = []
+    machines = []
+    for client, role in ((stack, 'stack'), (server, 'infisical')):
+        info = client.check(fresh=False, role=role)
+        machines.append(info.get('machine_id'))
+        home = info['home']
+        target = '/opt/infisical' if role == 'infisical' else home + '/streams-aio'
+        raw = client.run(['python3', '-B', '-c', CHECKPOINT_SELECTION, client.area(home, role),
+                          target, role, info['machine_id']], sudo=True, timeout=30)
+        try:
+            row = json.loads(raw)
+            require(isinstance(row, dict), 'FOREIGN_RECOVERY_STATE')
+            if row == {'present': False}:
+                require(not info.get('existing_recovery'), 'FOREIGN_RECOVERY_STATE')
+                continue
+            require(set(row) == {'present','tag','public_commit','routing_mode','domain_target_address'}
+                    and row['present'] is True
+                    and isinstance(row['public_commit'], str) and bool(SHA.fullmatch(row['public_commit']))
+                    and (row['tag'] is None or isinstance(row['tag'],str) and bool(TAG.fullmatch(row['tag']))),
+                    'FOREIGN_RECOVERY_STATE')
+            mode, address = row['routing_mode'], row['domain_target_address']
+            if mode is not None or address is not None:
+                import ipaddress
+                parsed = ipaddress.ip_address(address)
+                require(role == 'stack' and mode in ('parallel_test','production_recovery')
+                        and str(parsed) == address and not parsed.is_unspecified and not parsed.is_multicast,
+                        'FOREIGN_RECOVERY_STATE')
+            selections.append(row)
+        except (ValueError, TypeError, UnicodeError):
+            raise Failure('FOREIGN_RECOVERY_STATE') from None
+    require(machines[0] and machines[1] and machines[0] != machines[1], 'SEPARATE_RECOVERY_VMS_REQUIRED')
+    result = dict(request)
+    if selections:
+        commits = {row['public_commit'] for row in selections}
+        tags = {row['tag'] for row in selections if row['tag'] is not None}
+        require(len(commits) == 1 and len(tags) <= 1, 'FOREIGN_RECOVERY_STATE')
+        result['public_commit'] = commits.pop()
+        if tags:
+            result['dr_tag'] = tags.pop()
+        for row in selections:
+            if row['routing_mode'] is not None:
+                result.update(routing_mode=row['routing_mode'], domain_target_address=row['domain_target_address'])
+    # Discovery never substitutes for the strict Docker, volume and scope guard.
+    inspect_recovery(stack, server, result)
+    return result
+
+
 CHECKPOINT_SCOPE = r'''
 import json,os,pwd,stat,sys
 from pathlib import Path
