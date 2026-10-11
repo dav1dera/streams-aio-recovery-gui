@@ -59,16 +59,124 @@ class StartupFailure(ValueError):
         self.diagnostic = diagnostic
 
 
+class EarlyUnhealthy(ValueError):
+    """Compose stopped on an unhealthy check before its wait deadline."""
+
+
 def emit(stage, status='PASS'):
     print('RECOVERY_EVENT ' + json.dumps(dict(stage=stage, status=status)), flush=True)
+
+
+def external_dependency_report(raw):
+    records = [line[len('NPM_EXTERNAL_REPORT '):] for line in raw.decode('utf-8').splitlines()
+               if line.startswith('NPM_EXTERNAL_REPORT ')]
+    if len(records) != 1:
+        raise ValueError('TLS_VERIFICATION_FAILED')
+    value = json.loads(records[0])
+    if (not isinstance(value,dict) or set(value) != {'schema','total','unavailable'}
+            or type(value['schema']) is not int or value['schema'] != 1
+            or type(value['total']) is not int or not 0 <= value['total'] <= 4096
+            or not isinstance(value['unavailable'],list)
+            or any(type(v) is not int or not 1 <= v <= 2**31-1 for v in value['unavailable'])
+            or value['unavailable'] != sorted(set(value['unavailable']))
+            or len(value['unavailable']) > value['total']):
+        raise ValueError('TLS_VERIFICATION_FAILED')
+    return value
 
 
 def call(args, root):
     env = {k: v for k, v in os.environ.items() if not k.startswith(('COMPOSE_', 'INFISICAL_', 'PYTHON'))}
     p = subprocess.run([str(x) for x in args], cwd=root, env=env, capture_output=True, timeout=1800)
     if p.returncode:
+        if (args[:5] == ['docker', 'compose', '--profile', 'all', 'up']
+                and re.search(rb'(?:^|\n)container [A-Za-z0-9][A-Za-z0-9_.-]{0,250} is unhealthy\r?(?:\n|$)',
+                              p.stderr[-4096:])):
+            raise EarlyUnhealthy('SERVICE_START_OR_CHECK_FAILED')
         raise ValueError('SERVICE_START_OR_CHECK_FAILED')
     return p.stdout
+
+
+def wait_wave_ready(compose, root, selected, deadline, reader=None,
+                    clock=None, sleeper=None):
+    """Use the remaining original budget without restarting or weakening health."""
+    clock, sleeper = clock or time.monotonic, sleeper or time.sleep
+    if not selected or len(selected) != len(set(selected)) or not set(selected) <= set(compose['services']):
+        raise ValueError('APPLICATION_HEALTH_WAIT_FAILED')
+    if reader is None:
+        def reader(args):
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise ValueError('APPLICATION_HEALTH_WAIT_FAILED')
+            env = {k:v for k,v in os.environ.items()
+                   if not k.startswith(('COMPOSE_', 'INFISICAL_', 'PYTHON'))
+                   and k not in {'GH_TOKEN', 'GITHUB_TOKEN'}}
+            result = subprocess.run(args, cwd=root, env=env, capture_output=True,
+                                    timeout=min(5, remaining))
+            if result.returncode or len(result.stdout) > 16*1024**2:
+                raise ValueError('APPLICATION_HEALTH_WAIT_FAILED')
+            return result.stdout
+    refs = [compose['services'][name]['image'] for name in selected]
+    if any(not isinstance(ref, str) or not PINNED_IMAGE.fullmatch(ref) for ref in refs):
+        raise ValueError('APPLICATION_PINNED_IMAGES_REQUIRED')
+    image_ids = reader(['docker', 'image', 'inspect', '--format', '{{.Id}}', *refs]).decode('ascii').split()
+    if len(image_ids) != len(selected) or any(not re.fullmatch(r'sha256:[0-9a-f]{64}', v) for v in image_ids):
+        raise ValueError('APPLICATION_HEALTH_WAIT_FAILED')
+    expected_images = dict(zip(selected, image_ids))
+    original_ids, original_restarts = None, None
+    while clock() < deadline:
+        ids = reader(['docker', 'compose', '--profile', 'all', 'ps', '-aq', '--', *selected]).decode('ascii').split()
+        if (len(ids) != len(selected) or len(ids) != len(set(ids))
+                or any(not re.fullmatch(r'[0-9a-f]{12,64}', v) for v in ids)):
+            raise ValueError('APPLICATION_HEALTH_WAIT_FAILED')
+        containers = json.loads(reader(['docker', 'inspect', *ids]))
+        if not isinstance(containers, list) or len(containers) != len(selected):
+            raise ValueError('APPLICATION_HEALTH_WAIT_FAILED')
+        validate_runtime(compose, root, containers, [])
+        rows = {c['Config']['Labels']['com.docker.compose.service']:c for c in containers}
+        if len(rows) != len(containers) or set(rows) != set(selected):
+            raise ValueError('APPLICATION_HEALTH_WAIT_FAILED')
+        current_ids, restarts, ready = {}, {}, True
+        for name, container in rows.items():
+            state, config = container['State'], container['Config']
+            current_ids[name] = container['Id']
+            restarts[name] = container['RestartCount']
+            if (container['Id'] not in ids or config.get('Image') != compose['services'][name]['image']
+                    or container['Image'] != expected_images[name]
+                    or state.get('Running') is not True or state.get('Status') != 'running'
+                    or any(state.get(k) is not False for k in ('Paused', 'Restarting', 'Dead', 'OOMKilled'))
+                    or type(restarts[name]) is not int or restarts[name] < 0):
+                raise ValueError('APPLICATION_HEALTH_WAIT_FAILED')
+            healthcheck = config.get('Healthcheck') or {}
+            enabled = bool(healthcheck.get('Test')) and healthcheck['Test'][0] != 'NONE'
+            health = (state.get('Health') or {}).get('Status')
+            if enabled:
+                if health not in ('starting', 'unhealthy', 'healthy'):
+                    raise ValueError('APPLICATION_HEALTH_WAIT_FAILED')
+                ready = ready and health == 'healthy'
+            elif health is not None:
+                raise ValueError('APPLICATION_HEALTH_WAIT_FAILED')
+        if original_ids is None:
+            original_ids, original_restarts = current_ids, restarts
+        if current_ids != original_ids or restarts != original_restarts:
+            raise ValueError('APPLICATION_HEALTH_WAIT_FAILED')
+        if ready and clock() < deadline:
+            return
+        remaining = deadline - clock()
+        if remaining > 0:
+            sleeper(min(5, remaining))
+    raise ValueError('APPLICATION_HEALTH_WAIT_FAILED')
+
+
+def start_wave(compose, root, selected):
+    deadline = time.monotonic() + 300
+    try:
+        try:
+            call(['docker', 'compose', '--profile', 'all', 'up', '-d', '--no-deps', '--wait',
+                  '--wait-timeout', '300', *selected], root)
+        except EarlyUnhealthy:
+            wait_wave_ready(compose, root, selected, deadline)
+    except Exception:
+        raise StartupFailure(startup_diagnostic(compose, root, selected)) from None
 
 
 def validate_runtime(compose, root, containers, volumes):
@@ -397,14 +505,7 @@ def start(root, home, tls=False, operational=False, cutover=False,
             # Dependency ordering is explicit. Check health before the next wave.
             state['application_wave'] = selected
             checks.save(state_path, state)
-            try:
-                call(['docker', 'compose', '--profile', 'all', 'up', '-d', '--no-deps', '--wait',
-                      '--wait-timeout', '300', *selected], root)
-            except Exception:
-                # Report the stopped wave immediately, using the existing
-                # authenticated operation and lock. The failure remains a
-                # failure even if restart policies later make containers run.
-                raise StartupFailure(startup_diagnostic(compose, root, selected)) from None
+            start_wave(compose, root, selected)
             if 'pgbouncer' in selected:
                 try:
                     call(['docker', 'compose', '--profile', 'all', 'exec', '-T', 'pgbouncer',
@@ -417,21 +518,26 @@ def start(root, home, tls=False, operational=False, cutover=False,
         emit('TLS', 'RUNNING')
         try:
             if not operational:
-                call([sys.executable, '-B', root / 'scripts/npm-dr.py', 'reissue', '--target', root], root)
-            call([sys.executable, '-B', root / 'scripts/npm-dr.py', 'verify', '--target', root], root)
+                call([sys.executable, '-B', Path(__file__).with_name('npm_runtime.py'), 'reissue', '--target', root], root)
+            args = [sys.executable, '-B', Path(__file__).with_name('npm_runtime.py'), 'verify', '--target', root]
+            if operational:
+                args += ['--state-home', home]
+            raw = call(args, root)
+            if operational:
+                external = external_dependency_report(raw)
+                state['external_upstreams'] = external
         except Exception:
             raise ValueError('TLS_VERIFICATION_FAILED') from None
         emit('TLS')
+        if operational:
+            print('RECOVERY_EVENT '+json.dumps(dict(stage='EXTERNAL_UPSTREAMS',
+                status='WARNING' if external['unavailable'] else 'PASS',diagnostic=external)),flush=True)
     if operational and not deferred:
         emit('PUBLIC_CONTROLLERS', 'RUNNING')
         selected = sorted(DEFERRED & set(compose['services']))
         state['application_wave'] = selected
         checks.save(state_path, state)
-        try:
-            call(['docker', 'compose', '--profile', 'all', 'up', '-d', '--no-deps', '--wait',
-                  '--wait-timeout', '300', *selected], root)
-        except Exception:
-            raise StartupFailure(startup_diagnostic(compose, root, selected)) from None
+        start_wave(compose, root, selected)
         emit('PUBLIC_CONTROLLERS')
     if operational:
         final_service_check(compose, root, deferred=deferred)

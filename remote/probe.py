@@ -104,9 +104,13 @@ def pending_aio_checkpoint(target, runner, data):
     services = ('aiostreams','aiometadata')
     paths = {name: 'data/' + name + '/data/db.sqlite' for name in services}
     generated = target/'.generated'
-    journal = private_json(generated/'aio-snapshot-pending.json')
-    need(isinstance(journal, dict) and set(journal) == {'schema','evidence','staging'}
-         and type(journal['schema']) is int and journal['schema'] == 1)
+    journal_path = generated/'aio-snapshot-pending.json'
+    need(not journal_path.is_symlink())
+    journal_present = journal_path.exists()
+    journal = private_json(journal_path) if journal_present else None
+    if journal_present:
+        need(isinstance(journal, dict) and set(journal) == {'schema','evidence','staging'}
+             and type(journal['schema']) is int and journal['schema'] == 1)
     with tarfile.open(archive, 'r:gz') as capsule:
         members = []
         for member in capsule:
@@ -163,6 +167,18 @@ def pending_aio_checkpoint(target, runner, data):
         linked_credentials='NATIVE_DATABASE_PRESERVED')
     if 'deployment' in manifest:
         evidence['deployment'] = manifest['deployment']
+    if not journal_present:
+        # Failed validation has not created the link journal. Prove absence
+        # of every output and staging artifact before permitting a retry.
+        outputs = [generated/'aio-snapshot-complete.json', generated/'aio-import-complete.json',
+                   generated/'npm-deployment.json']
+        for relative in paths.values():
+            destination = target/relative
+            outputs.extend(Path(str(destination)+suffix) for suffix in ('','-wal','-shm','-journal'))
+        for path in outputs:
+            need(not any(p.is_symlink() for p in (path,*path.parents)) and not path.exists())
+        need(not list(generated.glob('aio-restore-*')))
+        return
     need(journal['evidence'] == evidence and isinstance(journal['staging'],str))
     staging = Path(journal['staging'])
     need(staging.parent == generated and staging.name.startswith('aio-restore-')
