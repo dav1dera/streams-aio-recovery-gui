@@ -387,21 +387,53 @@ def read_supplemental_inputs(identity, ciphertext, home, tag, commit, outside=()
             ciphertext_sha256=source_sha256)
 
 
+def archived_local_inputs(directory, plan):
+    """Optional ordinary configuration from the encrypted Agent archive."""
+    module = load_module(Path(__file__).with_name('local_config.py'), 'recovery_local_inputs')
+    try:
+        return module.load_local_config(directory, plan['required_values'])
+    except module.ConfigRefused as error:
+        raise Refused(str(error)) from None
+
+
 def collect_inputs(plan, dr, client, project, environment, *, aio_mode='import', supplemental=None,
-                   applied=None):
+                   applied=None, local_values=None):
     plan = input_plan(plan, aio_mode)
     supplemental = {} if supplemental is None else supplemental
     require(isinstance(supplemental, dict) and set(supplemental) <= {OAUTH_ALLOWLIST_REF},
             'RECOVERY_SUPPLEMENT_INVALID')
     for value in supplemental.values():
         validate_allowlist(value)
+    local_values = {} if local_values is None else local_values
+    local_module, local_folders = None, set()
+    if local_values:
+        local_module = load_module(Path(__file__).with_name('local_config.py'), 'recovery_local_merge')
+        try:
+            local_values = local_module.validate_document(
+                {'schema': 1, 'values': local_values}, plan['required_values'])
+            local_folders = local_module.local_only_folders(plan, local_values, plan['required_values'])
+        except local_module.ConfigRefused as error:
+            raise Refused(str(error)) from None
+    else:
+        require(isinstance(local_values, dict), 'LOCAL_CONFIG_INVALID')
     snapshots, values = {}, {}
     for folder in dr.all_paths(plan):
-        response = client.secrets.list_secrets(
-            project_id=project, environment_slug=environment, secret_path=folder,
-            recursive=False, expand_secret_references=True,
-            view_secret_value=True, include_imports=True)
-        entries = response_values(response)
+        # Entirely local folders may have been removed from Infisical. Dynamic
+        # AIO folders always retain the normal API read, including new secrets.
+        if folder in local_folders:
+            entries = {}
+        else:
+            response = client.secrets.list_secrets(
+                project_id=project, environment_slug=environment, secret_path=folder,
+                recursive=False, expand_secret_references=True,
+                view_secret_value=True, include_imports=True)
+            entries = response_values(response)
+        if local_module is not None:
+            try:
+                entries = local_module.merge_folder_values(
+                    folder, entries, local_values, plan['required_values'])
+            except local_module.ConfigRefused as error:
+                raise Refused(str(error)) from None
         if folder == '/oauth2-proxy' and 'ALLOWED_EMAILS' not in entries and OAUTH_ALLOWLIST_REF in supplemental:
             entries['ALLOWED_EMAILS'] = supplemental[OAUTH_ALLOWLIST_REF]
             if applied is not None:
@@ -830,13 +862,19 @@ class Recovery:
                 self.config['age_identity'], self.config['supplemental_inputs'], self.home,
                 self.state['tag'], self.state['public_commit'],
                 (self.root, self.manager, self.tooling))
+        directory, local_values = None, {}
+        agent_archive = self.private / 'infisical-agent.tar.gz'
+        if agent_archive.is_file():
+            directory = Path(tempfile.mkdtemp(prefix='agent-backup-', dir=self.home)) / 'files'
+            unpack_agent(agent_archive, directory)
+            local_values = archived_local_inputs(
+                directory, json.loads((self.root / 'config/dr-render-plan.json').read_bytes()))
         if self.config.get('client_id_file') and self.config.get('client_secret_file'):
             recovered = dict(address=self.config.get('infisical_address'), project=self.config.get('project_id'),
                              environment=self.config.get('environment', 'prod'),
                              client_id=self.config['client_id_file'], client_secret=self.config['client_secret_file'])
         else:
-            directory = Path(tempfile.mkdtemp(prefix='agent-backup-', dir=self.home)) / 'files'
-            unpack_agent(self.private / 'infisical-agent.tar.gz', directory)
+            require(directory is not None, 'AGENT_BOOTSTRAP_CONFIG_NOT_UNIQUE')
             recovered = agent_bootstrap(directory)
         address = validate_address(self.config.get('infisical_address') or recovered['address'],
                                    ssh_bridge=self.config.get('ssh_bridge') is True)
@@ -867,7 +905,8 @@ class Recovery:
             client.auth.universal_auth.login(client_id=client_id.read_text().strip(),
                                             client_secret=client_secret.read_text().strip())
             snapshots = collect_inputs(plan, dr, client, project, environment,
-                                       aio_mode=mode, supplemental=supplemental, applied=applied)
+                                       aio_mode=mode, supplemental=supplemental, applied=applied,
+                                       local_values=local_values)
         except Refused:
             raise
         except Exception:

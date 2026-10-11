@@ -80,6 +80,7 @@ jobs:
           /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_agent_archive.py -v
           /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_deployment_checkpoint.py -v
           /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_agent_installation.py -v
+          /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_local_config_agent.py -v
           /tmp/recovery-venv/bin/python -B -m unittest discover -s tests -p test_runtime_resume.py -v
           bash -n remote/bootstrap.sh
           python3 - <<'PY'
