@@ -1,3 +1,15 @@
+# v0.4.5 · Recupero automatico e guida one click
+
+Questa versione riunisce le correzioni successive alla 0.4.0 e il percorso verificato sulle VM: ripristino AIO nativo con chiavi applicative coerenti, gestione NPM/Certbot, riconoscimento del backup e dell’instradamento già registrati e attesa del tempo residuo quando Compose segnala prematuramente un container non sano. Restano obbligatori i controlli finali; non vengono falsificate healthcheck o identità per superare un errore.
+
+Il README spiega i preparativi, gli accessi, il backup schema 2 e il file age privato, la differenza fra IP SSH e destinazione dei domini, «Crea da zero» e «Rileva e continua». Non servono export JSON o payload integrativi per il recupero completo.
+
+Il report 0.4.5 del 10 ottobre 2026 verifica bootstrap, Infisical, AIO, Agent, servizi, NPM, TLS e dominio CometNet, con un upstream esterno non raggiungibile conservato come avviso. La baseline Ubuntu appena reinstallata senza Docker non è confermata; login/profili, P2P pubblico e persistenza dopo riavvio restano da verificare.
+
+Dettagli: [0.4.1](RELEASE-NOTES-v0.4.1.md), [0.4.2](RELEASE-NOTES-v0.4.2.md), [0.4.3](RELEASE-NOTES-v0.4.3.md), [0.4.4](RELEASE-NOTES-v0.4.4.md), [0.4.5](RELEASE-NOTES-v0.4.5.md).
+
+Le note sotto sono lo storico delle versioni precedenti; i riferimenti a prove pendenti descrivono lo stato di quelle versioni.
+
 ## v0.4.0 preview · Recupero automatico con due azioni
 
 La nuova dashboard riunisce lo stato di Infisical, Stack, AIO, Agent, Domini e Servizi. **Crea da zero** prepara due VM vuote; **Rileva e continua** controlla il punto di recupero su entrambe e riprende soltanto i passaggi compatibili. Gli errori indicano il campo o la fase da correggere. Gli screenshot nella guida mostrano l’applicazione Windows reale.
