@@ -65,6 +65,8 @@ ERRORS = {
     'DR_STACK_COMMIT_MISMATCH': 'Il commit inserito non è quello associato al backup. Ricarica il punto di recupero in Accessi e backup per usare il commit verificato dalla release.',
     'DR_BUNDLE_VERIFICATION_FAILED': 'Il backup non ha superato il controllo del manifest e delle impronte dei file. Ricarica il punto selezionato; il materiale già presente resta conservato.',
     'AIO_SNAPSHOT_ENCRYPTION_KEY_MISMATCH': 'La chiave applicativa recuperata non corrisponde alla copia AIO. Il database viene conservato e il recupero si ferma per evitare profili illeggibili.',
+    'LOCAL_CONFIG_CONFLICT': 'Un parametro locale differisce dalla voce ancora presente in Infisical. Il recupero conserva i dati e si ferma: verifica la configurazione di origine.',
+    'LOCAL_CONFIG_INVALID': 'La configurazione locale inclusa nel backup non rispetta il formato previsto. I dati di recupero sono conservati.',
     'AIO_SNAPSHOT_EXISTING_DATABASE_REFUSED': 'Sono già presenti dati AIO senza una ricevuta di importazione compatibile. Il programma li conserva e non li sovrascrive.',
     'AIO_SNAPSHOT_SCHEMA_UNSUPPORTED': 'Lo schema della copia AIO non corrisponde alle applicazioni previste dal backup. Serve un punto di recupero compatibile.',
     'AIO_SNAPSHOT_SOURCE_CHANGED': 'Le applicazioni AIO sono cambiate durante la creazione della copia. Serve un nuovo backup completo verificato prima del recupero.',

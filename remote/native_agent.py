@@ -13,13 +13,53 @@ import tempfile
 import time
 
 from recover import (Refused, agent_bootstrap, command, digest, event, private_file,
-                     require, safe_path, save, unpack_agent)
+                     require, safe_path, save, unpack_agent, archived_local_inputs)
 
 VERSION = '0.43.137'
 CLI_URL = 'https://github.com/Infisical/cli/releases/download/v0.43.137/cli_0.43.137_linux_amd64.tar.gz'
 CLI_SHA256 = '308a90c7f9c307cb9c348d352a797a3a63b02e1a7836adbe8afddfd75c855531'
 TUNNEL_USER = 'streams-aio-tunnel'
 LOCAL_PORT = 18180
+
+
+def preserve_local_inputs(backup, plan, destination=Path('/etc/infisical')):
+    """Keep local settings and template provenance available for later backups."""
+    values = archived_local_inputs(backup, plan)
+    if not values:
+        return
+    source = private_file(backup/'etc/infisical/local-stack-agent-source.json')
+    require(source.stat().st_size <= 1024*1024, 'LOCAL_CONFIG_FILE_INVALID')
+    try:
+        def unique(pairs):
+            result = {}
+            for key,value in pairs:
+                require(key not in result, 'LOCAL_CONFIG_DUPLICATE_JSON_KEY')
+                result[key] = value
+            return result
+        obj = json.loads(source.read_bytes(),object_pairs_hook=unique)
+        require(isinstance(obj,dict) and set(obj)=={'schema','templates'}
+                and type(obj['schema']) is int and obj['schema']==1
+                and isinstance(obj['templates'],dict) and 2<=len(obj['templates'])<=200,
+                'LOCAL_CONFIG_INVALID')
+        require({'.secrets/aiostreams.env','.secrets/aiometadata.env'} <= obj['templates'].keys(),
+                'LOCAL_CONFIG_INVALID')
+        for path,content in obj['templates'].items():
+            relative = PurePosixPath(path)
+            require(isinstance(path,str) and not relative.is_absolute()
+                    and '..' not in relative.parts and '\\' not in path
+                    and relative.as_posix()==path and re.fullmatch(r'[A-Za-z0-9_./-]+',path)
+                    and isinstance(content,str) and len(content.encode('utf-8'))<=1024*1024,
+                    'LOCAL_CONFIG_INVALID')
+            require(all(ord(c)>=32 or c in '\t\r\n' for c in content),'LOCAL_CONFIG_INVALID')
+    except (ValueError,TypeError,UnicodeError):
+        raise Refused('LOCAL_CONFIG_INVALID') from None
+    destination = safe_path(destination)
+    destination.mkdir(mode=0o700,parents=True,exist_ok=True)
+    require(destination.is_dir() and destination.stat().st_uid==0
+            and not destination.stat().st_mode & 0o022,'LOCAL_CONFIG_UNSAFE_PATH')
+    write_owned(destination/'local-stack-config.json',
+                private_file(backup/'etc/infisical/local-stack-config.json').read_bytes(),0,0)
+    write_owned(destination/'local-stack-agent-source.json',source.read_bytes(),0,0)
 
 
 def checkpoint(home, target, server=False):
@@ -340,6 +380,7 @@ def install(home,root,config):
     obj = yaml.safe_load(candidates[0].read_bytes())
     rows = private_templates(obj,area/'backup',root)
     plan = json.loads((root/'config/dr-render-plan.json').read_bytes())
+    preserve_local_inputs(area/'backup',plan)
     # Refuse an incomplete native mapping instead of losing secret updates.
     require(set(str(root/path) for path in plan['env_files']) <= {row['destination-path'] for row in rows},
             'AGENT_ENV_MAPPING_INCOMPLETE')

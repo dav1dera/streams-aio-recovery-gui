@@ -385,7 +385,7 @@ os.chown(stage,1000,1000)
             sftp.mkdir(remote + '/remote', mode=0o700)
             for name in ('bootstrap.sh', 'recover.py', 'probe.py', 'requirements-dr.txt', 'requirements-new-vm.txt', 'start.py',
                          'infisical_server.py', 'infisical_inventory.py', 'infisical-deployment.json', 'native_agent.py', 'runtime_profile.py',
-                         'aio_snapshot.py', 'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
+                         'aio_snapshot.py', 'local_config.py', 'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
                          'npm-route-probe.mjs'):
                 self._put(sftp, resources() / name, remote + '/remote/' + name)
             config = {key: request[key] for key in ('github_token', 'public_commit', 'dr_tag',
@@ -483,7 +483,7 @@ os.chown(stage,1000,1000)
         area=self.area(home,role)
         sftp=self.client.open_sftp()
         try:
-            for name in ('native_agent.py','recover.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs'):
+            for name in ('native_agent.py','recover.py','local_config.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs'):
                 self._put(sftp,resources()/name,area+'/'+name)
         finally:
             sftp.close()
@@ -498,7 +498,7 @@ os.chown(stage,1000,1000)
         area = home + '/.local/share/streams-aio-recovery'
         sftp = self.client.open_sftp()
         try:
-            for name in ('start.py','recover.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs'):
+            for name in ('start.py','recover.py','local_config.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs'):
                 self._put(sftp, resources() / name, area + '/' + name)
         finally:
             sftp.close()

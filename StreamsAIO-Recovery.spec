@@ -9,7 +9,7 @@ a = Analysis(
         'bootstrap.sh', 'recover.py', 'probe.py', 'requirements-dr.txt',
         'requirements-new-vm.txt', 'start.py', 'infisical_server.py',
         'infisical_inventory.py', 'infisical-deployment.json',
-        'native_agent.py', 'runtime_profile.py', 'test_reset.py', 'aio_snapshot.py',
+        'native_agent.py', 'local_config.py', 'runtime_profile.py', 'test_reset.py', 'aio_snapshot.py',
         'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
         'npm-route-probe.mjs')],
     hiddenimports=[],

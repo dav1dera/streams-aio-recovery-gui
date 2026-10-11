@@ -6,7 +6,7 @@
 
 GUI Windows per recuperare Infisical e lo stack Streams AIO, con configurazioni AIO, Agent, NPM, HTTPS e dominio CometNet.
 
-**v0.4.5 · [Scarica la GUI](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.5) · [Guida dettagliata](docs/USAGE.md) · [Note della versione](docs/RELEASE-NOTES-v0.4.5.md)**
+**v0.4.6 · [Scarica la GUI](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.6) · [Guida dettagliata](docs/USAGE.md) · [Note della versione](docs/RELEASE-NOTES-v0.4.6.md)**
 
 </div>
 
@@ -18,7 +18,7 @@ Il pulsante **Crea da zero** esegue il recupero completo dopo aver preparato le 
 
 ### 1. Scarica il programma
 
-Accedi a GitHub con un account autorizzato alla repo privata e apri la [release v0.4.5](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.5).
+Accedi a GitHub con un account autorizzato alla repo privata e apri la [release v0.4.6](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.6).
 
 Scarica **StreamsAIO-Recovery.exe** e **SHA256SUMS**, confronta il checksum e avvia l’eseguibile su Windows. Python, SSH e gli strumenti della GUI sono inclusi; non serve installare Python sul PC. L’eseguibile non ha firma Authenticode.
 
@@ -146,6 +146,23 @@ La baseline Ubuntu appena reinstallata senza Docker non è confermata. Login/pro
 
 ## Guide e sviluppo
 
-[Uso dettagliato](docs/USAGE.md) · [Preparazione Proxmox](docs/PROXMOX.md) · [Note 0.4.5](docs/RELEASE-NOTES-v0.4.5.md)
+[Uso dettagliato](docs/USAGE.md) · [Preparazione Proxmox](docs/PROXMOX.md) · [Note 0.4.5](docs/RELEASE-NOTES-v0.4.6.md)
 
 Il programma usa Python/Tk e SSH. Per una build locale usa `build.ps1`; i test Python sono in `tests/`. La pipeline GitHub esegue controlli di sicurezza, compatibilità Ubuntu e self-test dell’eseguibile Windows prima della pubblicazione. Le versioni delle applicazioni devono restare compatibili con il backup e con il profilo verificato.
+
+## Configurazione locale e segreti
+
+Dalla 0.4.6 i backup possono contenere anche la configurazione ordinaria salvata
+sulla VM stack: indirizzi interni, sottoreti, nomi e URL senza credenziali.
+Password, token, chiavi applicative e stringhe di connessione con password
+restano in Infisical. Il recupero legge entrambi dal backup selezionato;
+non devi aggiungere file integrativi alla GUI.
+
+I backup con configurazione locale richiedono **GUI 0.4.6 o successiva**.
+La 0.4.6 continua a leggere anche i backup precedenti. Le cartelle AIO con
+segreti vengono ancora lette dinamicamente; un valore locale in conflitto con
+un valore remoto ferma il recupero.
+
+Il confronto temporaneo dei 20 output Agent e i test automatici verificano
+la nuova separazione. Il collaudo completo su due nuove VM resta da eseguire:
+le precedenti VM di test non sono più disponibili.

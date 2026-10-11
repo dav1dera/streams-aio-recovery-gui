@@ -239,6 +239,7 @@ class Inputs(unittest.TestCase):
         client.close = Mock()
         job = recovery.Recovery.__new__(recovery.Recovery)
         job.root, job.home = root, self.home
+        job.private = self.home/'private'
         job.manager, job.tooling = self.home/'manager', self.home/'tooling'
         job.config = dict(aio_mode='manual', supplemental_inputs=str(ciphertext), age_identity=str(identity),
                           infisical_address='https://infisical.example.invalid', project_id='project',

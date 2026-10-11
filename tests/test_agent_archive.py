@@ -74,6 +74,7 @@ class AgentArchiveTests(unittest.TestCase):
                   for p in self.destination.rglob('*') if p.is_file()}
         self.assertEqual(actual, {name.lstrip('/'): value for name, value, _ in entries})
         result = remote.agent_bootstrap(self.destination)
+        self.assertEqual(remote.archived_local_inputs(self.destination, {'required_values': []}), {})
         self.assertEqual(result['project'], 'project')
         self.assertEqual(result['environment'], 'prod')
         self.assertEqual(result['client_secret'].read_bytes(), b'secret-canary')
