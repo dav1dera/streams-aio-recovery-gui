@@ -1,6 +1,6 @@
-# Guida pratica · Streams AIO Recovery 0.4.0 preview
+# Guida pratica · Streams AIO Recovery 0.4.7
 
-Questa guida segue la nuova dashboard: **Panoramica**, **Accessi e backup**, **Opzioni avanzate**. Il percorso recupera due VM e importa automaticamente i database AIO da un backup completo. È una preview con test locali: il collaudo completo da VM vuote e le prove applicative descritte in fondo sono ancora da eseguire.
+Questa guida segue la dashboard: **Panoramica**, **Accessi e backup**, **Opzioni avanzate**. Il percorso recupera due VM e importa automaticamente i database AIO da un backup completo. Il [README](../README.md#stato-delle-verifiche) distingue i controlli già eseguiti dalle prove applicative ancora da completare.
 
 ## 1. Preparare le due VM
 
@@ -17,7 +17,23 @@ Per la prova attuale le destinazioni sono:
 
 Sono esempi della prova, non valori obbligatori del nuovo profilo operativo. Per **Crea da zero**, entrambe le VM devono essere vuote e distinte. Per un recupero già presente usa **Rileva e continua**.
 
-Una reinstallazione cambia l’impronta SSH anche mantenendo lo stesso IP. Verifica l’impronta dalla console della VM prima di accettare la nuova chiave. Il programma non considera l’IP invariato una prova dell’identità della macchina.
+### VM ricreata o indirizzo IP diverso
+
+Per un recupero su VM nuove e vuote, inserisci in **Accessi e backup** gli IP o i nomi host attuali. Possono essere diversi da quelli originali e da quelli della prova: non occorre mantenere `.29` e `.30`. L’indirizzo previsto per i domini resta un campo separato e deve corrispondere al loro instradamento effettivo.
+
+Una reinstallazione cambia l’impronta SSH anche mantenendo lo stesso IP. Dalla **0.4.7**, quando una destinazione conosciuta presenta una chiave diversa, la GUI mostra **indirizzo e porta, impronta precedente e nuova impronta**. Prima di accettare, apri la console della nuova VM in Proxmox e visualizza le impronte delle sue chiavi pubbliche:
+
+```bash
+for key in /etc/ssh/ssh_host_*_key.pub; do
+  ssh-keygen -lf "$key" -E sha256
+done
+```
+
+La nuova impronta `SHA256:…` mostrata dalla GUI deve corrispondere a una di queste. Se corrisponde alla VM che intendi recuperare, accetta l’aggiornamento e continua. In caso contrario rifiuta e controlla indirizzo e console. Alla prima connessione a un nuovo indirizzo viene richiesta la stessa verifica della chiave presentata.
+
+La GUI controlla la chiave approvata nella nuova connessione e la memorizza solo dopo l’autenticazione riuscita. Un rifiuto, un annullamento o una password errata conservano la chiave precedente. Viene aggiornata soltanto la destinazione selezionata, compresa la porta: le identità delle altre VM e il file SSH di sistema restano conservati. Non occorre cancellare `known_hosts` né disattivare i controlli SSH.
+
+Questa procedura consente di collegare VM ricreate e iniziare un nuovo recupero. Cambiare l’IP di una VM già ripristinata richiede anche una migrazione dei collegamenti e del checkpoint: la sola accettazione della chiave SSH non effettua quella migrazione.
 
 ## 2. Preparare gli accessi e la chiave
 
@@ -143,7 +159,8 @@ Premi **Salva esiti** e conserva il registro. Risolvi la causa indicata, poi rip
 | --- | --- |
 | `SSH_AUTH_FAILED` | Utente Ubuntu, password o chiave della VM corretta. |
 | `SSH_CONNECTION_FAILED` | VM accesa, IP, porta SSH e raggiungibilità dal PC. |
-| `SSH_HOST_KEY_CHANGED` | Impronta della nuova installazione verificata dalla console della VM. |
+| `SSH_HOST_KEY_CHANGED` | Verifica indirizzo e nuova impronta dalla console della VM. La 0.4.7 propone l’aggiornamento della sola destinazione; se la chiave cambia ancora durante il collegamento, il recupero si ferma. [Procedura](#vm-ricreata-o-indirizzo-ip-diverso). |
+| `SSH_HOST_KEY_STORE_FAILED` | La GUI non riesce a salvare l’identità verificata nella cartella locale `StreamsAIORecovery`. Controlla i permessi della cartella e riprova. |
 | `GITHUB_REPOSITORY_OR_RELEASE_UNAVAILABLE` | Token, repository selezionati e permesso Contents: Read. |
 | `AGE_PUBLIC_KEY_NOT_IDENTITY` | È stato scelto un file pubblico `age1…`; occorre l’identity privata originale. |
 | `AGE_NO_MATCHING_RECIPIENT` | Identity e release non appartengono allo stesso backup; scegli una PRIMARY/RECOVERY compatibile. |

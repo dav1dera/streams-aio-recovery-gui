@@ -21,6 +21,7 @@ from .codes import ERROR_CODES
 from .recovery_inspection import inspect_recovery, resolve_resume_request
 from .startup_diagnostic import safe as safe_startup_diagnostic
 from .external_dependencies import validate as validate_external_dependencies
+from . import ssh_identity
 
 PUBLIC = 'dav1dera/streams-aio-sanitized'
 PRIVATE = 'dav1dera/streams-aio-dr'
@@ -238,43 +239,81 @@ class GitHub:
 
 
 class SSH:
-    def __init__(self, host, confirm_key, cancelled=None):
+    def __init__(self, host, confirm_key, cancelled=None, *, confirm_changed_key=None):
         import paramiko
         host.validate()
         self.host = host
         self.cancelled = cancelled or threading.Event()
-        self.client = paramiko.SSHClient()
         key_home = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'StreamsAIORecovery'
         key_home.mkdir(parents=True, exist_ok=True)
         self.known_hosts = key_home / 'known_hosts'
-        self.client.load_system_host_keys()
-        if self.known_hosts.exists():
-            self.client.load_host_keys(str(self.known_hosts))
-        known_hosts = self.known_hosts
+        peer = ssh_identity.endpoint(host.address, host.port)
+        approved = []
         class VerifiedHostPolicy(paramiko.MissingHostKeyPolicy):
             def missing_host_key(self, client, hostname, key):
-                fingerprint = 'SHA256:' + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip('=')
-                require(confirm_key(hostname, fingerprint), 'SSH_HOST_KEY_NOT_APPROVED')
+                require(not self_cancelled.is_set(), 'INTERRUPTED')
+                require(confirm_key(hostname, ssh_identity.fingerprint(key)), 'SSH_HOST_KEY_NOT_APPROVED')
+                require(not self_cancelled.is_set(), 'INTERRUPTED')
                 client.get_host_keys().add(hostname, key.get_name(), key)
-                client.save_host_keys(str(known_hosts))
-        self.client.set_missing_host_key_policy(VerifiedHostPolicy())
-        try:
+                approved.append(key)
+        self_cancelled = self.cancelled
+        def make_client(replacement=None):
+            client = paramiko.SSHClient()
+            keys = ssh_identity.trusted_keys(self.known_hosts, peer)
+            if replacement is not None:
+                keys = ssh_identity.without_peer(keys, peer)
+                keys.add(peer, replacement.get_name(), replacement)
+            for label in keys.keys():
+                for kind, key in keys[label].items():
+                    client.get_host_keys().add(label, kind, key)
+            client.set_missing_host_key_policy(VerifiedHostPolicy())
+            return client
+        def connect():
+            require(not self.cancelled.is_set(), 'INTERRUPTED')
             self.client.connect(host.address, port=host.port, username=host.user,
                                 password=host.password or None, key_filename=host.key_file or None,
                                 passphrase=host.key_password or None, look_for_keys=False, allow_agent=False,
                                 timeout=15, auth_timeout=20, banner_timeout=20)
+        self.client = None
+        try:
+            self.client = make_client()
+            try:
+                connect()
+            except paramiko.BadHostKeyException as changed:
+                self.client.close()
+                require(not self.cancelled.is_set(), 'INTERRUPTED')
+                require(confirm_changed_key is not None and changed.hostname == host.address,
+                        'SSH_HOST_KEY_CHANGED')
+                require(confirm_changed_key(peer, ssh_identity.fingerprint(changed.expected_key),
+                                            ssh_identity.fingerprint(changed.key)), 'SSH_HOST_KEY_NOT_APPROVED')
+                require(not self.cancelled.is_set(), 'INTERRUPTED')
+                # One reconnect, pinned to the exact newly verified key. A
+                # second identity change is refused before authentication.
+                self.client = make_client(changed.key)
+                connect()
+                approved.append(changed.key)
+            if approved:
+                try:
+                    ssh_identity.remember(self.known_hosts, peer, approved[-1])
+                except OSError:
+                    raise Failure('SSH_HOST_KEY_STORE_FAILED') from None
+            self.client.get_transport().set_keepalive(15)
         except paramiko.BadHostKeyException:
+            self.close()
             raise Failure('SSH_HOST_KEY_CHANGED') from None
         except paramiko.AuthenticationException:
+            self.close()
             raise Failure('SSH_AUTH_FAILED') from None
         except Failure:
+            self.close()
             raise
         except Exception:
+            self.close()
             raise Failure('SSH_CONNECTION_FAILED') from None
-        self.client.get_transport().set_keepalive(15)
 
     def close(self):
-        self.client.close()
+        if self.client is not None:
+            self.client.close()
 
     def run(self, args, *, sudo=False, callback=None, timeout=1800, input=None):
         require(not self.cancelled.is_set(), 'INTERRUPTED')
