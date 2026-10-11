@@ -17,14 +17,15 @@ from recovery_gui.app import App, main
 if __name__ == '__main__':
     if sys.argv[1:] == ['--self-test']:
         import paramiko
-        from recovery_gui.backend import resources
+        from recovery_gui.backend import resources, validate_remote_shell_scripts
         from recovery_gui.ui_state import PHASES, operational_request
         required = ('bootstrap.sh', 'recover.py', 'probe.py', 'start.py',
                     'requirements-dr.txt', 'requirements-new-vm.txt', 'infisical_server.py','infisical_inventory.py','infisical-deployment.json',
-                    'native_agent.py', 'aio_snapshot.py', 'runtime_profile.py',
-                    'operational_profile.py', 'npm_topology.py', 'npm-domain-probe.mjs',
+                    'native_agent.py', 'test_reset.py', 'aio_snapshot.py', 'runtime_profile.py',
+                    'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
                     'npm-route-probe.mjs')
         assert all((resources() / name).is_file() for name in required)
+        validate_remote_shell_scripts()
         app = App()
         try:
             app.update()
