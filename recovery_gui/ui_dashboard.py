@@ -387,6 +387,14 @@ class App(tk.Tk):
                 return False
         return bool(answer and answer[0])
 
+    def changed_key_dialog(self, host, previous, current):
+        done, answer = threading.Event(), []
+        self.events.put(('key_changed', (host, previous, current, done, answer)))
+        while not done.wait(0.1):
+            if self.cancelled.is_set():
+                return False
+        return bool(answer and answer[0])
+
     def job(self, action, return_page=None):
         if self.busy:
             return
@@ -462,8 +470,10 @@ class App(tk.Tk):
         def worker():
             stack, server = None, None
             try:
-                stack = backend.SSH(self.host(data), self.key_dialog, self.cancelled)
-                server = backend.SSH(self.infisical_host(data), self.key_dialog, self.cancelled)
+                stack = backend.SSH(self.host(data), self.key_dialog, self.cancelled,
+                                    confirm_changed_key=self.changed_key_dialog)
+                server = backend.SSH(self.infisical_host(data), self.key_dialog, self.cancelled,
+                                     confirm_changed_key=self.changed_key_dialog)
                 job_request = data
                 if action == 'resume':
                     job_request = backend.resolve_resume_request(stack, server, data)
@@ -527,6 +537,14 @@ class App(tk.Tk):
             if kind == 'key':
                 host, fingerprint, done, answer = value
                 answer.append(messagebox.askyesno('Verifica l’identità della VM', 'Host: ' + host + '\n' + fingerprint + '\n\nConfronta questa impronta con la console della VM. Riconosci la chiave?', parent=self))
+                done.set()
+            elif kind == 'key_changed':
+                host, previous, current, done, answer = value
+                answer.append(not self.cancelled.is_set() and messagebox.askyesno('VM ricreata: verifica la nuova identità SSH',
+                    'Destinazione: ' + host + '\n\nImpronta precedente:\n' + previous
+                    + '\n\nNuova impronta:\n' + current
+                    + '\n\nUna VM ricreata genera una nuova chiave SSH. Confronta la nuova impronta con la console della VM.'
+                    + '\n\nAggiornare l’identità di questa destinazione e continuare?', parent=self, default='no'))
                 done.set()
             elif kind == 'choices':
                 tags, commit = value

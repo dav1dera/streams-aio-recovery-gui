@@ -6,7 +6,7 @@
 
 GUI Windows per recuperare Infisical e lo stack Streams AIO, con configurazioni AIO, Agent, NPM, HTTPS e dominio CometNet.
 
-**v0.4.6 · [Scarica la GUI](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.6) · [Guida dettagliata](docs/USAGE.md) · [Note della versione](docs/RELEASE-NOTES-v0.4.6.md)**
+**v0.4.7 · [Scarica la GUI](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.7) · [Guida dettagliata](docs/USAGE.md) · [Note della versione](docs/RELEASE-NOTES-v0.4.7.md)**
 
 </div>
 
@@ -18,7 +18,7 @@ Il pulsante **Crea da zero** esegue il recupero completo dopo aver preparato le 
 
 ### 1. Scarica il programma
 
-Accedi a GitHub con un account autorizzato alla repo privata e apri la [release v0.4.6](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.6).
+Accedi a GitHub con un account autorizzato alla repo privata e apri la [release v0.4.7](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.7).
 
 Scarica **StreamsAIO-Recovery.exe** e **SHA256SUMS**, confronta il checksum e avvia l’eseguibile su Windows. Python, SSH e gli strumenti della GUI sono inclusi; non serve installare Python sul PC. L’eseguibile non ha firma Authenticode.
 
@@ -46,6 +46,8 @@ L’hash deve corrispondere alla riga di `StreamsAIO-Recovery.exe`. Ogni build h
 Usa indirizzi distinti e raggiungibili dal PC. I nomi utente possono essere diversi sulle due VM. **Docker viene installato dalla GUI**: puoi partire da Ubuntu con SSH, senza container, volumi o dati di un precedente stack. Dimensiona le risorse secondo il carico e lascia spazio libero per download e ripristino.
 
 La [guida Proxmox](docs/PROXMOX.md) spiega come preparare le VM. Per ripetere una simulazione usa destinazioni nuove o uno snapshot realmente pulito delle sole VM di test. **Crea da zero non cancella un recupero esistente.**
+
+Le nuove VM possono avere IP diversi dalle precedenti: inserisci quelli attuali nella GUI. Se una VM ricreata riutilizza un IP già conosciuto, la **0.4.7 mostra l’impronta SSH precedente e quella nuova**. Confronta la nuova impronta con quella visibile dalla console della VM e accetta solo se corrisponde. La GUI salva la nuova identità dopo l’autenticazione riuscita e aggiorna soltanto quella destinazione. [Verifica dell’impronta](docs/USAGE.md#vm-ricreata-o-indirizzo-ip-diverso).
 
 ### 3. Compila «Accessi e backup»
 
@@ -146,7 +148,7 @@ La baseline Ubuntu appena reinstallata senza Docker non è confermata. Login/pro
 
 ## Guide e sviluppo
 
-[Uso dettagliato](docs/USAGE.md) · [Preparazione Proxmox](docs/PROXMOX.md) · [Note 0.4.5](docs/RELEASE-NOTES-v0.4.6.md)
+[Uso dettagliato](docs/USAGE.md) · [Preparazione Proxmox](docs/PROXMOX.md) · [Note 0.4.7](docs/RELEASE-NOTES-v0.4.7.md)
 
 Il programma usa Python/Tk e SSH. Per una build locale usa `build.ps1`; i test Python sono in `tests/`. La pipeline GitHub esegue controlli di sicurezza, compatibilità Ubuntu e self-test dell’eseguibile Windows prima della pubblicazione. Le versioni delle applicazioni devono restare compatibili con il backup e con il profilo verificato.
 
