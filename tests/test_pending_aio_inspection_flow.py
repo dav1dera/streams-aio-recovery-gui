@@ -277,5 +277,71 @@ class PendingDeploymentFlow(PendingNativeFlow):
         self.assertFalse(journal.exists())
 
 
+class BeforeJournalFlow(unittest.TestCase):
+    """An actual binding failure -> read-only detection -> retry without reset."""
+
+    def setUp(self):
+        fixture = self.fixture = PendingNativeFlow('runTest')
+        def fail_before_journal():
+            environment = fixture.flow.model['services']['aiometadata']['environment']
+            original = environment['JWT_SECRET']
+            environment['JWT_SECRET'] = 'wrong-before-journal'
+            with self.assertRaisesRegex(remote.Refused, '^AIO_SNAPSHOT_ENCRYPTION_KEY_MISMATCH$'):
+                fixture.flow.restore()
+            environment['JWT_SECRET'] = original
+            self.assertFalse((fixture.root/'.generated/aio-snapshot-pending.json').exists())
+        fixture.interrupt = fail_before_journal
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+
+    def test_detection_policy_and_native_retry_preserve_checkpoint_and_npm(self):
+        f = self.fixture
+        before = f.job.state_path.read_bytes()
+        probe.probe(f.root, f.home, fresh=True)
+        self.assertEqual(f.job.state_path.read_bytes(), before)
+        job = f.reloaded()
+        policy.deployment_scope(f.root, f.home, job.state)
+        self.assertEqual(f.job.state_path.read_bytes(), before)
+        f.flow.restore()
+        self.assertIn('AIO', job.state['completed'])
+        self.assertEqual(job.state['aio_recovery'], 'NATIVE_SNAPSHOT_RESTORED')
+        self.assertFalse(any('up' in args or 'down' in args or 'rm' in args for args in f.commands))
+
+    def test_existing_database_without_journal_cannot_be_adopted(self):
+        f = self.fixture
+        path = f.root/'data/aiometadata/data/db.sqlite'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'foreign-database')
+        with self.assertRaisesRegex(ValueError, '^RECOVERY_OPERATION_INCOMPLETE$'):
+            probe.probe(f.root, f.home, fresh=True)
+        self.assertEqual(path.read_bytes(), b'foreign-database')
+
+    def test_database_sidecar_without_journal_is_preserved_and_refused(self):
+        f = self.fixture
+        path = f.root/'data/aiostreams/data/db.sqlite-wal'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'foreign-journal')
+        with self.assertRaisesRegex(ValueError, '^RECOVERY_OPERATION_INCOMPLETE$'):
+            probe.probe(f.root, f.home, fresh=True)
+        self.assertEqual(path.read_bytes(), b'foreign-journal')
+
+    def test_orphan_staging_directory_is_preserved_and_refused(self):
+        f = self.fixture
+        orphan = f.root/'.generated/aio-restore-unrecorded'
+        orphan.mkdir()
+        with self.assertRaisesRegex(ValueError, '^RECOVERY_OPERATION_INCOMPLETE$'):
+            probe.probe(f.root, f.home, fresh=True)
+        self.assertTrue(orphan.is_dir())
+
+    def test_null_journal_is_not_treated_as_absent(self):
+        f = self.fixture
+        path = f.root/'.generated/aio-snapshot-pending.json'
+        path.write_text('null')
+        path.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, '^RECOVERY_OPERATION_INCOMPLETE$'):
+            probe.probe(f.root, f.home, fresh=True)
+        self.assertEqual(path.read_text(), 'null')
+
+
 if __name__ == '__main__':
     unittest.main()

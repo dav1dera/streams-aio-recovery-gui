@@ -279,6 +279,50 @@ class NativeAIO(unittest.TestCase):
         self.refusal('AIO_SNAPSHOT_ENCRYPTION_KEY_MISMATCH', lambda: self.restore(model=model))
         self.assert_no_installed()
 
+    def test_missing_empty_fanart_placeholder_matches_original_fingerprint(self):
+        self.model['services']['aiometadata']['environment']['FANART_API_KEY'] = ''
+        self.containers[1]['Config']['Env'].append('FANART_API_KEY=')
+        manifest = self.capture()
+        self.assertIn('FANART_API_KEY', manifest['applications']['aiometadata']['bindings']['keys'])
+        model = self.model_for(self.target)
+        evidence = self.restore(model=model)
+        aio.verify_restored(self.target, evidence, model, before_start=True,
+            uid=os.getuid() if hasattr(os, 'getuid') else 1000,
+            gid=os.getgid() if hasattr(os, 'getgid') else 1000)
+        self.assertEqual(evidence['applications'], manifest['applications'])
+
+    def test_missing_nonempty_fanart_key_is_still_refused(self):
+        self.model['services']['aiometadata']['environment']['FANART_API_KEY'] = 'private-fanart-value'
+        self.containers[1]['Config']['Env'].append('FANART_API_KEY=private-fanart-value')
+        self.capture()
+        self.refusal('AIO_SNAPSHOT_ENCRYPTION_KEY_MISMATCH', self.restore)
+        self.assert_no_installed()
+
+    def test_changed_fanart_key_is_still_refused(self):
+        self.model['services']['aiometadata']['environment']['FANART_API_KEY'] = ''
+        self.containers[1]['Config']['Env'].append('FANART_API_KEY=')
+        self.capture()
+        model = self.model_for(self.target)
+        model['services']['aiometadata']['environment']['FANART_API_KEY'] = 'different'
+        self.refusal('AIO_SNAPSHOT_ENCRYPTION_KEY_MISMATCH', lambda: self.restore(model=model))
+        self.assert_no_installed()
+
+    def test_empty_fanart_compatibility_does_not_excuse_changed_encryption_key(self):
+        self.model['services']['aiometadata']['environment']['FANART_API_KEY'] = ''
+        self.containers[1]['Config']['Env'].append('FANART_API_KEY=')
+        self.capture()
+        model = self.model_for(self.target)
+        model['services']['aiometadata']['environment']['JWT_SECRET'] = 'changed'
+        self.refusal('AIO_SNAPSHOT_ENCRYPTION_KEY_MISMATCH', lambda: self.restore(model=model))
+        self.assert_no_installed()
+
+    def test_other_missing_empty_secrets_are_not_normalized(self):
+        self.model['services']['aiometadata']['environment']['ANOTHER_SECRET'] = ''
+        self.containers[1]['Config']['Env'].append('ANOTHER_SECRET=')
+        self.capture()
+        self.refusal('AIO_SNAPSHOT_ENCRYPTION_KEY_MISMATCH', self.restore)
+        self.assert_no_installed()
+
     def test_wrong_snapshot_commit_and_run_refuse(self):
         self.capture()
         self.refusal('AIO_SNAPSHOT_SCOPE_CHANGED', lambda: aio.restore_capsule(self.archive, self.target,

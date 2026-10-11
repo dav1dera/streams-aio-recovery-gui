@@ -40,6 +40,10 @@ class OperationalStartup(unittest.TestCase):
             actions.append(args)
             if 'config' in args: return json.dumps(model).encode()
             if args[:3]==['docker','ps','-aq'] or args[:3]==['docker','volume','ls']: return b''
+            if 'verify' in args:
+                self.assertIn('--state-home',args)
+                self.assertEqual(args[args.index('--state-home')+1],home)
+                return b'NPM_EXTERNAL_REPORT {"schema":1,"total":1,"unavailable":[26]}\n'
             return b''
         def before(root_arg,model_arg,run,emit,save,current,path):
             actions.append(['PUBLIC_PROOF'])
@@ -81,6 +85,7 @@ class OperationalStartup(unittest.TestCase):
         self.assertTrue(state['public_controllers_enabled']); self.assertEqual(state['deferred_controllers'],[])
         self.assertEqual(state['private_marker'],'preserve')
         self.assertEqual(state['public_domain_recovery'],'VERIFIED')
+        self.assertEqual(state['external_upstreams'],{'schema':1,'total':1,'unavailable':[26]})
 
     def test_parallel_domain_test_never_starts_public_controllers(self):
         error,actions,state=self.exercise()
