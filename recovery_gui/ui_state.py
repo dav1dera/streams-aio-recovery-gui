@@ -11,7 +11,7 @@ PHASE_STAGES = {
               'PREPARED', 'RUNTIME_PROFILE', 'OPERATIONAL_PROFILE'},
     'AIO': {'AIO', 'AIO_BACKUP', 'AIO_IMPORT', 'AIO_DATABASES'},
     'Agent': {'NATIVE_AGENT'},
-    'Domini': {'NPM', 'NPM_TOPOLOGY', 'TLS', 'DOMAINS', 'PUBLIC_DOMAINS', 'PUBLIC_ROUTING', 'PUBLIC_COMETNET'},
+    'Domini': {'NPM', 'NPM_TOPOLOGY', 'TLS', 'DOMAINS', 'PUBLIC_DOMAINS', 'PUBLIC_ROUTING', 'PUBLIC_COMETNET', 'EXTERNAL_UPSTREAMS'},
     'Servizi': {'IMAGES', 'STARTED', 'APPLICATION_CHECKS', 'OPERATIONAL_READY', 'PUBLIC_CONTROLLERS'},
 }
 FINISHED_STAGES = {
@@ -27,6 +27,8 @@ def phase_for(stage, active=None):
 
 
 def phase_status(stage, status):
+    if stage == 'EXTERNAL_UPSTREAMS' and status == 'WARNING':
+        return 'Collegamenti esterni da verificare', 'pending'
     if status == 'REFUSED':
         return 'Da risolvere', 'error'
     if status == 'SKIPPED':

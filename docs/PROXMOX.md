@@ -1,8 +1,8 @@
-# Due VM di prova su Proxmox · Recovery 0.4.0 preview
+# Due VM di prova su Proxmox · Recovery 0.4.5
 
 La nuova dashboard accetta **Ubuntu Server 26.04 o 24.04 amd64**, con i rispettivi codename `resolute` e `noble`. Per la prova puoi usare `ubuntu-26.04.1-live-server-amd64.iso` già caricata nello storage `local`; se il nome effettivo è diverso, sostituiscilo nei comandi sotto.
 
-Questa guida prepara due destinazioni pulite. Il recupero completo della 0.4.0, compresi AIO automatico, domini e CometNet pubblico, deve ancora essere collaudato sulle VM. Creare le VM non attesta l’equivalenza funzionale allo stack originale.
+Questa guida prepara due destinazioni pulite per il percorso «Crea da zero». Il report 0.4.5 del 10 ottobre 2026 ha verificato le fasi di bootstrap, AIO, Agent, servizi, HTTPS e dominio CometNet sulle due VM di recupero; la partenza da una reinstallazione Ubuntu senza Docker non è confermata. Login applicativi, P2P pubblico e persistenza dopo riavvio restano da collaudare. Creare le VM non attesta l’equivalenza funzionale allo stack originale.
 
 ## 1. Creare le VM
 

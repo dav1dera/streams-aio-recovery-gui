@@ -113,6 +113,22 @@ def validate_model(root, model):
     return result
 
 
+def recovery_model_bindings(root, model):
+    """Prove the legacy empty Fanart placeholder without relaxing real keys.
+
+    Public sync removes private dotenv entries; a missing Infisical Fanart
+    setting then omits the original FANART_API_KEY= line. This one optional
+    artwork key may be reconstructed as empty only when the complete resulting
+    fingerprint equals the original encrypted manifest. Capture is unchanged.
+    """
+    result = validate_model(root, model)
+    environment = model['services']['aiometadata']['environment']
+    if 'FANART_API_KEY' not in environment:
+        result['aiometadata']['empty_fanart_binding'] = encryption_bindings(
+            dict(environment, FANART_API_KEY=''))
+    return result
+
+
 def docker_containers(run):
     raw = run(['docker', 'ps', '-aq'], 'AIO_SNAPSHOT_DOCKER_CHECK_FAILED')
     ids = raw.decode().split()
@@ -369,7 +385,10 @@ def validate_manifest(manifest, *, run_id, source_commit, bindings):
                 and all(type(v) is int and v > 0 for v in item['required_counts'].values()),
                 'AIO_SNAPSHOT_MANIFEST_INVALID')
         require(item['image'] == bindings[service]['image'], 'AIO_SNAPSHOT_IMAGE_MISMATCH')
-        require(item['bindings'] == bindings[service]['bindings'], 'AIO_SNAPSHOT_ENCRYPTION_KEY_MISMATCH')
+        candidate = bindings[service].get('empty_fanart_binding')
+        require(item['bindings'] == bindings[service]['bindings']
+                or candidate is not None and item['bindings'] == candidate,
+                'AIO_SNAPSHOT_ENCRYPTION_KEY_MISMATCH')
 
 
 def unpack_capsule(archive, staging, *, run_id, source_commit, bindings):
@@ -445,13 +464,37 @@ def validate_pending_capsule(archive, root, *, run_id, source_commit, model, run
     continues to own its lock and must call restore_capsule to resume.
     """
     root = Path(root).absolute()
-    bindings = validate_model(root, model)
+    bindings = recovery_model_bindings(root, model)
     archive = checked(archive, private=True)
     require(not archive.is_relative_to(root), 'AIO_SNAPSHOT_PRIVATE_OUTPUT_REQUIRED')
     marker = checked(root / MARKER, exists=False)
     require(not checked(root / '.generated/aio-import-complete.json', exists=False).exists(),
             'AIO_SNAPSHOT_JOURNAL_INVALID')
-    pending = checked(root / PENDING, private=True)
+    pending = checked(root / PENDING, exists=False)
+    if not pending.exists():
+        # A validation error precedes the hard-link journal and installs no
+        # outputs. Admit only that exact empty state, retaining every artifact.
+        def empty_preinstall():
+            outputs = [marker, root / DEPLOYMENT, root / '.generated/aio-import-complete.json']
+            for relative in PATHS.values():
+                target = root / relative
+                outputs.extend(Path(str(target) + suffix) for suffix in ('', '-wal', '-shm', '-journal'))
+            require(not pending.exists() and not pending.is_symlink()
+                    and not any(checked(path, exists=False).exists() for path in outputs)
+                    and not list(marker.parent.glob('aio-restore-*')), 'AIO_SNAPSHOT_JOURNAL_INVALID')
+        empty_preinstall()
+        guard_unmounted(root, run)
+        before = digest(archive)
+        with tempfile.TemporaryDirectory(prefix='aio-check-', dir=archive.parent) as temporary:
+            staging = Path(temporary)
+            staging.chmod(0o700)
+            manifest = unpack_capsule(archive, staging, run_id=run_id,
+                                      source_commit=source_commit, bindings=bindings)
+        require(digest(archive) == before, 'AIO_SNAPSHOT_SOURCE_CHANGED')
+        guard_unmounted(root, run)
+        empty_preinstall()
+        return capsule_evidence(root, manifest, before)
+    pending = checked(pending, private=True)
     require(os.name == 'nt' or pending.stat().st_uid == os.geteuid(), 'AIO_SNAPSHOT_JOURNAL_INVALID')
     require(pending.stat().st_size <= 65536, 'AIO_SNAPSHOT_JOURNAL_INVALID')
     try:
@@ -519,7 +562,7 @@ def validate_pending_capsule(archive, root, *, run_id, source_commit, model, run
 def restore_capsule(archive, root, *, run_id, source_commit, model, run, uid=1000, gid=1000):
     """Fresh-only transaction; caller holds the existing recovery lock."""
     root = Path(root).absolute()
-    bindings = validate_model(root, model)
+    bindings = recovery_model_bindings(root, model)
     archive = checked(archive, private=True)
     require(not archive.is_relative_to(root), 'AIO_SNAPSHOT_PRIVATE_OUTPUT_REQUIRED')
     marker = checked(root / MARKER, exists=False)
@@ -643,7 +686,7 @@ def verify_restored(root, evidence, model, *, before_start=False, uid=1000, gid=
     required user tables without comparing mutable database bytes.
     """
     root = Path(root).absolute()
-    bindings = validate_model(root, model)
+    bindings = recovery_model_bindings(root, model)
     try:
         marker = json.loads(checked(root / MARKER, private=True).read_bytes())
     except (OSError, ValueError, UnicodeError):

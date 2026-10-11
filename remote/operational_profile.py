@@ -108,7 +108,7 @@ def private_run(args, root, payload):
 def npm_action(root, run, action):
     require(action in ('reissue', 'verify'), 'PUBLIC_DOMAIN_PROBE_FAILED')
     try:
-        run([sys.executable, '-B', root/'scripts/npm-dr.py', action, '--target', root])
+        run([sys.executable, '-B', Path(__file__).with_name('npm_runtime.py'), action, '--target', root])
     except Exception:
         raise ValueError('TLS_VERIFICATION_FAILED') from None
 

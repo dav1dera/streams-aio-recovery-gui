@@ -9,14 +9,14 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from recovery_gui.recovery_inspection import CHECKPOINT_SCOPE
+from recovery_gui.recovery_inspection import CHECKPOINT_SCOPE, CHECKPOINT_SELECTION
 
 COMMIT='b'*40
 TAG='dr-20261006T210601Z'
 
 
 def scope(state,role='stack',*,target_present=False,ciphertext=False,private=False,
-          checkpoint_uid=0,checkpoint_mode=0o600,runner_uid=1000,symlink=None):
+          checkpoint_uid=0,checkpoint_mode=0o600,runner_uid=1000,symlink=None,selection=False):
     home='/home/test'
     target='/opt/infisical' if role=='infisical' else home+'/streams-aio'
     runner=home+'/.local/share/streams-aio-'+('infisical-recovery' if role=='infisical' else 'recovery')
@@ -43,11 +43,12 @@ def scope(state,role='stack',*,target_present=False,ciphertext=False,private=Fal
             return SimpleNamespace(st_mode=stat.S_IFREG|checkpoint_mode,st_uid=checkpoint_uid,
                                    st_nlink=1,st_size=len(files[self.value]))
     output=io.StringIO()
-    fake_pwd=SimpleNamespace(getpwuid=lambda uid:SimpleNamespace(pw_dir=home,pw_gid=1000))
+    fake_pwd=SimpleNamespace(getpwuid=lambda uid:SimpleNamespace(pw_dir=home,pw_gid=1000,pw_name='test'))
+    argv=['selection',runner,target,role,'machine-a'] if selection else ['scope',runner,target,TAG,COMMIT,role,'snapshot']
     with patch('pathlib.Path',ReadOnlyPath),patch.dict(sys.modules,{'pwd':fake_pwd}), \
-         patch.object(sys,'argv',['scope',runner,target,TAG,COMMIT,role,'snapshot']), \
+         patch.object(sys,'argv',argv),patch('os.geteuid',return_value=0,create=True), \
          contextlib.redirect_stdout(output):
-        try:exec(compile(CHECKPOINT_SCOPE,'checkpoint_scope','exec'),{})
+        try:exec(compile(CHECKPOINT_SELECTION if selection else CHECKPOINT_SCOPE,'checkpoint_scope','exec'),{})
         except SystemExit as error:
             if error.code:raise
     return json.loads(output.getvalue())

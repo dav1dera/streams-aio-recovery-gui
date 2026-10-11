@@ -1,1 +1,2 @@
+*.sh text eol=lf
 remote/infisical-deployment.json text eol=lf

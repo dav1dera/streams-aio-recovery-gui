@@ -159,28 +159,31 @@ Premi **Salva esiti** e conserva il registro. Risolvi la causa indicata, poi rip
 
 ## Backup giornaliero
 
-Il timer giornaliero è stato **installato e verificato sull’host originale il 9 ottobre 2026**: ogni giorno alle **04:30 nel fuso della VM**, con ritardo casuale fino a 10 minuti e recupero delle esecuzioni perse. Risultava attivo e abilitato, con prossima esecuzione il **10 ottobre 2026 alle 04:35:05 CEST**. Lo stato applicativo dell’originale è stato verificato invariato. Lock, verifica della pubblicazione e politica di conservazione restano parte del flusso: sono mantenute al massimo **cinque release verificate**. Un backup manuale aggiuntivo usa uno dei cinque punti disponibili.
+Il timer sull’host originale è stato installato e verificato il 9 ottobre 2026: **ogni giorno alle 04:30 nel fuso della VM**, con ritardo casuale fino a 10 minuti e recupero delle esecuzioni perse. Il deployment usa **Europe/Rome**. La retention mantiene cinque release verificate; esecuzioni manuali aggiuntive usano gli stessi cinque punti.
 
-**Stato attuale:** frequenza giornaliera confermata; pubblicazione e decifratura di un nuovo backup completo con snapshot AIO e topologia NPM ancora da confermare. Questa GUI non attiva automaticamente il coordinatore dei backup sull’originale.
+La release completa `dr-20261009T194149Z` ha superato inventario, SHA256 e decifratura di tutti i sei artifact con PRIMARY e RECOVERY; è stata usata nel recupero 0.4.5. La frequenza del timer, da sola, non prova il successo delle esecuzioni successive.
 
-Prima di affidarti alla pianificazione, verifica sull’host che coordina il backup:
+Ogni cattura comprende snapshot SQLite nativi AIOStreams/AIOMetadata, NPM, Agent e database/configurazione Infisical. Il coordinatore sincronizza prima la parte pubblica e registra il suo commit verificato. Una modifica live non cambia una release esistente: entra nel successivo backup riuscito. Dopo modifiche importanti all’Agent, ai secret o ai profili puoi anticiparlo con `sudo systemctl start streams-aio-dr.service` sull’host coordinatore.
 
-- timer attivo e abilitato, calendario effettivamente giornaliero e prossima esecuzione corretta;
-- nuova release pubblicata con manifest schema 2, commit coerente e capsule AIO;
-- inventario e checksum completi, decifratura provata con PRIMARY e RECOVERY;
-- input Infisical completi, inclusa la lista email OAuth precedentemente fornita dal companion;
-- cinque punti verificati conservati e nessuna cancellazione di release estranee.
+Questa GUI non installa automaticamente il coordinatore sul nuovo host. Per la continuità dei backup dopo un trasferimento definitivo segui il [README DR](https://github.com/dav1dera/streams-aio-dr#install-on-docker-stack): producer, timer, destinatari age pubblici, accessi SSH e GitHub di scrittura.
 
-Questi controlli attestano il backup. Un ripristino completo su destinazioni pulite ne attesta l’utilizzabilità.
+Controlla periodicamente:
+
+- timer attivo/abilitato, calendario e fuso corretti;
+- esito dell’ultima esecuzione e data dell’ultima release pubblicata verificata;
+- schema 2, inventario/checksum completi e commit pubblico coerente;
+- una prova di decifratura e recupero con le identity private custodite fuori dal PC.
+
+Le unità attuali non inviano notifiche di errore. Una nuova app richiede anche una scelta esplicita per il suo stato: aggiungerla al Compose non include automaticamente il suo database nel backup.
 
 ## Collaudo finale
 
 Per dichiarare il risultato equivalente allo stack originale devono essere completate e registrate tutte queste prove. I test locali della preview e la prova storica 0.3.17 non le sostituiscono.
 
-- [ ] Produrre sull’originale un backup completo schema 2 e verificarlo con entrambe le identity private.
+- [x] Produrre sull’originale un backup completo schema 2 e verificarlo con entrambe le identity private (`dr-20261009T194149Z`).
 - [ ] Eseguire **Crea da zero** su due VM pulite, usando soltanto la GUI.
 - [ ] Interrompere in un punto controllato e completare con **Rileva e continua**, conservando dati e identità.
-- [ ] Verificare Agent e tunnel, tutti i servizi previsti e le healthcheck definite.
+- [x] Verificare Agent/tunnel e controlli automatici dei servizi (report 0.4.5 del 10 ottobre 2026).
 - [ ] Accedere a Infisical e NPM; verificare route, certificati e domini sulla nuova destinazione.
 - [ ] Accedere ad AIOStreams e AIOMetadata con le identità originali; confrontare profili, configurazioni e URL addon.
 - [ ] Provare AniList, Trakt, provider e gestori esterni; registrare soltanto le riautorizzazioni realmente necessarie.
@@ -188,9 +191,9 @@ Per dichiarare il risultato equivalente allo stack originale devono essere compl
 - [ ] Verificare CometNet WSS attraverso NPM e un collegamento P2P da un percorso esterno.
 - [ ] Verificare che i database/cache esclusi si inizializzino e riprendano scraping o ricostruzione.
 - [ ] Riconciliare gli stati opzionali con l’inventario dell’originale.
-- [ ] In produzione, verificare i tre controller dopo il trasferimento del traffico.
+- [x] Completare il controllo automatico dei tre controller in modalità produzione (report 0.4.5). La disponibilità pubblica completa resta soggetta alle prove esterne.
 - [ ] Riavviare entrambe le VM e ripetere le prove di accesso, Agent, HTTPS e servizi.
 - [x] Confermare il timer giornaliero sull’originale (9 ottobre 2026).
-- [ ] Confermare una successiva pubblicazione completa e la sua decifratura.
+- [x] Confermare pubblicazione completa e decifratura del punto usato nel recupero 0.4.5.
 
-La prova del 9 ottobre con la 0.3.17 ha completato l’avvio dei 28 servizi della simulazione, con AIO manuale e CometNet locale. La nuova 0.4.0 estende il percorso; il suo esito completo deve ancora essere registrato.
+Il report 0.4.5 del 10 ottobre registra tutte le fasi di bootstrap eseguite, ripristino AIO, Agent, servizi, NPM, certificati e dominio CometNet verificati, con un upstream esterno non raggiungibile. La modalità registrata è produzione. Restano da confermare la partenza da Ubuntu appena reinstallato senza Docker, le prove applicative con login/profili, P2P pubblico e la persistenza dopo riavvio. Il risultato attuale attesta l’infrastruttura recuperata, senza anticipare queste prove.

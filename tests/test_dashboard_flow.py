@@ -142,7 +142,7 @@ class DashboardFlowTests(unittest.TestCase):
                         ssh_key='', key_password='', sudo_password='', infisical_host='192.168.1.11',
                         infisical_user='test2', infisical_port='22', infisical_password='private two',
                         infisical_key='', infisical_key_password='', infisical_sudo_password='',
-                        dr_tag=TAG, public_commit=COMMIT, age_identity=str(key), supplemental_inputs='',
+                        dr_tag=TAG, public_commit=COMMIT, github_token='fixture', age_identity=str(key), supplemental_inputs='',
                         domain_target_address='192.168.1.10')
             # Exercise the production action without creating a Tk window.
             view = Mock()
@@ -165,14 +165,17 @@ class DashboardFlowTests(unittest.TestCase):
                 self.assertEqual(args[2]['aio_mode'], 'snapshot')
                 self.assertEqual(args[2]['recovery_action'], 'resume')
             with patch('recovery_gui.ui_dashboard.backend.SSH', side_effect=connections), \
+                 patch('recovery_gui.ui_dashboard.backend.resolve_resume_request',side_effect=lambda a,b,r:r), \
+                 patch('recovery_gui.ui_dashboard.GitHub') as github, \
                  patch('recovery_gui.ui_dashboard.backend.inspect_recovery', side_effect=inspect, create=True), \
                  patch('recovery_gui.ui_dashboard.backend.restore_all', side_effect=restore):
+                github.return_value.point.return_value=dict(tag=TAG,public_commit=COMMIT,aio_snapshot=True)
                 App.recover(view, 'resume')
             self.assertEqual(calls, ['detect', 'restore'])
             for connection in connections:
                 connection.close.assert_called_once()
             recorded = list(view.events.queue)
-            self.assertEqual([event[0] for event in recorded], ['detected', 'finished'])
+            self.assertEqual([event[0] for event in recorded], ['resumed_selection','detected', 'finished'])
             self.assertNotIn('private one', json.dumps(recorded))
 
     def test_detection_refusal_never_calls_restore_but_closes_both_connections(self):
@@ -201,8 +204,8 @@ class DashboardFlowTests(unittest.TestCase):
             for client in clients:
                 client.close.assert_called_once()
 
-    def test_missing_or_invalid_domain_target_stops_both_actions_before_ssh(self):
-        for action in ('fresh', 'resume'):
+    def test_missing_or_invalid_domain_target_stops_fresh_action_before_ssh(self):
+        for action in ('fresh',):
             for target in ('', 'not-an-ip', '0.0.0.0', '224.0.0.1'):
                 with self.subTest(action=action, target=target):
                     view = Mock()
