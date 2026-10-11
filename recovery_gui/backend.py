@@ -22,6 +22,7 @@ from .recovery_inspection import inspect_recovery, resolve_resume_request
 from .startup_diagnostic import safe as safe_startup_diagnostic
 from .external_dependencies import validate as validate_external_dependencies
 from . import ssh_identity
+from .upload_staging import SETUP as UPLOAD_SETUP
 
 PUBLIC = 'dav1dera/streams-aio-sanitized'
 PRIVATE = 'dav1dera/streams-aio-dr'
@@ -29,7 +30,8 @@ STAGES = {'DEPENDENCIES', 'CLONES', 'DOWNLOAD', 'DECRYPT', 'INITIALIZE', 'INPUTS
           'RENDER', 'EMPTY_STATE', 'NPM', 'AIO', 'PREFLIGHT', 'PREPARED', 'STARTED', 'REFUSED', 'TLS',
           'INFISICAL_CONFIG', 'INFISICAL_DATABASE', 'INFISICAL_SERVER', 'NATIVE_AGENT',
           'RUNTIME_PROFILE', 'COMETNET_TRIAL', 'IMAGES', 'APPLICATION_CHECKS', 'TEST_RESET_STACK', 'TEST_RESET_INFISICAL',
-          'OPERATIONAL_PROFILE', 'PUBLIC_DOMAINS', 'PUBLIC_CONTROLLERS', 'OPERATIONAL_READY', 'AIO_BACKUP', 'NPM_TOPOLOGY', 'EXTERNAL_UPSTREAMS'}
+          'OPERATIONAL_PROFILE', 'PUBLIC_DOMAINS', 'PUBLIC_CONTROLLERS', 'OPERATIONAL_READY', 'AIO_BACKUP', 'NPM_TOPOLOGY', 'EXTERNAL_UPSTREAMS',
+          'INFISICAL_TRANSFER', 'STACK_TRANSFER'}
 CODE = re.compile(r'[A-Z][A-Z0-9_]{0,100}\Z')
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 TAG = re.compile(r'dr-[0-9]{8}T[0-9]{6}Z\Z')
@@ -404,20 +406,7 @@ class SSH:
         remote = area + '/upload-' + uuid.uuid4().hex
         # The installer already requires sudo. Create only this new staging
         # directory with explicit ownership, even if the user's shell cannot mkdir.
-        setup = '''import os,sys
-from pathlib import Path
-area,stage=map(Path,sys.argv[1:])
-assert stage.parent==area and stage.name.startswith('upload-')
-assert not any(p.is_symlink() for path in (area,stage) for p in (path,*path.parents))
-os.umask(0o077)
-if not area.exists():
-    area.mkdir(parents=True,mode=0o700)
-    os.chown(area,1000,1000)
-assert area.is_dir() and area.stat().st_uid==1000 and area.stat().st_mode & 0o077==0
-stage.mkdir(mode=0o700)
-os.chown(stage,1000,1000)
-'''
-        self.run(['python3', '-B', '-c', setup, area, remote], sudo=True, timeout=40)
+        self.run(['python3', '-B', '-c', UPLOAD_SETUP, area, remote], sudo=True, timeout=40)
         sftp = self.client.open_sftp()
         try:
             sftp.chmod(area, 0o700)
@@ -471,7 +460,15 @@ os.chown(stage,1000,1000)
         require(h.hexdigest() == before, 'SSH_UPLOAD_SHA256_MISMATCH')
 
     def prepare(self, request, callback):
-        remote, raw = self.upload(request)
+        stage = 'INFISICAL_TRANSFER' if request.get('role') == 'infisical' else 'STACK_TRANSFER'
+        callback(dict(stage=stage,status='RUNNING'))
+        try:
+            remote, raw = self.upload(request)
+        except Failure:
+            raise
+        except Exception:
+            raise Failure('SSH_UPLOAD_FAILED') from None
+        callback(dict(stage=stage,status='PASS'))
         args = ['bash', remote + '/remote/bootstrap.sh', self.host.user]
         if request.get('role') == 'infisical':
             args.append('infisical')

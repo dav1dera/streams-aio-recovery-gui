@@ -1,4 +1,4 @@
-# Guida pratica · Streams AIO Recovery 0.4.7
+# Guida pratica · Streams AIO Recovery 0.4.8
 
 Questa guida segue la dashboard: **Panoramica**, **Accessi e backup**, **Opzioni avanzate**. Il percorso recupera due VM e importa automaticamente i database AIO da un backup completo. Il [README](../README.md#stato-delle-verifiche) distingue i controlli già eseguiti dalle prove applicative ancora da completare.
 
@@ -214,3 +214,13 @@ Per dichiarare il risultato equivalente allo stack originale devono essere compl
 - [x] Confermare pubblicazione completa e decifratura del punto usato nel recupero 0.4.5.
 
 Il report 0.4.5 del 10 ottobre registra tutte le fasi di bootstrap eseguite, ripristino AIO, Agent, servizi, NPM, certificati e dominio CometNet verificati, con un upstream esterno non raggiungibile. La modalità registrata è produzione. Restano da confermare la partenza da Ubuntu appena reinstallato senza Docker, le prove applicative con login/profili, P2P pubblico e la persistenza dopo riavvio. Il risultato attuale attesta l’infrastruttura recuperata, senza anticipare queste prove.
+
+## Trasferimento sulle VM appena installate
+
+Dalla 0.4.8 il programma crea anche le directory intermedie private con il
+proprietario dell’utente SSH. Riconosce e corregge la struttura root-only
+lasciata dal vecchio uploader dopo `OPERATION_STOPPED`, senza eliminare il
+tentativo. Premi **Rileva e continua** con gli stessi accessi e backup.
+`SSH_UPLOAD_PATH_REFUSED` indica una struttura diversa da quella riparabile;
+`SSH_UPLOAD_FAILED` indica un errore nel trasferimento SSH/SFTP. Il registro
+mostra se il trasferimento riguarda Infisical oppure lo stack.

@@ -33,8 +33,8 @@ jobs:
           root_temp=$(mktemp -d "$RUNNER_TEMP/recovery-root-fixtures.XXXXXX")
           sudo chown root:root "$root_temp"
           sudo chmod 700 "$root_temp"
-          for test_file in test_snapshot_recovery_flow.py test_npm_topology.py test_npm_topology_flow.py; do
-            sudo env TMPDIR="$root_temp" TEMP="$root_temp" TMP="$root_temp" "$recovery_python" -B -m unittest discover -s tests -p "$test_file" -v
+          for test_file in test_snapshot_recovery_flow.py test_npm_topology.py test_npm_topology_flow.py test_upload_permissions.py; do
+            sudo env RECOVERY_UPLOAD_PERMISSION_INTEGRATION=1 TMPDIR="$root_temp" TEMP="$root_temp" TMP="$root_temp" "$recovery_python" -B -m unittest discover -s tests -p "$test_file" -v
           done
       - name: Verify the NPM domain and route helpers
         run: |
