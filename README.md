@@ -6,7 +6,7 @@
 
 GUI Windows per recuperare Infisical e lo stack Streams AIO, con configurazioni AIO, Agent, NPM, HTTPS e dominio CometNet.
 
-**v0.4.7 · [Scarica la GUI](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.7) · [Guida dettagliata](docs/USAGE.md) · [Note della versione](docs/RELEASE-NOTES-v0.4.7.md)**
+**v0.4.8 · [Scarica la GUI](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.8) · [Guida dettagliata](docs/USAGE.md) · [Note della versione](docs/RELEASE-NOTES-v0.4.8.md)**
 
 </div>
 
@@ -18,7 +18,7 @@ Il pulsante **Crea da zero** esegue il recupero completo dopo aver preparato le 
 
 ### 1. Scarica il programma
 
-Accedi a GitHub con un account autorizzato alla repo privata e apri la [release v0.4.7](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.7).
+Accedi a GitHub con un account autorizzato alla repo privata e apri la [release v0.4.8](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.8).
 
 Scarica **StreamsAIO-Recovery.exe** e **SHA256SUMS**, confronta il checksum e avvia l’eseguibile su Windows. Python, SSH e gli strumenti della GUI sono inclusi; non serve installare Python sul PC. L’eseguibile non ha firma Authenticode.
 
@@ -148,7 +148,7 @@ La baseline Ubuntu appena reinstallata senza Docker non è confermata. Login/pro
 
 ## Guide e sviluppo
 
-[Uso dettagliato](docs/USAGE.md) · [Preparazione Proxmox](docs/PROXMOX.md) · [Note 0.4.7](docs/RELEASE-NOTES-v0.4.7.md)
+[Uso dettagliato](docs/USAGE.md) · [Preparazione Proxmox](docs/PROXMOX.md) · [Note 0.4.8](docs/RELEASE-NOTES-v0.4.8.md)
 
 Il programma usa Python/Tk e SSH. Per una build locale usa `build.ps1`; i test Python sono in `tests/`. La pipeline GitHub esegue controlli di sicurezza, compatibilità Ubuntu e self-test dell’eseguibile Windows prima della pubblicazione. Le versioni delle applicazioni devono restare compatibili con il backup e con il profilo verificato.
 

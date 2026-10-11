@@ -15,6 +15,7 @@ from .startup_diagnostic import lines as startup_diagnostic_lines
 from . import __version__
 
 TEXT = {
+    'INFISICAL_TRANSFER': 'Trasferimento file a Infisical', 'STACK_TRANSFER': 'Trasferimento file allo stack',
     'DEPENDENCIES': 'Docker e dipendenze', 'CLONES': 'Repository e commit scelto',
     'DOWNLOAD': 'Release e verifica SHA256', 'DECRYPT': 'Decifratura privata age',
     'INITIALIZE': 'Destinazione vuota', 'INPUTS': 'Secret da Infisical',
@@ -34,6 +35,8 @@ TEXT = {
     'TEST_RESET_INFISICAL': 'Nuova simulazione: archiviazione e pulizia Infisical di test',
 }
 ERRORS = {
+    'SSH_UPLOAD_PATH_REFUSED': 'Proprietà o permessi delle cartelle di trasferimento non sono compatibili. Le altre cartelle e i dati presenti vengono conservati.',
+    'SSH_UPLOAD_FAILED': 'Il trasferimento dei file via SSH/SFTP è fallito. Controlla il passo indicato e l’accesso dell’utente SSH alla sua cartella di recupero; lo stato resta conservato.',
     'NPM_TOPOLOGY_BACKUP_REQUIRED': 'Questo backup non include i collegamenti verificati di NPM alle due VM. Scegli un nuovo backup completo; il programma conserva il tentativo presente.',
     'NPM_TOPOLOGY_ADDRESS_INVALID': 'Un indirizzo dei collegamenti NPM non è valido. Controlla gli indirizzi delle due VM in Accessi e backup; i domini e gli accessi restano conservati.',
     'NPM_TOPOLOGY_TARGET_INVALID': 'NPM richiede due destinazioni distinte e valide per stack e Infisical. Controlla gli indirizzi delle VM in Accessi e backup.',
