@@ -18,7 +18,7 @@ Il pulsante **Crea da zero** esegue il recupero completo dopo aver preparato le 
 
 ### 1. Scarica il programma
 
-Accedi a GitHub con un account autorizzato alla repo privata e apri la [release v0.4.8](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.8).
+Apri la [release v0.4.8](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.8).
 
 Scarica **StreamsAIO-Recovery.exe** e **SHA256SUMS**, confronta il checksum e avvia l’eseguibile su Windows. Python, SSH e gli strumenti della GUI sono inclusi; non serve installare Python sul PC. L’eseguibile non ha firma Authenticode.
 
