@@ -138,7 +138,7 @@ jobs:
         run: |
           set -euo pipefail
           tag=$(python -c "import re; from recovery_gui import __version__; assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', __version__); print('v' + __version__)")
-          test "$(gh repo view "$GITHUB_REPOSITORY" --json isPrivate --jq .isPrivate)" = true
+          # Allow manually triggered verified releases from private or public repositories.
           # A release/tag already present is never overwritten or moved.
           test -z "$(git ls-remote --tags origin "refs/tags/$tag")"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
