@@ -22,3 +22,25 @@ private/
 backups/
 credentials/
 *.log
+
+# Local secrets and disaster-recovery material (never commit)
+.secrets/
+**/.secrets/
+.envrc
+*.agekey
+AGE-SECRET-KEY*
+id_rsa
+id_ed25519
+id_ecdsa
+*.p12
+*.pfx
+*.kdbx
+*.dump
+*.sql
+*.sqlite3
+*.bak
+*.backup
+*.creds
+*.credentials
+*credentials*.json
+*secrets*.json
