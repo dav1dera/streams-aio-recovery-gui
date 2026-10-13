@@ -23,7 +23,7 @@ if __name__ == '__main__':
                     'requirements-dr.txt', 'requirements-new-vm.txt', 'infisical_server.py','infisical_inventory.py','infisical-deployment.json',
                     'native_agent.py', 'test_reset.py', 'aio_snapshot.py', 'runtime_profile.py',
                     'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
-                    'npm-route-probe.mjs')
+                    'npm-route-probe.mjs', 'tailscale_recovery.py', 'headplane_recovery.py', 'host_dns.py', 'local_endpoints.py')
         assert all((resources() / name).is_file() for name in required)
         validate_remote_shell_scripts()
         app = App()
@@ -34,6 +34,35 @@ if __name__ == '__main__':
             assert app.infrastructure_verified is False and app.backup_has_aio is None
             assert app.vars['routing_mode'].get() == 'parallel_test'
             assert not app.vars['domain_target_address'].get()
+            assert 'dns_server' not in app.vars
+            assert app.domain_card.winfo_manager() == 'pack'
+            app.var('host').set('192.168.178.20')
+            app._use_stack_domain_address()
+            assert app.var('domain_target_address').get() == '192.168.178.20'
+            app.var('domain_target_address').set('')
+            assert not app.supplement_card.winfo_manager()
+            assert not {'aio_payload', 'aiostreams_exports', 'aiometadata_exports'} & app.vars.keys()
+            point = dict(tag='dr-20261012T010000Z', public_commit='a' * 40, aio_snapshot=True)
+            app.events.put(('point', point))
+            app.poll()
+            assert not app.supplement_card.winfo_manager()
+            app.show_error('OAUTH_ALLOWLIST_SUPPLEMENT_REQUIRED')
+            assert app.supplement_card.winfo_manager() == 'pack'
+            app.var('supplemental_inputs').set('fixture.age')
+            app.events.put(('point', point))
+            app.poll()
+            assert app.var('supplemental_inputs').get() == 'fixture.age'
+            app.events.put(('point', dict(point, tag='dr-20261012T020000Z', aio_snapshot=False)))
+            app.poll()
+            assert not app.supplement_card.winfo_manager()
+            assert not app.var('supplemental_inputs').get()
+            app.show_error('OAUTH_ALLOWLIST_SUPPLEMENT_REQUIRED')
+            app.var('supplemental_inputs').set('fixture.age')
+            app.events.put(('resumed_selection', dict(point=point, routing_mode='parallel_test',
+                                                     domain_target_address='192.0.2.1')))
+            app.poll()
+            assert not app.supplement_card.winfo_manager()
+            assert not app.var('supplemental_inputs').get()
             for action in ('fresh', 'resume'):
                 request = operational_request({}, action)
                 assert request['aio_mode'] == 'snapshot' and request['native_agent'] is True

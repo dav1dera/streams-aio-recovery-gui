@@ -13,7 +13,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from recovery_gui.backend import parse_event
-from recovery_gui.startup_diagnostic import SERVICES, STATUSES, safe, validate, lines
+from recovery_gui.startup_diagnostic import (SERVICES, STATUSES, TAILSCALE_BACKEND_STATES,
+    TAILSCALE_SIGNALS, safe, validate, lines)
 
 spec = importlib.util.spec_from_file_location('failed_wave_start', ROOT/'remote/start.py')
 start = importlib.util.module_from_spec(spec)
@@ -22,6 +23,8 @@ with patch.dict(sys.modules, {'fcntl':N()} if sys.platform == 'win32' else {}):
 
 CANARY = 'PRIVATE_DIAGNOSTIC_CANARY https://private.example/path?token=secret'
 IMAGE = 'registry.invalid/image@sha256:'+'a'*64
+TAIL_IMAGE = 'tailscale/tailscale@sha256:'+'b'*64
+TAIL_IMAGE_ID = 'sha256:'+'c'*64
 
 
 def model():
@@ -65,6 +68,49 @@ class Snapshot:
     def run(self, args, **kwargs):
         self.assert_timeout = kwargs['timeout']
         return N(returncode=0, stdout=self.read(args), stderr=CANARY.encode())
+
+
+def tailscale_model():
+    compose = model()
+    compose['services']['tailscale'] = {'image': TAIL_IMAGE}
+    return compose
+
+
+def tailscale_container(root):
+    row = container(root, 'starting', 'tailscale')
+    row.update(Id='b'*64, Image=TAIL_IMAGE_ID)
+    row['Config']['Image'] = TAIL_IMAGE
+    return row
+
+
+class TailscaleSnapshot(Snapshot):
+    def __init__(self, root, logs=b'', status=None, failures=()):
+        super().__init__(root, [tailscale_container(root)])
+        self.logs = logs
+        self.status = json.dumps({'BackendState': 'NeedsLogin', 'Private': CANARY}).encode() if status is None else status
+        self.failures = failures
+
+    def read(self, args):
+        kind = ('image' if args[:3] == ['docker', 'image', 'inspect']
+                else args[1] if args[:2] in (['docker', 'logs'], ['docker', 'exec']) else None)
+        if kind is None:
+            return super().read(args)
+        self.calls.append(args)
+        if kind in self.failures:
+            raise RuntimeError(CANARY)
+        if kind == 'image':
+            return TAIL_IMAGE_ID.encode()
+        if kind == 'logs':
+            return self.logs
+        if kind == 'exec':
+            return self.status
+        raise AssertionError(args)
+
+    def run(self, args, **kwargs):
+        raw = self.read(args)
+        # Docker returns daemon stderr separately, including on success.
+        return N(returncode=0, stdout=b'' if args[:2] == ['docker', 'logs'] else raw,
+                 stderr=raw if args[:2] == ['docker', 'logs'] else CANARY.encode())
 
 
 def parsed(diagnostic):
@@ -126,9 +172,138 @@ class FailedWaveDiagnostic(unittest.TestCase):
     def test_collector_and_receiver_use_same_finite_schema(self):
         self.assertEqual(SERVICES, start.DIAGNOSTIC_SERVICES)
         self.assertEqual(STATUSES, start.DIAGNOSTIC_STATUSES)
+        self.assertEqual(TAILSCALE_BACKEND_STATES, start.TAILSCALE_BACKEND_STATES)
+        self.assertEqual(TAILSCALE_SIGNALS, start.TAILSCALE_SIGNALS)
         self.assertEqual(len(SERVICES), 31)
         report = start.startup_diagnostic(model(), Path('/synthetic'), ['postgres'], Snapshot(Path('/synthetic')).read)
         self.assertEqual(start.diagnostic_safe(report), validate(report))
+
+    def test_tailscale_signals_and_backend_are_finite_without_log_or_json_values(self):
+        root = Path('/synthetic')
+        logs = ('fetch login server key failed: ' + CANARY + '\n'
+                'tailscale up failed: exit status 1 ' + CANARY + '\n'
+                'preauth key already used: ' + CANARY + '\n'
+                'CreateTUN("tailscale0") failed: permission denied ' + CANARY).encode()
+        snapshot = TailscaleSnapshot(root, logs)
+        report = start.startup_diagnostic(tailscale_model(), root, ['tailscale'], snapshot.read)
+        self.assertEqual(report['tailscale'], dict(backend_state='NeedsLogin', signals=sorted(TAILSCALE_SIGNALS)))
+        self.assertEqual(start.diagnostic_safe(report), validate(report))
+        self.assertEqual(parsed(report)['diagnostic'], report)
+        self.assertNotIn(CANARY, json.dumps(report))
+        self.assertNotIn('private.example', '\n'.join(lines(report)))
+        self.assertTrue(any('LOGIN_SERVER_KEY_FAILED' in line for line in lines(report)))
+        self.assertEqual(snapshot.calls[-3:], [
+            ['docker', 'image', 'inspect', '--format', '{{.ID}}', TAIL_IMAGE],
+            ['docker', 'logs', '--tail', '80', 'b'*64],
+            ['docker', 'exec', 'b'*64, 'tailscale', 'status', '--json']])
+        self.assertFalse(any(any(arg in call for arg in ('up', 'restart', 'start', 'rm')) for call in snapshot.calls))
+
+    def test_generic_network_or_device_messages_do_not_claim_a_tailscale_cause(self):
+        root = Path('/synthetic')
+        logs = ('DERP dial tcp: connection refused\nkey discovery complete\n'
+                'device /dev/net/tun exists\n' + CANARY).encode()
+        snapshot = TailscaleSnapshot(root, logs)
+        report = start.startup_diagnostic(tailscale_model(), root, ['tailscale'], snapshot.read)
+        self.assertEqual(report['tailscale'], dict(backend_state='NeedsLogin', signals=[]))
+        self.assertNotIn('AUTH_KEY_REJECTED', json.dumps(report))
+
+    def test_tailscale_logs_include_daemon_stderr_only_in_private_classification(self):
+        root = Path('/synthetic')
+        snapshot = TailscaleSnapshot(root, b'tailscale up failed: exit status 1\n' + CANARY.encode())
+        with patch.object(start.subprocess, 'run', side_effect=snapshot.run):
+            report = start.startup_diagnostic(tailscale_model(), root, ['tailscale'])
+        self.assertEqual(report['tailscale']['signals'], ['TS_UP_FAILED'])
+        self.assertNotIn(CANARY, json.dumps(parsed(report)))
+
+    def test_failed_or_oversized_tailscale_probe_keeps_the_base_report_and_error(self):
+        root = Path('/synthetic')
+        for logs, status, failures in ((b'', b'', ('logs', 'exec')), (b'x'*262145, b'x'*262145, ())):
+            with self.subTest(failures=failures):
+                snapshot = TailscaleSnapshot(root, logs, status, failures)
+                report = start.startup_diagnostic(tailscale_model(), root, ['tailscale'], snapshot.read)
+                self.assertEqual(report['status'], 'COMPLETE')
+                self.assertEqual(report['services']['tailscale']['status'], 'STARTING')
+                self.assertNotIn('tailscale', {key: value for key, value in report.items() if key != 'services'})
+                self.assertEqual(parsed(report)['code'], 'APPLICATION_HEALTH_WAIT_FAILED')
+
+    def test_tailscale_status_and_logs_can_fail_independently(self):
+        root = Path('/synthetic')
+        for failures, expected in ((('logs',), dict(backend_state='NeedsLogin', signals=[])),
+                (('exec',), dict(backend_state=None, signals=['TS_UP_FAILED']))):
+            with self.subTest(failures=failures):
+                snapshot = TailscaleSnapshot(root, b'tailscale up failed: exit status 1', failures=failures)
+                report = start.startup_diagnostic(tailscale_model(), root, ['tailscale'], snapshot.read)
+                self.assertEqual(report['tailscale'], expected)
+
+    def test_tailscale_unknown_backend_is_never_copied_from_private_json(self):
+        root = Path('/synthetic')
+        for backend in (CANARY, [], {}, True):
+            with self.subTest(backend=backend):
+                snapshot = TailscaleSnapshot(root, status=json.dumps({'BackendState': backend}).encode())
+                report = start.startup_diagnostic(tailscale_model(), root, ['tailscale'], snapshot.read)
+                self.assertEqual(report['tailscale'], dict(backend_state=None, signals=[]))
+                self.assertNotIn(CANARY, json.dumps(report))
+
+    def test_tailscale_machine_approval_is_distinct_from_auth_key_rejection(self):
+        root = Path('/synthetic')
+        snapshot = TailscaleSnapshot(root, status=b'{"BackendState":"NeedsMachineAuth"}')
+        report = start.startup_diagnostic(tailscale_model(), root, ['tailscale'], snapshot.read)
+        self.assertEqual(report['tailscale'], dict(backend_state='NeedsMachineAuth', signals=[]))
+        self.assertEqual(validate(report), report)
+
+    def test_tailscale_probe_requires_owned_unique_container_and_exact_pinned_image(self):
+        root = Path('/synthetic')
+        for change, expected in ((lambda s:s.rows[0]['Config'].update(Image='tailscale/tailscale:latest'), 'COMPLETE'),
+                (lambda s:s.rows[0].update(Image='sha256:'+'d'*64), 'COMPLETE'),
+                (lambda s:s.rows[0]['Config']['Labels'].update({'com.docker.compose.project':'foreign'}), 'OWNERSHIP_REFUSED'),
+                (lambda s:s.rows.append(dict(s.rows[0], Id='e'*64)), 'UNAVAILABLE')):
+            snapshot = TailscaleSnapshot(root)
+            change(snapshot)
+            report = start.startup_diagnostic(tailscale_model(), root, ['tailscale'], snapshot.read)
+            self.assertEqual(report['status'], expected)
+            self.assertNotIn('tailscale', {key: value for key, value in report.items() if key != 'services'})
+            self.assertFalse(any(call[:2] in (['docker', 'logs'], ['docker', 'exec']) for call in snapshot.calls))
+
+    def test_tailscale_probe_does_not_run_for_another_failed_wave(self):
+        root = Path('/synthetic')
+        snapshot = TailscaleSnapshot(root)
+        report = start.startup_diagnostic(tailscale_model(), root, ['postgres'], snapshot.read)
+        self.assertEqual(report['status'], 'COMPLETE')
+        self.assertFalse(any(call[:2] in (['docker', 'logs'], ['docker', 'exec'], ['docker', 'image']) for call in snapshot.calls))
+
+    def test_tailscale_invalid_extensions_are_redacted_at_both_boundaries(self):
+        root = Path('/synthetic')
+        snapshot = TailscaleSnapshot(root)
+        valid = start.startup_diagnostic(tailscale_model(), root, ['tailscale'], snapshot.read)
+        mutations = (lambda v:v['tailscale'].update(private=CANARY),
+            lambda v:v['tailscale'].update(backend_state=CANARY),
+            lambda v:v['tailscale'].update(backend_state=[]),
+            lambda v:v['tailscale'].update(signals=[CANARY]),
+            lambda v:v['tailscale'].update(signals=['TS_UP_FAILED', 'TS_UP_FAILED']),
+            lambda v:v['tailscale'].update(signals=['TS_UP_FAILED', 'AUTH_KEY_REJECTED']),
+            lambda v:v['tailscale'].update(signals=True),
+            lambda v:v.update(wave=['postgres']),
+            lambda v:v.update(tailscale=CANARY))
+        for mutate in mutations:
+            report = json.loads(json.dumps(valid))
+            mutate(report)
+            with self.subTest(report=report):
+                event = parsed(report)
+                self.assertEqual(event['code'], 'APPLICATION_HEALTH_WAIT_FAILED')
+                self.assertEqual(start.diagnostic_safe(report), safe(report))
+                self.assertEqual(event['diagnostic']['status'], 'UNAVAILABLE')
+                self.assertNotIn(CANARY, json.dumps(event))
+                self.assertNotIn(CANARY, '\n'.join(lines(report)))
+
+    def test_tailscale_extra_commands_share_existing_deadline_and_keep_base_on_expiry(self):
+        root = Path('/synthetic')
+        snapshot = TailscaleSnapshot(root)
+        with patch.object(start.time, 'monotonic', side_effect=[0,1,2,3,4,19,21,22]), \
+                patch.object(start.subprocess, 'run', side_effect=snapshot.run) as run:
+            report = start.startup_diagnostic(tailscale_model(), root, ['tailscale'])
+        self.assertEqual(report['status'], 'COMPLETE')
+        self.assertNotIn('tailscale', {key: value for key, value in report.items() if key != 'services'})
+        self.assertEqual([call.kwargs['timeout'] for call in run.call_args_list], [5,5,5,5,1])
 
     def test_invalid_nested_details_redact_but_keep_original_error(self):
         valid = start.startup_diagnostic(model(), Path('/synthetic'), ['postgres'], Snapshot(Path('/synthetic')).read)

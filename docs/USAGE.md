@@ -1,4 +1,4 @@
-# Guida pratica · Streams AIO Recovery 0.4.8
+# Guida pratica · Streams AIO Recovery 0.4.17
 
 Questa guida segue la dashboard: **Panoramica**, **Accessi e backup**, **Opzioni avanzate**. Il percorso recupera due VM e importa automaticamente i database AIO da un backup completo. Il [README](../README.md#stato-delle-verifiche) distingue i controlli già eseguiti dalle prove applicative ancora da completare.
 
@@ -8,18 +8,18 @@ Usa **Ubuntu Server 26.04 o 24.04 amd64**, seleziona OpenSSH durante l’install
 
 La GUI installa Docker e le dipendenze. Non crea le VM in Proxmox e non installa Ubuntu. Fedora sull’Infisical originale non significa che Fedora sia supportata come nuova destinazione della GUI.
 
-Per la prova attuale le destinazioni sono:
+Esempio di destinazioni, da sostituire con quelle del proprio recupero:
 
 | Ruolo | IP SSH | Utente della prova |
 | --- | --- | --- |
-| Stack | `192.168.178.29` | `test` |
-| Infisical | `192.168.178.30` | `test2` |
+| Stack | `192.168.178.20` | `test` |
+| Infisical | `192.168.178.31` | `test2` |
 
 Sono esempi della prova, non valori obbligatori del nuovo profilo operativo. Per **Crea da zero**, entrambe le VM devono essere vuote e distinte. Per un recupero già presente usa **Rileva e continua**.
 
 ### VM ricreata o indirizzo IP diverso
 
-Per un recupero su VM nuove e vuote, inserisci in **Accessi e backup** gli IP o i nomi host attuali. Possono essere diversi da quelli originali e da quelli della prova: non occorre mantenere `.29` e `.30`. L’indirizzo previsto per i domini resta un campo separato e deve corrispondere al loro instradamento effettivo.
+Per un recupero su VM nuove e vuote, inserisci in **Accessi e backup** gli IP o i nomi host attuali. Possono essere diversi da quelli originali e dagli esempi. L’indirizzo previsto per i domini resta un campo separato e deve corrispondere al loro instradamento effettivo.
 
 Una reinstallazione cambia l’impronta SSH anche mantenendo lo stesso IP. Dalla **0.4.7**, quando una destinazione conosciuta presenta una chiave diversa, la GUI mostra **indirizzo e porta, impronta precedente e nuova impronta**. Prima di accettare, apri la console della nuova VM in Proxmox e visualizza le impronte delle sue chiavi pubbliche:
 
@@ -74,11 +74,19 @@ Un punto adatto al recupero automatico deve contenere:
 
 Il programma verifica release pubblicata, inventario, checksum, commit, identity e contratto dei dati prima di usare il contenuto. La presenza della release nell’elenco non dimostra da sola che sia completa o compatibile.
 
-I backup precedenti senza `aio-state.tar.gz.age` non diventano completi aggiornando l’eseguibile. Possono essere riconosciuti per la compatibilità storica, ma il nuovo percorso automatico richiede un nuovo backup schema 2 prodotto e verificato dall’originale. I campi JSON, payload e companion delle **Opzioni avanzate** non sostituiscono questo requisito.
+I backup precedenti senza `aio-state.tar.gz.age` non diventano completi aggiornando l’eseguibile. Il percorso automatico richiede un nuovo backup schema 2 prodotto e verificato dall’originale. Dalla 0.4.9 la GUI non mostra più export JSON o payload AIO: il recupero usa i database nativi inclusi nel backup.
+
+Il campo **File integrativo cifrato .age** compare nelle **Opzioni avanzate** soltanto se il recupero segnala un input mancante, per esempio la lista email OAuth. Resta disponibile per riprovare lo stesso punto di recupero; scegliendo un backup o un commit diverso viene nascosto e la selezione viene rimossa. Questo file non sostituisce lo snapshot AIO. Il campo della chiave privata age PRIMARY o RECOVERY resta sempre disponibile in **Accessi e backup**.
 
 ## 4. Scegliere la destinazione dei domini
 
-Nella scheda **Domini e configurazioni AIO** scegli una modalità.
+Nella build locale 0.4.17 usa il riquadro **Domini e controller prima dell’avvio**, disponibile in Panoramica e in Accessi e backup. Scegli la modalità e l’IP atteso prima di iniziare. **Usa IP della VM stack (LAN)** copia l’indirizzo SSH; usalo soltanto quando i domini devono raggiungere direttamente quell’IP LAN. Il programma non modifica i record DNS.
+
+**I DNS rewrite sono gestiti manualmente.** In AdGuard o nel DNS locale indirizza i domini dei servizi recuperati verso l’IP LAN della VM stack. Anche il dominio HTTPS Infisical deve raggiungere questo indirizzo: NPM sulla VM stack inoltra le richieste alla VM Infisical. Nel router inoltra le porte TCP **80 e 443** alla VM stack. La GUI non modifica AdGuard, il resolver di Ubuntu o gli inoltri del router.
+
+Queste modifiche spostano il relativo traffico locale verso il recupero. Al termine di una prova, ripristina i record DNS e gli inoltri precedenti prima di tornare alle VM originali.
+
+Quando Tailscale usa Headscale dello stack, il DNS viene controllato prima degli avvii applicativi. Headscale e NPM devono essere pronti prima della registrazione Tailscale. Una destinazione LAN precedente produce `TAILSCALE_CONTROLLER_DNS_MISMATCH`: correggi il record nel DNS che lo gestisce e riprendi con **Rileva e continua**, senza azzerare i database.
 
 ### Prova affiancata alle VM operative
 
@@ -125,11 +133,11 @@ Tieni il PC collegato e non avviare un secondo recupero o script di modifica in 
 2. **Stack** — lettura dei secret, generazione dei file, directory e permessi; verifica della compatibilità del primo avvio con le immagini previste.
 3. **AIO e NPM** — recupero del database NPM e ripristino nativo di AIOStreams e AIOMetadata.
 4. **Agent** — installazione dell’Agent continuo e del tunnel SSH permanente tra le nuove VM.
-5. **Avvio per dipendenze** — verifica delle immagini e avvio dei servizi nell’ordine previsto.
+5. **Avvio per dipendenze** — verifica delle immagini; OAuth2 Proxy viene avviato prima di NPM per rendere disponibile il servizio di autenticazione alle sue route. Headplane attende Headscale, NPM e il collegamento HTTPS verificato.
 6. **NPM prima di CometNet** — riemissione TLS e preparazione della route, quindi prova della destinazione HTTPS dal percorso Gluetun/VPN. Solo dopo viene avviato CometNet con il proprio indirizzo WSS reale.
 7. **Verifica finale** — controllo degli upstream NPM e dei servizi. In produzione i tre controller pubblici vengono attivati per ultimi.
 
-L’ordine NPM → HTTPS → CometNet evita che il controllo iniziale di CometNet fallisca mentre il suo proxy non è ancora pronto. Una risposta temporanea univoca inserita nella route NPM deve tornare dal nuovo server: il certificato valido del server originale non è sufficiente. La risposta viene poi rimossa e la configurazione NPM ripristinata.
+L’ordine OAuth2 Proxy → NPM → Headplane/Tailscale/CometNet evita il blocco Nginx causato dal proxy di autenticazione ancora assente. La correzione riguarda il piano di avvio: Compose, autenticazione e controlli TLS restano conservati. Una risposta temporanea univoca inserita nella route NPM deve tornare dal nuovo server: il certificato valido del server originale non è sufficiente. La risposta viene poi rimossa e la configurazione NPM ripristinata.
 
 I controlli applicativi automatici registrano l’infrastruttura e l’avvio. Non possono confermare da soli che ogni login, configurazione addon o autorizzazione esterna funzioni: servono le prove sotto.
 
@@ -198,7 +206,8 @@ Le unità attuali non inviano notifiche di errore. Una nuova app richiede anche 
 Per dichiarare il risultato equivalente allo stack originale devono essere completate e registrate tutte queste prove. I test locali della preview e la prova storica 0.3.17 non le sostituiscono.
 
 - [x] Produrre sull’originale un backup completo schema 2 e verificarlo con entrambe le identity private (`dr-20261009T194149Z`).
-- [ ] Eseguire **Crea da zero** su due VM pulite, usando soltanto la GUI.
+- [x] Completare il recupero applicativo con la 0.4.17 da due VM svuotate di container, volumi, database, configurazioni e checkpoint; Docker e cache immagini erano già presenti.
+- [ ] Ripetere il percorso da Ubuntu appena installato senza Docker e senza cache immagini.
 - [ ] Interrompere in un punto controllato e completare con **Rileva e continua**, conservando dati e identità.
 - [x] Verificare Agent/tunnel e controlli automatici dei servizi (report 0.4.5 del 10 ottobre 2026).
 - [ ] Accedere a Infisical e NPM; verificare route, certificati e domini sulla nuova destinazione.
@@ -213,7 +222,7 @@ Per dichiarare il risultato equivalente allo stack originale devono essere compl
 - [x] Confermare il timer giornaliero sull’originale (9 ottobre 2026).
 - [x] Confermare pubblicazione completa e decifratura del punto usato nel recupero 0.4.5.
 
-Il report 0.4.5 del 10 ottobre registra tutte le fasi di bootstrap eseguite, ripristino AIO, Agent, servizi, NPM, certificati e dominio CometNet verificati, con un upstream esterno non raggiungibile. La modalità registrata è produzione. Restano da confermare la partenza da Ubuntu appena reinstallato senza Docker, le prove applicative con login/profili, P2P pubblico e la persistenza dopo riavvio. Il risultato attuale attesta l’infrastruttura recuperata, senza anticipare queste prove.
+Il **14 ottobre 2026**, la **0.4.17** ha completato il recupero applicativo da due VM svuotate, usando `dr-20261013T023710Z`. Docker e cache immagini erano già presenti. Sono passati Infisical, AIO, Agent, Headplane/Headscale, Tailscale, NPM, HTTPS, CometNet, controller e controlli finali. Un upstream esterno è rimasto non raggiungibile. L'utente ha confermato i due addon AIO funzionanti in Stremio dal telefono; sul PC è stata rilevata una differenza DNS. P2P pubblico, tutte le integrazioni e persistenza dopo riavvio restano da verificare. [Stato aggiornato](../README.md#stato-delle-verifiche).
 
 ## Trasferimento sulle VM appena installate
 

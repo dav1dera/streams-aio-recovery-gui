@@ -4,10 +4,10 @@ import vm from 'node:vm';
 const source = fs.readFileSync(new URL('../remote/npm-domain-probe.mjs', import.meta.url), 'utf8');
 const nonce = 'a'.repeat(48), journal = '/data/.streams-aio-domain-probe.json';
 const marker = before => before + `\n# streams-aio-recovery-proof\nlocation = /.well-known/streams-aio-recovery/${nonce} {\n  default_type text/plain;\n  return 200 '${nonce}';\n}\n`;
-async function scenario({action='install', interrupted=false, drift=false, wrongUpstream=false, wrongWebSocket=false, brokenJournal=false, failReload=false}={}) {
+async function scenario({action='install', interrupted=false, drift=false, wrongUpstream=false, wrongWebSocket=false, brokenJournal=false, failReload=false, kind, port}={}) {
   let output='', exit, rendered=0, reloads=0;
   const host={id:7,is_deleted:0,enabled:1,certificate_id:1,domain_names:['cometnet.example.invalid'],
-    forward_host:wrongUpstream?'original.example.invalid':'172.19.0.2',forward_port:8765,forward_scheme:'http',
+    forward_host:wrongUpstream?'original.example.invalid':'172.19.0.2',forward_port:port ?? (kind==='headscale'?8080:8765),forward_scheme:'http',
     allow_websocket_upgrade:!wrongWebSocket,advanced_config:'# preserve original advanced config',access_list_id:4};
   const before=host.advanced_config, files=new Map();
   if(interrupted) {
@@ -32,7 +32,8 @@ async function scenario({action='install', interrupted=false, drift=false, wrong
   };
   const imports={'node:fs':{default:mockedFs},'/app/models/proxy_host.js':{default:{query:()=>new Query(),defaultAllowGraph:'*',defaultExpand:[]}},
     '/app/internal/nginx.js':{default:{generateConfig:async(_kind,row)=>{assert.equal(row.id,7);rendered++;},test:async()=>{},reload:async()=>{reloads++;if(failReload)throw new Error('private URL must not appear');}}}};
-  const payload={action,hostname:'cometnet.example.invalid',nonce,forward_hosts:['gluetun','172.19.0.2'],forward_port:8765};
+  const payload={action,hostname:'cometnet.example.invalid',nonce,forward_hosts:['gluetun','172.19.0.2'],forward_port:host.forward_port};
+  if(kind!==undefined)payload.kind=kind;
   const context=vm.createContext({JSON,Error,Array,Number,Promise,process:{stdout:{write:raw=>{output+=raw;}},stderr:{write(){}},
     stdin:{async *[Symbol.asyncIterator](){yield JSON.stringify(payload);}},exit:code=>{exit=code;}}});
   const cache=new Map();
@@ -55,4 +56,9 @@ for(const settings of [{action:'remove',interrupted:true,drift:true},{action:'re
 }
 run=await scenario({failReload:true});assert.equal(run.result.status,'FAIL');assert(run.files.has(journal));assert.equal(run.host.advanced_config,marker(run.before));
 run=await scenario({action:'remove'});assert.equal(run.result.status,'PASS');assert.equal(run.rendered,0);
-console.log('NPM_DOMAIN_PROBE_SEMANTIC_TESTS PASS (9 scenarios)');
+run=await scenario({kind:'headscale',wrongWebSocket:true});assert.equal(run.result.status,'PASS');assert.equal(run.host.advanced_config,marker(run.before));
+run=await scenario({kind:'headscale',action:'remove',interrupted:true});assert.equal(run.result.status,'PASS');assert.equal(run.host.advanced_config,run.before);assert(!run.files.has(journal));
+for(const settings of [{kind:'headscale',port:8765},{kind:'other'},{port:8080}]) {
+  run=await scenario(settings);assert.equal(run.result.status,'FAIL');assert.equal(run.rendered,0);
+}
+console.log('NPM_DOMAIN_PROBE_SEMANTIC_TESTS PASS (14 scenarios)');

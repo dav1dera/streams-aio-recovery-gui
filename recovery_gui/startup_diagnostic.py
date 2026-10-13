@@ -8,6 +8,10 @@ STATUSES = frozenset({'NOT_STARTED', 'RUNNING', 'HEALTHY', 'UNHEALTHY', 'STARTIN
     'RESTARTING', 'PAUSED', 'EXITED', 'CREATED', 'DEAD', 'UNKNOWN', 'DEFERRED'})
 RESULTS = frozenset({'COMPLETE', 'UNAVAILABLE', 'OWNERSHIP_REFUSED'})
 FIELDS = frozenset({'status', 'exit_code', 'health_exit_code', 'restarts', 'oom_killed'})
+TAILSCALE_BACKEND_STATES = frozenset({'Running', 'NeedsLogin', 'NeedsMachineAuth',
+    'Stopped', 'NoState', 'Starting', 'InUseOtherUser'})
+TAILSCALE_SIGNALS = frozenset({'LOGIN_SERVER_KEY_FAILED', 'TS_UP_FAILED',
+    'AUTH_KEY_REJECTED', 'TUN_CREATE_FAILED'})
 
 
 def unavailable():
@@ -18,7 +22,9 @@ def validate(value):
     def require(ok):
         if not ok:
             raise ValueError('INVALID_STARTUP_DIAGNOSTIC')
-    require(isinstance(value, dict) and set(value) == {'schema', 'status', 'wave', 'services'}
+    require(isinstance(value, dict)
+            and set(value) in ({'schema', 'status', 'wave', 'services'},
+                               {'schema', 'status', 'wave', 'services', 'tailscale'})
             and type(value['schema']) is int and value['schema'] == 1
             and isinstance(value['status'], str) and value['status'] in RESULTS)
     wave = value['wave']
@@ -38,6 +44,17 @@ def validate(value):
             maximum = 10000 if key == 'restarts' else 255
             require(row[key] is None or type(row[key]) is int and 0 <= row[key] <= maximum)
         require(row['oom_killed'] is None or type(row['oom_killed']) is bool)
+    if 'tailscale' in value:
+        detail = value['tailscale']
+        require(value['status'] == 'COMPLETE' and 'tailscale' in wave
+                and isinstance(detail, dict) and set(detail) == {'backend_state', 'signals'})
+        require(detail['backend_state'] is None
+                or isinstance(detail['backend_state'], str)
+                and detail['backend_state'] in TAILSCALE_BACKEND_STATES)
+        signals = detail['signals']
+        require(isinstance(signals, list) and len(signals) <= len(TAILSCALE_SIGNALS)
+                and all(isinstance(signal, str) and signal in TAILSCALE_SIGNALS for signal in signals)
+                and signals == sorted(set(signals)))
     return value
 
 
@@ -66,4 +83,8 @@ def lines(value):
         result.append('SERVIZIO=' + name + ' STATO=' + row['status']
             + ' EXIT=' + str(row['exit_code']) + ' HEALTH_EXIT=' + str(row['health_exit_code'])
             + ' RIAVVII=' + str(row['restarts']) + ' OOM=' + str(row['oom_killed']))
+    if 'tailscale' in value:
+        detail = value['tailscale']
+        result.append('Tailscale: stato rete=' + str(detail['backend_state'])
+            + '; segnali osservati=' + (', '.join(detail['signals']) or 'nessuno riconosciuto') + '.')
     return result

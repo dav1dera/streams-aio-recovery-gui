@@ -11,8 +11,8 @@ PHASE_STAGES = {
               'PREPARED', 'RUNTIME_PROFILE', 'OPERATIONAL_PROFILE', 'STACK_TRANSFER'},
     'AIO': {'AIO', 'AIO_BACKUP', 'AIO_IMPORT', 'AIO_DATABASES'},
     'Agent': {'NATIVE_AGENT'},
-    'Domini': {'NPM', 'NPM_TOPOLOGY', 'TLS', 'DOMAINS', 'PUBLIC_DOMAINS', 'PUBLIC_ROUTING', 'PUBLIC_COMETNET', 'EXTERNAL_UPSTREAMS'},
-    'Servizi': {'IMAGES', 'STARTED', 'APPLICATION_CHECKS', 'OPERATIONAL_READY', 'PUBLIC_CONTROLLERS'},
+    'Domini': {'NPM', 'NPM_TOPOLOGY', 'TLS', 'DOMAINS', 'PUBLIC_DOMAINS', 'PUBLIC_ROUTING', 'PUBLIC_COMETNET', 'EXTERNAL_UPSTREAMS', 'LOCAL_ENDPOINTS'},
+    'Servizi': {'IMAGES', 'STARTED', 'APPLICATION_CHECKS', 'OPERATIONAL_READY', 'PUBLIC_CONTROLLERS', 'TAILSCALE', 'HEADPLANE'},
 }
 FINISHED_STAGES = {
     'INFISICAL_SERVER', 'PREPARED', 'AIO', 'AIO_IMPORT', 'AIO_DATABASES',
@@ -65,6 +65,14 @@ def machine_status(info, role='stack'):
 
 
 def error_destination(code):
+    if code.startswith('TLS_NPM_') or code.startswith('LOCAL_ENDPOINTS_'):
+        return 0, 'Consulta il passaggio preciso negli esiti'
+    if code.startswith('HEADPLANE_'):
+        return 0, 'Consulta il collegamento Headplane e Headscale negli esiti'
+    if code.startswith('HOST_DNS_'):
+        return 0, 'Consulta gli esiti del controllo DNS'
+    if code.startswith('TAILSCALE_'):
+        return 0, 'Controlla domini e controller in Panoramica'
     if code in ('INCOMPLETE_STEP_REQUIRES_REVIEW','RECOVERY_OPERATION_INCOMPLETE',
                 'AIO_SNAPSHOT_JOURNAL_INVALID','AIO_SNAPSHOT_RESTORED_DATABASE_CHANGED',
                 'AIO_SNAPSHOT_TARGET_MOUNTED','NPM_TOPOLOGY_ALREADY_MOUNTED',
@@ -96,7 +104,12 @@ def operational_request(data, action, files=None):
     request = dict(data)
     request.update(recovery_action=action, operational_profile=True,
                    aio_mode='snapshot', native_agent=True, restart_test=False)
-    request.update({key: list(paths) for key, paths in (files or {}).items()})
+    # The dashboard restores native AIO databases. Legacy imports must never
+    # add hidden local files to this request, even if an old view retained them.
+    for key in ('aio_payload', 'aiostreams_exports', 'aiometadata_exports'):
+        request.pop(key, None)
+    # GUI recovery preserves the VM resolver, including after loading old inputs.
+    request.pop('dns_server', None)
     # An SSH LAN address is not evidence of the public DNS destination.
     request['domain_target_address'] = request.get('domain_target_address', '')
     request.setdefault('routing_mode', 'parallel_test')

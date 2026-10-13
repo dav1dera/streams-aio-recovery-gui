@@ -43,10 +43,11 @@ class App(tk.Tk):
         self.configure(bg='#f4f6fa')
         self.events, self.cancelled = queue.Queue(), threading.Event()
         self.busy = False
-        self.vars, self.files = {}, {'aiostreams_exports': [], 'aiometadata_exports': []}
+        self.vars, self.files = {}, {}
         self.safe_report, self.buttons, self.controls = [], [], []
         self.return_page, self.active_phase, self.last_error = None, None, None
         self.backup_has_aio = None
+        self.supplement_scope = None
         self.protocol('WM_DELETE_WINDOW', self.close_app)
         self._theme()
         self._variables()
@@ -66,7 +67,7 @@ class App(tk.Tk):
                 'infisical_host', 'infisical_user', 'infisical_port', 'infisical_password',
                 'infisical_key', 'infisical_key_password', 'infisical_sudo_password',
                 'github_token', 'dr_tag', 'public_commit', 'age_identity', 'supplemental_inputs',
-                'aio_payload', 'infisical_address', 'project_id', 'environment', 'client_id_file',
+                'infisical_address', 'project_id', 'environment', 'client_id_file',
                 'client_secret_file', 'domain_target_address', 'routing_mode')
         for key in keys:
             self.var(key, defaults.get(key, ''))
@@ -129,7 +130,7 @@ class App(tk.Tk):
         self.titles = ['Panoramica', 'Accessi e backup', 'Opzioni avanzate']
         self.descriptions = ['Scegli il percorso. Ogni passaggio viene verificato e conservato.',
                              'Inserisci le destinazioni e scegli un backup. Password e token restano in memoria.',
-                             'Accesso SSH, instradamento e compatibilità con backup precedenti.']
+                             'Porte SSH e password sudo, soltanto se diverse dagli accessi principali.']
         self.nav = []
         for index, text in enumerate(self.titles):
             button = tk.Button(side, text=text, anchor='w', padx=16, pady=12, relief='flat', bd=0,
@@ -185,6 +186,7 @@ class App(tk.Tk):
             subtitle = ttk.Label(box, text='Accesso SSH necessario', style='CardHint.TLabel')
             subtitle.pack(anchor='w')
             self.connection_labels[role] = (title, subtitle)
+        self.domain_card = self._domain_settings(tab)
         actions = self.card(tab, 'Un’azione per iniziare, una per riprendere')
         ttk.Label(actions, textvariable=self.summary, style='CardHint.TLabel', wraplength=820).pack(anchor='w', pady=(0, 12))
         row = ttk.Frame(actions)
@@ -258,7 +260,14 @@ class App(tk.Tk):
         self.entry(git, 'File della chiave privata age PRIMARY o RECOVERY', 'age_identity', 2, browse=True, span=3)
         ttk.Label(git, text='La chiave privata inizia con AGE-SECRET-KEY-1. I codici age1… sono chiavi pubbliche.',
                   style='CardHint.TLabel', wraplength=820).grid(row=3, column=0, columnspan=3, sticky='w')
-        mode = self.card(tab, 'Domini e configurazioni AIO', 'AIOStreams e AIOMetadata vengono recuperati automaticamente dal backup completo.')
+        self._domain_settings(tab)
+        button = ttk.Button(tab, text='Torna alla panoramica', style='Accent.TButton', command=lambda: self.book.select(0))
+        button.pack(anchor='e', pady=(3, 0))
+        self.buttons.append(button)
+
+    def _domain_settings(self, tab):
+        mode = self.card(tab, 'Domini e controller prima dell’avvio',
+                         'Scegli la destinazione prima di creare o riprendere lo stack.')
         ttk.Label(mode, text='Destinazione del recupero', style='Field.TLabel').pack(anchor='w', pady=(0, 5))
         routing = ttk.Combobox(mode, state='readonly', textvariable=self.routing_label, values=(
             'Prova affiancata alle VM operative', 'Recupero della produzione'))
@@ -268,13 +277,28 @@ class App(tk.Tk):
         domain_fields = ttk.Frame(mode)
         domain_fields.pack(fill='x', pady=(12, 0))
         self.entry(domain_fields, 'Indirizzo IP previsto per i domini', 'domain_target_address', 0)
-        ttk.Label(mode, text='NPM, HTTPS e CometNet usano i domini del backup. Il programma verifica che raggiungano la destinazione del recupero.',
+        use_stack = ttk.Button(domain_fields, text='Usa IP della VM stack (LAN)', command=self._use_stack_domain_address)
+        use_stack.grid(row=0, column=1, sticky='es', padx=(12, 0), pady=(0, 12))
+        self.buttons.append(use_stack)
+        ttk.Label(mode, text='NPM, HTTPS, Headscale/Tailscale e CometNet usano i domini del backup. Il programma controlla la destinazione prima della registrazione del nodo.',
                   style='CardHint.TLabel', wraplength=820).pack(anchor='w', pady=(10, 0))
-        ttk.Label(mode, text='Può essere diverso dall’IP SSH della VM: nella produzione indica l’IP pubblico previsto, nella prova l’indirizzo del suo instradamento.',
+        ttk.Label(mode, text='Indica l’IP LAN se i domini sono risolti nella rete locale, oppure l’IP pubblico previsto per l’instradamento esterno. Il DNS e le porte del router devono già raggiungere questa destinazione.',
                   style='CardHint.TLabel', wraplength=820).pack(anchor='w', pady=(7, 0))
-        button = ttk.Button(tab, text='Torna alla panoramica', style='Accent.TButton', command=lambda: self.book.select(0))
-        button.pack(anchor='e', pady=(3, 0))
-        self.buttons.append(button)
+        ttk.Label(mode, text='Questo campo non modifica il DNS. AIOStreams e AIOMetadata vengono recuperati automaticamente dal backup completo.',
+                  style='CardHint.TLabel', wraplength=820).pack(anchor='w', pady=(7, 0))
+        return mode
+
+    def _use_stack_domain_address(self):
+        value = self.var('host').get().strip()
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            self.show_error('PUBLIC_DOMAIN_CONFIGURATION_REQUIRED')
+            return
+        if address.is_unspecified or address.is_multicast:
+            self.show_error('PUBLIC_DOMAIN_CONFIGURATION_REQUIRED')
+            return
+        self.var('domain_target_address').set(str(address))
 
     def _advanced(self, tab):
         access = self.card(tab, 'Opzioni SSH', 'Se le password SSH e sudo sono uguali puoi lasciare vuoti i campi sudo.')
@@ -284,21 +308,21 @@ class App(tk.Tk):
         self.entry(access, 'Password sudo Infisical (se diversa)', 'infisical_sudo_password', 1, secret=True, column=1)
         self.entry(access, 'Passphrase chiave SSH stack', 'key_password', 2, secret=True)
         self.entry(access, 'Passphrase chiave SSH Infisical', 'infisical_key_password', 2, secret=True, column=1)
-        compatibility = self.card(tab, 'Backup precedenti: file integrativi', 'Il backup completo contiene già le configurazioni AIO. I file integrativi servono solo ai formati precedenti.')
+        compatibility = self.card(tab, 'Input mancante nel backup', 'Il recupero ha richiesto un file integrativo cifrato compatibile con questo backup. Le configurazioni AIO vengono recuperate automaticamente.')
+        self.supplement_card = compatibility.master
         self.entry(compatibility, 'File integrativo cifrato .age', 'supplemental_inputs', 0, browse=True, span=2)
-        self.entry(compatibility, 'Payload privato AIO', 'aio_payload', 1, browse=True, span=2)
-        for index, (key, label) in enumerate((('aiostreams_exports', 'Export AIOStreams'), ('aiometadata_exports', 'Export AIOMetadata'))):
-            box = ttk.Frame(compatibility)
-            box.grid(row=2, column=index, sticky='ew', padx=(0, 12), pady=(3, 0))
-            ttk.Label(box, text=label, style='Field.TLabel').pack(anchor='w')
-            ttk.Label(box, textvariable=self.var(key, 'Nessun file selezionato'), style='CardHint.TLabel').pack(anchor='w', pady=6)
-            actions = ttk.Frame(box)
-            actions.pack(anchor='w')
-            button = ttk.Button(actions, text='Scegli JSON…', command=lambda k=key: self.select_many(k))
-            button.pack(side='left')
-            clear = ttk.Button(actions, text='Rimuovi', command=lambda k=key: self.clear_many(k))
-            clear.pack(side='left', padx=(7, 0))
-            self.buttons.extend((button, clear))
+        self.supplement_card.pack_forget()
+
+    def _supplement_needed(self):
+        return self.supplement_scope == (self.var('dr_tag').get(), self.var('public_commit').get())
+
+    def _refresh_supplement(self):
+        if self._supplement_needed():
+            self.supplement_card.pack(fill='x', pady=(0, 14))
+        else:
+            self.supplement_scope = None
+            self.var('supplemental_inputs').set('')
+            self.supplement_card.pack_forget()
 
     def var(self, key, default=''):
         if key not in self.vars:
@@ -322,6 +346,7 @@ class App(tk.Tk):
         return entry
 
     def _page_changed(self, event=None):
+        self._refresh_supplement()
         index = self.book.index(self.book.select())
         self.page_title.set(self.titles[index])
         self.page_description.set(self.descriptions[index])
@@ -350,16 +375,6 @@ class App(tk.Tk):
         path = filedialog.askopenfilename(title='Seleziona il file privato', parent=self, **options)
         if path:
             self.var(key).set(path)
-
-    def select_many(self, key):
-        paths = filedialog.askopenfilenames(title='Seleziona gli export JSON', parent=self, filetypes=[('JSON', '*.json'), ('Tutti i file', '*')])
-        if paths:
-            self.files[key] = list(paths)
-            self.var(key).set(f'{len(paths)} file selezionati')
-
-    def clear_many(self, key):
-        self.files[key] = []
-        self.var(key).set('Nessun file selezionato')
 
     def snapshot(self):
         secrets = {'password', 'sudo_password', 'key_password', 'infisical_password', 'infisical_key_password', 'infisical_sudo_password'}
@@ -445,6 +460,8 @@ class App(tk.Tk):
 
     def recover(self, action):
         data = operational_request(self.snapshot(), action, self.files)
+        if self._supplement_needed() is not True:
+            data['supplemental_inputs'] = ''
         try:
             if action == 'fresh':
                 try:
@@ -462,7 +479,8 @@ class App(tk.Tk):
                 require(self.backup_has_aio is not False, 'AIO_SNAPSHOT_REQUIRED')
             require(Path(data['age_identity']).is_file(), 'AGE_IDENTITY_FILE_REQUIRED')
             require(not Path(data['age_identity']).is_symlink() and Path(data['age_identity']).stat().st_size <= 65536, 'AGE_IDENTITY_FILE_INVALID')
-            require(not data.get('supplemental_inputs') or Path(data['supplemental_inputs']).is_file(), 'RECOVERY_SUPPLEMENT_INVALID')
+            if action == 'fresh':
+                require(not data.get('supplemental_inputs') or Path(data['supplemental_inputs']).is_file(), 'RECOVERY_SUPPLEMENT_INVALID')
         except Failure as error:
             self.show_error(str(error))
             self.book.select(0)
@@ -477,11 +495,14 @@ class App(tk.Tk):
                 job_request = data
                 if action == 'resume':
                     job_request = backend.resolve_resume_request(stack, server, data)
+                    if (job_request['dr_tag'], job_request['public_commit']) != (data['dr_tag'], data['public_commit']):
+                        job_request = dict(job_request, supplemental_inputs='')
                     point = GitHub(data['github_token']).point(job_request['dr_tag'])
                     require(point['public_commit'] == job_request['public_commit'], 'DR_STACK_COMMIT_MISMATCH')
                     require(point['aio_snapshot'] is True, 'AIO_SNAPSHOT_BACKUP_REQUIRED')
                     self.events.put(('resumed_selection', dict(point=point,
                         routing_mode=job_request['routing_mode'], domain_target_address=job_request['domain_target_address'])))
+                require(not job_request.get('supplemental_inputs') or Path(job_request['supplemental_inputs']).is_file(), 'RECOVERY_SUPPLEMENT_INVALID')
                 detected = backend.inspect_recovery(stack, server, job_request)
                 self.events.put(('detected', detected))
                 backend.restore_all(stack, server, job_request, lambda item: self.events.put(('stage', item)), tls=True)
@@ -508,6 +529,9 @@ class App(tk.Tk):
             self.phase_labels[name].configure(text=label, foreground=colors[tone])
 
     def show_error(self, code):
+        if code == 'OAUTH_ALLOWLIST_SUPPLEMENT_REQUIRED' or code.startswith('RECOVERY_SUPPLEMENT_'):
+            self.supplement_scope = (self.var('dr_tag').get(), self.var('public_commit').get())
+            self._refresh_supplement()
         self.last_error = code
         self.hero_status.set('Un passaggio richiede attenzione')
         self.hero_detail.set('L’avanzamento resta sulla VM. Risolvi la causa e scegli Rileva e continua.')
@@ -594,6 +618,7 @@ class App(tk.Tk):
                          'NPM_TOPOLOGY': 'Collegamenti NPM alle nuove VM',
                          'OPERATIONAL_PROFILE': 'Configurazione per i domini del recupero',
                          'PUBLIC_DOMAINS': 'NPM, HTTPS e dominio CometNet',
+                         'TAILSCALE': 'Controller Headscale e registrazione Tailscale',
                          'EXTERNAL_UPSTREAMS': 'Collegamenti a dispositivi esterni',
                          'PUBLIC_CONTROLLERS': 'Servizi automatici della produzione',
                          'OPERATIONAL_READY': 'Controlli dell’infrastruttura', 'AIO_BACKUP': 'Configurazioni AIO dal backup',
@@ -638,6 +663,11 @@ class App(tk.Tk):
                     button.configure(state='normal')
                 for widget in self.controls:
                     widget.configure(state='readonly' if isinstance(widget, ttk.Combobox) else 'normal')
+                if self.return_page == 1 and self.last_error is None:
+                    if self.backup_has_aio is True:
+                        self.status.set('Backup selezionato. Puoi avviare o riprendere il recupero.')
+                    else:
+                        self.status.set('Seleziona un backup completo con le configurazioni AIO.')
                 if self.return_page is not None:
                     self.book.select(self.return_page)
                     self.return_page = None

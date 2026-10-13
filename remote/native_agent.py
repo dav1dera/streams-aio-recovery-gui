@@ -115,6 +115,56 @@ def key(home, target):
     print(json.dumps({'public_key':public}))
 
 
+def authorize_owned_key(path, public, port, uid, gid):
+    """Replace a previous recovery key only in the verified dedicated account.
+
+    A replacement stack has a new private key even when the Infisical VM is
+    reused. The caller has verified that VM's checkpoint and account marker;
+    only our single, identically restricted authorization may be rotated.
+    """
+    path = safe_path(path)
+    public = public_key_text(public)
+    require(type(port) is int and 1 <= port <= 65535, 'INFISICAL_API_PORT_REQUIRES_REVIEW')
+    options = 'restrict,port-forwarding,permitopen="127.0.0.1:'+str(port)+'",command="/bin/false" '
+    raw = (options+public+'\n').encode()
+    if not path.exists():
+        write_owned(path, raw, uid, gid)
+        return
+    info = path.stat()
+    require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+            and info.st_uid == uid and info.st_gid == gid
+            and stat.S_IMODE(info.st_mode) == 0o600 and info.st_size <= 4096,
+            'AGENT_EXISTING_INSTALLATION_CHANGED')
+    previous = path.read_bytes()
+    try:
+        old_public = previous.removeprefix(options.encode()).removesuffix(b'\n').decode('ascii')
+        require(previous == (options+public_key_text(old_public)+'\n').encode(),
+                'AGENT_EXISTING_INSTALLATION_CHANGED')
+    except (UnicodeError, Refused):
+        raise Refused('AGENT_EXISTING_INSTALLATION_CHANGED') from None
+    if previous == raw:
+        return
+    fd, name = tempfile.mkstemp(prefix='.recovery-key-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+            os.fchmod(output.fileno(), 0o600)
+            os.fchown(output.fileno(), uid, gid)
+        # Keep an unexpected concurrent change from being mistaken for the
+        # old, validated recovery authorization.
+        current = safe_path(path).stat()
+        fields = ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_gid', 'st_nlink',
+                  'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        require(all(getattr(current, field) == getattr(info, field) for field in fields)
+                and path.read_bytes() == previous, 'AGENT_EXISTING_INSTALLATION_CHANGED')
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
 def authorize(home, target, config):
     import pwd
     state = checkpoint(home,target,True)
@@ -128,7 +178,11 @@ def authorize(home, target, config):
         account = pwd.getpwnam(TUNNEL_USER)
         require(account.pw_dir == str(account_home) and account.pw_shell == '/bin/false',
                 'AGENT_TUNNEL_ACCOUNT_CONFLICT')
-        require((account_home/'recovery-owner').read_text() == state['machine_id'],
+        owner = private_file(account_home/'recovery-owner')
+        info = owner.stat()
+        require(info.st_uid == info.st_gid == 0 and info.st_nlink == 1
+                and stat.S_IMODE(info.st_mode) == 0o600
+                and owner.read_text() == state['machine_id'],
                 'AGENT_TUNNEL_ACCOUNT_CONFLICT')
     except KeyError:
         require(not account_home.exists(), 'AGENT_TUNNEL_ACCOUNT_CONFLICT')
@@ -139,8 +193,7 @@ def authorize(home, target, config):
     directory = safe_path(account_home/'.ssh')
     directory.mkdir(mode=0o700,exist_ok=True)
     os.chown(directory,account.pw_uid,account.pw_gid)
-    options = 'restrict,port-forwarding,permitopen="127.0.0.1:'+str(port)+'",command="/bin/false" '
-    write_owned(directory/'authorized_keys',(options+public+'\n').encode(),account.pw_uid,account.pw_gid)
+    authorize_owned_key(directory/'authorized_keys',public,port,account.pw_uid,account.pw_gid)
     # Restrict only the new dedicated account. Existing administration logins
     # keep their original SSH behavior. Remote forwards/shells are unavailable.
     raw = ('Match User '+TUNNEL_USER+'\n    AllowTcpForwarding local\n'

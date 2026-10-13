@@ -3,6 +3,7 @@ import base64
 from dataclasses import dataclass, field
 import hashlib
 import io
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -31,7 +32,8 @@ STAGES = {'DEPENDENCIES', 'CLONES', 'DOWNLOAD', 'DECRYPT', 'INITIALIZE', 'INPUTS
           'INFISICAL_CONFIG', 'INFISICAL_DATABASE', 'INFISICAL_SERVER', 'NATIVE_AGENT',
           'RUNTIME_PROFILE', 'COMETNET_TRIAL', 'IMAGES', 'APPLICATION_CHECKS', 'TEST_RESET_STACK', 'TEST_RESET_INFISICAL',
           'OPERATIONAL_PROFILE', 'PUBLIC_DOMAINS', 'PUBLIC_CONTROLLERS', 'OPERATIONAL_READY', 'AIO_BACKUP', 'NPM_TOPOLOGY', 'EXTERNAL_UPSTREAMS',
-          'INFISICAL_TRANSFER', 'STACK_TRANSFER'}
+          'INFISICAL_TRANSFER', 'STACK_TRANSFER', 'TAILSCALE', 'HEADPLANE', 'HOST_DNS_STACK', 'HOST_DNS_INFISICAL',
+          'LOCAL_ENDPOINTS'}
 CODE = re.compile(r'[A-Z][A-Z0-9_]{0,100}\Z')
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 TAG = re.compile(r'dr-[0-9]{8}T[0-9]{6}Z\Z')
@@ -50,6 +52,19 @@ class Failure(Exception):
 def require(ok, code):
     if not ok:
         raise Failure(code)
+
+
+def dns_server_address(value):
+    if value in ('', None):
+        return ''
+    try:
+        address = ipaddress.ip_address(value)
+        require(str(address) == value and not (address.is_unspecified or address.is_loopback
+                or address.is_multicast or address.is_link_local or address.is_reserved) and '%' not in value,
+                'HOST_DNS_CONFIGURATION_REFUSED')
+        return str(address)
+    except (ValueError, TypeError):
+        raise Failure('HOST_DNS_CONFIGURATION_REFUSED') from None
 
 
 def resources():
@@ -317,6 +332,23 @@ class SSH:
         if self.client is not None:
             self.client.close()
 
+    def configure_host_dns(self, server):
+        server = dns_server_address(server)
+        if not server:
+            return
+        try:
+            raw = self.run(['python3', '-B', '-', '--server', server], sudo=True,
+                           input=(resources() / 'host_dns.py').read_bytes(), timeout=90)
+            result = json.loads(raw)
+            require(result.get('schema') == 1 and result.get('status') == 'PASS'
+                    and result.get('server') == server, 'HOST_DNS_CONFIGURATION_FAILED')
+        except Failure as error:
+            if str(error) in ('HOST_DNS_CONFIGURATION_REFUSED', 'HOST_DNS_CONFIGURATION_FAILED'):
+                raise
+            raise Failure('HOST_DNS_CONFIGURATION_FAILED') from None
+        except Exception:
+            raise Failure('HOST_DNS_CONFIGURATION_FAILED') from None
+
     def run(self, args, *, sudo=False, callback=None, timeout=1800, input=None):
         require(not self.cancelled.is_set(), 'INTERRUPTED')
         text = shlex.join([str(x) for x in args])
@@ -414,7 +446,7 @@ class SSH:
             for name in ('bootstrap.sh', 'recover.py', 'probe.py', 'requirements-dr.txt', 'requirements-new-vm.txt', 'start.py',
                          'infisical_server.py', 'infisical_inventory.py', 'infisical-deployment.json', 'native_agent.py', 'runtime_profile.py',
                          'aio_snapshot.py', 'local_config.py', 'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
-                         'npm-route-probe.mjs'):
+                         'npm-route-probe.mjs', 'tailscale_recovery.py', 'headplane_recovery.py', 'local_endpoints.py'):
                 self._put(sftp, resources() / name, remote + '/remote/' + name)
             config = {key: request[key] for key in ('github_token', 'public_commit', 'dr_tag',
                       'infisical_address', 'project_id', 'environment')}
@@ -519,7 +551,7 @@ class SSH:
         area=self.area(home,role)
         sftp=self.client.open_sftp()
         try:
-            for name in ('native_agent.py','recover.py','local_config.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs'):
+            for name in ('native_agent.py','recover.py','local_config.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs','tailscale_recovery.py', 'headplane_recovery.py', 'local_endpoints.py'):
                 self._put(sftp,resources()/name,area+'/'+name)
         finally:
             sftp.close()
@@ -534,7 +566,7 @@ class SSH:
         area = home + '/.local/share/streams-aio-recovery'
         sftp = self.client.open_sftp()
         try:
-            for name in ('start.py','recover.py','local_config.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs'):
+            for name in ('start.py','recover.py','local_config.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs','tailscale_recovery.py', 'headplane_recovery.py', 'local_endpoints.py'):
                 self._put(sftp, resources() / name, area + '/' + name)
         finally:
             sftp.close()
@@ -549,7 +581,6 @@ class SSH:
             if cutover:
                 args.append('--cutover')
         self.run(args, sudo=True, callback=callback, timeout=7200)
-
 
 class APIBridge:
     """Stack loopback -> encrypted SSH -> desktop -> encrypted SSH -> Infisical.
@@ -715,6 +746,7 @@ def restart_test_hosts(stack, server, request, callback, tls=False):
 def restore_all(stack, server, request, callback, tls=False):
     """Preflight both hosts before any upload/install; restore Infisical first."""
     validate_remote_shell_scripts()
+    dns_server = dns_server_address(request.get('dns_server'))
     operational = request.get('operational_profile') is True
     if operational:
         import ipaddress
@@ -744,6 +776,12 @@ def restore_all(stack, server, request, callback, tls=False):
             'SEPARATE_RECOVERY_VMS_REQUIRED')
     if operational:
         request = dict(request,npm_upstream_targets=authenticated_upstream_targets(stack,server))
+    if dns_server:
+        # Both destinations and recovery scopes have passed inspection first.
+        for client, stage in ((server, 'HOST_DNS_INFISICAL'), (stack, 'HOST_DNS_STACK')):
+            callback(dict(stage=stage, status='RUNNING'))
+            client.configure_host_dns(dns_server)
+            callback(dict(stage=stage, status='PASS'))
     server.prepare(dict(request, role='infisical', aiostreams_exports=[],
                         aiometadata_exports=[], aio_payload='', supplemental_inputs=''), callback)
     with APIBridge(stack, server, server.restored_port()) as address:

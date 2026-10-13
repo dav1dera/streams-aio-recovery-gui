@@ -46,6 +46,12 @@ class DashboardErrors(unittest.TestCase):
             self.assertIn('Rileva e continua',ERRORS[code])
             self.assertNotIn('Ricomincia il test',ERRORS[code])
 
+    def test_controller_dns_failure_points_to_the_visible_overview_card(self):
+        code='TAILSCALE_CONTROLLER_DNS_MISMATCH'
+        self.assertEqual(error_destination(code)[0],0)
+        self.assertIn('non modifica il DNS',ERRORS[code])
+        self.assertEqual(parse_event('RECOVERY_EVENT '+json.dumps(dict(stage='REFUSED',status='REFUSED',code=code)))['code'],code)
+
 
 if __name__=='__main__':
     unittest.main()

@@ -45,6 +45,11 @@ COMETNET_TRIAL_ENV = {
 TRIAL_PASSWORD = '.generated/cometnet-trial.password'
 COMETNET_IMAGE = 'g0ldyy/comet@sha256:dca62133336e02784d02aaad861381820674d1c8e3e98a03797610b81ee4defe'
 COMETNET_MIGRATION_BACKUP = 'runtime-profile/cometnet-trial-v1'
+TAILSCALE_ENV = '.generated/tailscale-recovery.env'
+TAILSCALE_MIGRATION_BACKUP = 'runtime-profile/tailscale-v1'
+TAILSCALE_IMAGE = 'tailscale/tailscale@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065'
+HEADSCALE_IMAGE = 'headscale/headscale@sha256:8833f828b414c0907b7e5c71da76473216fe17cce0818a166b536ec552c0903f'
+NPM_IMAGE = 'jc21/nginx-proxy-manager@sha256:4393e642e233e5efd5adeb7f10918d4aaea71c9ed875b94190273fc8e87f9594'
 TAG = 'dr-20261006T210601Z'
 COMMIT = '28f6ca7cc6f5fd10418fc0af2926815927ef98c8'
 TARGET = Path('/home/test/streams-aio')
@@ -80,6 +85,8 @@ ERROR_CODES = frozenset({
     'RUNTIME_PROFILE_PRESTART_CHECKPOINT_REQUIRED',
     'COMETNET_TRIAL_SCOPE_REFUSED', 'COMETNET_TRIAL_TLS_REFUSED', 'COMETNET_TRIAL_TRANSACTION_FAILED',
     'OPERATIONAL_DEPLOYMENT_REFUSED', 'OPERATIONAL_PROFILE_TRANSACTION_FAILED',
+    'TAILSCALE_PROFILE_SCOPE_REFUSED', 'TAILSCALE_PROFILE_KEY_REFUSED',
+    'TAILSCALE_PROFILE_TRANSACTION_FAILED',
 })
 
 
@@ -325,11 +332,12 @@ def compose_line(raw, expected, replacement=None):
     return raw[:row.start()] + b"COMPOSE_FILE='" + replacement.encode() + b"'" + raw[row.end():]
 
 
-def overlay(root, first_boot=False, cometnet_trial=False, password=None):
+def overlay(root, first_boot=False, cometnet_trial=False, password=None, tailscale=False):
     """A reviewed local overlay; V2 includes only its generated trial password.
 
     Agent-managed env_file contents are never copied. The local overlay and
-    separate generated password file are private 0600 artifacts.
+    separate private credentials are 0600 artifacts; Tailscale's key appears
+    only in its generated env file.
     """
     root = Path(root)
     # !override is required: ordinary Compose merging retains the legacy mounts.
@@ -377,6 +385,17 @@ def overlay(root, first_boot=False, cometnet_trial=False, password=None):
         for name, value in COMETNET_TRIAL_ENV.items():
             raw += '      ' + name + ': ' + json.dumps(value) + '\n'
         raw += '      COMETNET_NETWORK_PASSWORD: ' + json.dumps(password) + '\n'
+    if tailscale:
+        require(first_boot and not cometnet_trial, 'TAILSCALE_PROFILE_SCOPE_REFUSED')
+        raw += ('  tailscale:\n'
+                '    env_file:\n'
+                '      - path: ' + json.dumps(str(root/TAILSCALE_ENV)) + '\n'
+                '        required: true\n'
+                '    depends_on:\n'
+                '      headscale:\n'
+                '        condition: service_healthy\n'
+                '      npm:\n'
+                '        condition: service_healthy\n')
     return raw.encode()
 
 
@@ -397,14 +416,17 @@ def validate(root, home, state):
     artifact = safe(root/ARTIFACT)
     backup = safe(home/BACKUP)
     if record is None:
-        require(not artifact.exists() and not safe(root/TRIAL_PASSWORD).exists(), 'RUNTIME_PROFILE_CHANGED')
+        require(not artifact.exists() and not safe(root/TRIAL_PASSWORD).exists()
+                and not safe(root/TAILSCALE_ENV).exists(), 'RUNTIME_PROFILE_CHANGED')
         return False
     fields = {
         'schema', 'id', 'artifact', 'artifact_sha256', 'base_env_sha256',
         'effective_env_sha256', 'env_backup', 'source_hashes', 'preserved_volumes'}
     trial_fields = {'password_artifact', 'password_sha256'}
+    tailscale_fields = {'tailscale_artifact', 'tailscale_sha256'}
     require(isinstance(record, dict) and set(record) in (
-        fields, fields | {'origin'}, fields | {'origin'} | trial_fields),
+        fields, fields | {'origin'}, fields | {'origin'} | trial_fields,
+        fields | {'origin'} | tailscale_fields),
         'RUNTIME_PROFILE_CHANGED')
     if 'origin' in record:
         require(record['origin'] == 'FIRST_BOOT', 'RUNTIME_PROFILE_CHANGED')
@@ -414,24 +436,37 @@ def validate(root, home, state):
     first_boot = record.get('origin') == 'FIRST_BOOT'
     expected_profiles = {FIRST_BOOT_PROFILE, COMETNET_TRIAL_PROFILE, OPERATIONAL_PROFILE} if first_boot else {PROFILE}
     cometnet_trial = record.get('id') == COMETNET_TRIAL_PROFILE
+    tailscale = bool(tailscale_fields & set(record))
     if record.get('id') == OPERATIONAL_PROFILE:
         deployment_scope(root, home, state)
     require(record['schema'] == 1 and record['id'] in expected_profiles
             and record['artifact'] == ARTIFACT and record['env_backup'] == BACKUP,
             'RUNTIME_PROFILE_CHANGED')
-    require(set(record) == (fields | {'origin'} | trial_fields if cometnet_trial else
-                           fields | {'origin'} if first_boot else fields), 'RUNTIME_PROFILE_CHANGED')
+    expected_fields = fields | {'origin'} if first_boot else fields
+    if cometnet_trial:
+        expected_fields |= trial_fields
+    if tailscale:
+        require(first_boot and not cometnet_trial
+                and record['id'] in (FIRST_BOOT_PROFILE, OPERATIONAL_PROFILE), 'RUNTIME_PROFILE_CHANGED')
+        expected_fields |= tailscale_fields
+    require(set(record) == expected_fields, 'RUNTIME_PROFILE_CHANGED')
     password = None
     if cometnet_trial:
         require(record.get('password_artifact') == TRIAL_PASSWORD, 'RUNTIME_PROFILE_CHANGED')
         password = trial_password(root, record.get('password_sha256'))
     else:
         require(not safe(root/TRIAL_PASSWORD).exists(), 'RUNTIME_PROFILE_CHANGED')
+    if tailscale:
+        require(record.get('tailscale_artifact') == TAILSCALE_ENV, 'RUNTIME_PROFILE_CHANGED')
+        tailscale_private_env(root, record.get('tailscale_sha256'))
+    else:
+        require(not safe(root/TAILSCALE_ENV).exists(), 'RUNTIME_PROFILE_CHANGED')
     info = regular(artifact)
     before_info = regular(backup)
     require(stat.S_IMODE(info.st_mode) == 0o600 and info.st_uid == 1000 and info.st_gid == 1000
             and stat.S_IMODE(before_info.st_mode) == 0o600 and before_info.st_uid == 0
-            and digest(artifact) == record['artifact_sha256'] == sha(overlay(root, first_boot, cometnet_trial, password))
+            and digest(artifact) == record['artifact_sha256']
+            == sha(overlay(root, first_boot, cometnet_trial, password, tailscale=tailscale))
             and digest(backup) == record['base_env_sha256'], 'RUNTIME_PROFILE_CHANGED')
     require(source_hashes(root, first_boot) == record['source_hashes'], 'RUNTIME_PROFILE_SOURCE_CHANGED')
     env_metadata(root/'.env')
@@ -497,8 +532,9 @@ def base_model(root, model):
             'RUNTIME_PROFILE_DEPENDENCY_REFUSED')
 
 
-def candidate_model(root, base, effective, first_boot=False, cometnet_trial=False, password=None):
-    """Only the three reviewed service fields may change in resolved Compose."""
+def candidate_model(root, base, effective, first_boot=False, cometnet_trial=False, password=None,
+                    tailscale_key=None):
+    """Only reviewed runtime, trial and optional Tailscale fields may change."""
     desired = copy.deepcopy(base)
     pg = desired['services']['postgres']
     pg['environment']['PGDATA'] = '/var/lib/postgresql/18/docker'
@@ -523,6 +559,23 @@ def candidate_model(root, base, effective, first_boot=False, cometnet_trial=Fals
         require(isinstance(password, str) and re.fullmatch(r'[0-9a-f]{64}', password),
                 'COMETNET_TRIAL_SCOPE_REFUSED')
         desired['services']['cometnet']['environment']['COMETNET_NETWORK_PASSWORD'] = password
+    if tailscale_key is not None:
+        require(first_boot and not cometnet_trial and isinstance(tailscale_key, str)
+                and re.fullmatch(r'[A-Za-z0-9._:-]{16,512}', tailscale_key),
+                'TAILSCALE_PROFILE_KEY_REFUSED')
+        services = desired['services']
+        require(all(name in services and isinstance(services[name], dict)
+                    for name in ('tailscale', 'headscale', 'npm'))
+                and all(bool(services[name].get('healthcheck')) for name in ('headscale', 'npm')),
+                'RUNTIME_PROFILE_DEPENDENCY_REFUSED')
+        service = services['tailscale']
+        environment = service.setdefault('environment', {})
+        require(isinstance(environment, dict), 'RUNTIME_PROFILE_CANDIDATE_REFUSED')
+        environment.update(TS_AUTHKEY=tailscale_key, TS_AUTH_ONCE='true')
+        dependencies = service.setdefault('depends_on', {})
+        require(isinstance(dependencies, dict), 'RUNTIME_PROFILE_DEPENDENCY_REFUSED')
+        dependencies.update({name: dict(condition='service_healthy', required=True)
+                             for name in ('headscale', 'npm')})
     # Compose may serialize an absent empty volume/bind/options object differently.
     def normalized(obj):
         obj = copy.deepcopy(obj)
@@ -542,6 +595,27 @@ def candidate_model(root, base, effective, first_boot=False, cometnet_trial=Fals
                     row.setdefault('required', True)
         return obj
     require(normalized(effective) == normalized(desired), 'RUNTIME_PROFILE_CANDIDATE_REFUSED')
+
+
+def parse_tailscale_env(raw):
+    """Accept one canonical private dotenv; refuse interpolation and extra rows."""
+    require(isinstance(raw, bytes), 'TAILSCALE_PROFILE_KEY_REFUSED')
+    match = re.fullmatch(rb'TS_AUTHKEY=([A-Za-z0-9._:-]{16,512})\nTS_AUTH_ONCE=true\n', raw)
+    require(match is not None, 'TAILSCALE_PROFILE_KEY_REFUSED')
+    return match.group(1).decode('ascii')
+
+
+def tailscale_private_env(root, expected_sha):
+    path = safe(Path(root)/TAILSCALE_ENV)
+    require(path.is_file(), 'TAILSCALE_PROFILE_KEY_REFUSED')
+    info = regular(path)
+    require(info.st_uid == 1000 and info.st_gid == 1000 and stat.S_IMODE(info.st_mode) == 0o600
+            and isinstance(expected_sha, str) and re.fullmatch(r'[0-9a-f]{64}', expected_sha),
+            'TAILSCALE_PROFILE_KEY_REFUSED')
+    raw = path.read_bytes()
+    parse_tailscale_env(raw)
+    require(sha(raw) == expected_sha, 'RUNTIME_PROFILE_CHANGED')
+    return raw
 
 
 def cometnet_trial_model(model):
@@ -1393,6 +1467,150 @@ def cometnet_runtime_snapshot(root, model, run):
     return dict(containers=services, volumes=owned_volumes)
 
 
+def tailscale_runtime_snapshot(root, model, run):
+    """Read-only identity and image checks; never inspect volume contents."""
+    services = model.get('services')
+    require(isinstance(services, dict), 'RUNTIME_PROFILE_DOCKER_OWNERSHIP_REFUSED')
+    pins = dict(postgres=PG_IMAGE, **{'dnscrypt-proxy': DNS_IMAGE, 'oauth2-proxy': OAUTH_IMAGE},
+                pgbouncer=PGBOUNCER_IMAGE, tailscale=TAILSCALE_IMAGE,
+                headscale=HEADSCALE_IMAGE, npm=NPM_IMAGE)
+    require(all(services.get(name, {}).get('image') == image for name, image in pins.items())
+            and all(isinstance(row, dict) and isinstance(row.get('image'), str)
+                    and re.fullmatch(r'[^\s]+@sha256:[0-9a-f]{64}', row['image'])
+                    for row in services.values()), 'RUNTIME_PROFILE_IMAGE_CHANGED')
+    require(services['tailscale'].get('network_mode') == 'host'
+            and all(bool(services[name].get('healthcheck')) for name in ('headscale', 'npm')),
+            'RUNTIME_PROFILE_DEPENDENCY_REFUSED')
+    snapshot = cometnet_runtime_snapshot(root, model, run)
+    ids = list(snapshot['containers'].values())
+    rows = json_run(run, ['docker', 'inspect', *ids]) if ids else []
+    require(isinstance(rows, list) and len(rows) == len(ids)
+            and {row.get('Id') for row in rows} == set(ids),
+            'RUNTIME_PROFILE_DOCKER_OWNERSHIP_REFUSED')
+    for row in rows:
+        config = row.get('Config') or {}
+        labels = config.get('Labels') or {}
+        name = labels.get('com.docker.compose.service')
+        require(name in snapshot['containers'] and snapshot['containers'][name] == row.get('Id')
+                and labels.get('com.docker.compose.project') == 'streams-aio'
+                and labels.get('com.docker.compose.project.working_dir') == str(root),
+                'RUNTIME_PROFILE_DOCKER_OWNERSHIP_REFUSED')
+        require(config.get('Image') == services[name]['image'], 'RUNTIME_PROFILE_IMAGE_CHANGED')
+    return snapshot
+
+
+def migrate_tailscale(root, home, state, model, run, key_raw):
+    """Bind or rotate one supplied Headscale key without touching workloads.
+
+    The caller holds recovery.lock and obtains the key separately. A started
+    checkpoint is supported: no first-boot replay or container command occurs.
+    Every prior private artifact is archived before the guarded atomic commit.
+    """
+    key = parse_tailscale_env(key_raw)
+    root, home = identity_scope(root, home, state)
+    require(validate(root, home, state) is True, 'TAILSCALE_PROFILE_SCOPE_REFUSED')
+    record = state['runtime_profile']
+    require(record.get('origin') == 'FIRST_BOOT'
+            and record.get('id') in (FIRST_BOOT_PROFILE, OPERATIONAL_PROFILE),
+            'TAILSCALE_PROFILE_SCOPE_REFUSED')
+    old_key = (tailscale_private_env(root, record['tailscale_sha256'])
+               if 'tailscale_artifact' in record else None)
+    if old_key == key_raw:
+        return dict(applied=False, profile=record['id'])
+    env_path, checkpoint = safe(root/'.env'), safe(home/'state.json')
+    artifact, key_path = safe(root/ARTIFACT), safe(root/TAILSCALE_ENV)
+    args = ['docker', 'compose', '--env-file', str(env_path), '-f', str(root/'docker-compose.yml'),
+            '-f', str(root/'config/compose.dr.yaml'), '--profile', 'all', 'config', '--format', 'json']
+    base = json_run(run, args)
+    base_model(root, base)
+    first_boot_model(root, base)
+    candidate_model(root, base, model, first_boot=True,
+                    tailscale_key=parse_tailscale_env(old_key) if old_key else None)
+    require(json_run(run, ['docker', 'compose', '--profile', 'all', 'config', '--format', 'json']) == model,
+            'RUNTIME_PROFILE_CANDIDATE_REFUSED')
+    preserved = tailscale_runtime_snapshot(root, model, run)
+    old_state, old_artifact, old_env = checkpoint.read_bytes(), artifact.read_bytes(), env_path.read_bytes()
+    old_sources = source_hashes(root, first_boot=True)
+    candidate = overlay(root, first_boot=True, tailscale=True)
+    updated = copy.deepcopy(state)
+    updated['runtime_profile'].update(artifact_sha256=sha(candidate), tailscale_artifact=TAILSCALE_ENV,
+                                      tailscale_sha256=sha(key_raw))
+    updated_raw = (json.dumps(updated, indent=2) + '\n').encode()
+    parent = safe(home/TAILSCALE_MIGRATION_BACKUP)
+    parent.mkdir(mode=0o700, exist_ok=True)
+    private_directory(parent)
+    archive = safe(parent/(sha(old_state)[:16] + '-' + sha(key_raw)[:16]))
+    archive.mkdir(mode=0o700, exist_ok=True)
+    private_directory(archive)
+    journal = (json.dumps(dict(schema=1, profile=record['id'],
+        old_state_sha256=sha(old_state), old_artifact_sha256=sha(old_artifact),
+        old_tailscale_sha256=sha(old_key) if old_key else None,
+        candidate_artifact_sha256=sha(candidate), candidate_tailscale_sha256=sha(key_raw)),
+        indent=2) + '\n').encode()
+    for name, raw in (('state.json', old_state), ('runtime.compose.yaml', old_artifact),
+                      ('tailscale.env', old_key), ('journal.json', journal)):
+        if raw is None:
+            continue
+        destination = safe(archive/name)
+        if destination.exists():
+            info = regular(destination)
+            require(info.st_uid == 0 and info.st_gid == 0 and stat.S_IMODE(info.st_mode) == 0o600
+                    and destination.read_bytes() == raw, 'RUNTIME_PROFILE_CHANGED')
+        else:
+            atomic(destination, raw, 0o600, 0, 0)
+    staged = []
+    changed = committed = False
+    try:
+        for prefix in ('.tailscale-key-', '.tailscale-profile-'):
+            fd, name = tempfile.mkstemp(prefix=prefix, dir=artifact.parent)
+            os.close(fd)
+            staged.append(safe(name))
+        staged_key, staged_overlay = staged
+        atomic(staged_key, key_raw, 0o600, 1000, 1000)
+        fixed = json.dumps(str(key_path)).encode()
+        require(candidate.count(fixed) == 1, 'TAILSCALE_PROFILE_SCOPE_REFUSED')
+        staging_raw = candidate.replace(fixed, json.dumps(str(staged_key)).encode(), 1)
+        atomic(staged_overlay, staging_raw, 0o600, 1000, 1000)
+        effective = json_run(run, args[:args.index('--profile')] + ['-f', str(staged_overlay)]
+                             + args[args.index('--profile'):])
+        candidate_model(root, base, effective, first_boot=True, tailscale_key=key)
+        require(json_run(run, args) == base
+                and json_run(run, ['docker', 'compose', '--profile', 'all', 'config', '--format', 'json']) == model
+                and tailscale_runtime_snapshot(root, model, run) == preserved,
+                'RUNTIME_PROFILE_CHANGED')
+        require(validate(root, home, state) is True and checkpoint.read_bytes() == old_state
+                and artifact.read_bytes() == old_artifact and env_path.read_bytes() == old_env
+                and source_hashes(root, first_boot=True) == old_sources,
+                'RUNTIME_PROFILE_CHANGED')
+        changed = True
+        atomic(key_path, key_raw, 0o600, 1000, 1000)
+        atomic(artifact, candidate, 0o600, 1000, 1000)
+        atomic(checkpoint, updated_raw, 0o600, 0, 0)
+        require(checkpoint.read_bytes() == updated_raw and env_path.read_bytes() == old_env
+                and source_hashes(root, first_boot=True) == old_sources
+                and validate(root, home, updated) is True, 'TAILSCALE_PROFILE_TRANSACTION_FAILED')
+        committed = True
+        state.clear()
+        state.update(updated)
+        return dict(applied=True, profile=record['id'])
+    except Exception as error:
+        if changed and not committed:
+            atomic(artifact, old_artifact, 0o600, 1000, 1000)
+            if old_key is None:
+                if key_path.exists():
+                    key_path.unlink()
+            else:
+                atomic(key_path, old_key, 0o600, 1000, 1000)
+            atomic(checkpoint, old_state, 0o600, 0, 0)
+        if isinstance(error, Refused):
+            raise
+        raise Refused('TAILSCALE_PROFILE_TRANSACTION_FAILED') from None
+    finally:
+        for path in staged:
+            if path.exists():
+                path.unlink()
+
+
 def migrate_cometnet_trial(root, home, state, model, run, tls=False):
     """Replace a validated V1 overlay while preserving prepared private state.
 
@@ -1408,6 +1626,7 @@ def migrate_cometnet_trial(root, home, state, model, run, tls=False):
         return dict(applied=False, profile=COMETNET_TRIAL_PROFILE)
     attempted = state.get('application_start_attempted', False)
     require(old_record.get('origin') == 'FIRST_BOOT' and old_record['id'] == FIRST_BOOT_PROFILE
+            and 'tailscale_artifact' not in old_record
             and state.get('preparation') == 'PASS' and type(attempted) is bool
             and state.get('application_recovery') in (None, 'NOT_VERIFIED')
             and (state.get('tls_verified') is None or state.get('tls_verified') is False)
@@ -1521,20 +1740,24 @@ def promote_operational(root, home, state, model, run, routing_mode, domain_targ
     old_sources = source_hashes(root, first_boot=True)
     password_path = safe(root/TRIAL_PASSWORD)
     old_password = password_path.read_bytes() if password_path.exists() else None
+    tailscale_raw = (tailscale_private_env(root, state['runtime_profile']['tailscale_sha256'])
+                     if 'tailscale_artifact' in state['runtime_profile'] else None)
+    tailscale_key = parse_tailscale_env(tailscale_raw) if tailscale_raw else None
     # Resolve the original env files, not the V2 Compose environment overrides.
     args = ['docker', 'compose', '--env-file', str(root/'.env'), '-f', str(root/'docker-compose.yml'),
             '-f', str(root/'config/compose.dr.yaml'), '--profile', 'all', 'config', '--format', 'json']
     base = json_run(run, args)
     candidate_model(root, base, model, first_boot=True,
                     cometnet_trial=state['runtime_profile']['id'] == COMETNET_TRIAL_PROFILE,
-                    password=old_password[:-1].decode('ascii') if old_password else None)
-    candidate = overlay(root, first_boot=True)
+                    password=old_password[:-1].decode('ascii') if old_password else None,
+                    tailscale_key=tailscale_key)
+    candidate = overlay(root, first_boot=True, tailscale=tailscale_raw is not None)
     parent = safe(home/'runtime-profile/operational-v3')
     parent.mkdir(mode=0o700, exist_ok=True); private_directory(parent)
     archive = safe(parent/(sha(old_state)[:16] + '-' + sha(old_artifact)[:16]))
     archive.mkdir(mode=0o700, exist_ok=True); private_directory(archive)
     for name, raw in (('state.json', old_state), ('runtime.compose.yaml', old_artifact),
-                      ('trial.password', old_password)):
+                      ('trial.password', old_password), ('tailscale.env', tailscale_raw)):
         if raw is None:
             continue
         path = archive/name
@@ -1558,7 +1781,7 @@ def promote_operational(root, home, state, model, run, routing_mode, domain_targ
         atomic(staging, candidate, 0o600, 1000, 1000)
         effective = json_run(run, args[:args.index('--profile')] + ['-f', str(staging)]
                              + args[args.index('--profile'):])
-        candidate_model(root, base, effective, first_boot=True)
+        candidate_model(root, base, effective, first_boot=True, tailscale_key=tailscale_key)
         require(validate(root, home, state) is True and checkpoint.read_bytes() == old_state
                 and artifact.read_bytes() == old_artifact and (root/'.env').read_bytes() == old_env
                 and source_hashes(root, first_boot=True) == old_sources

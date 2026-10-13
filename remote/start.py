@@ -11,8 +11,15 @@ import sys
 import time
 
 DEFERRED = {'watchtower', 'cloudflare-ddns', 'deunhealth'}
+TLS_CODES = frozenset('TLS_NPM_' + phase + '_FAILED' for phase in (
+    'DNS01_ISSUANCE', 'CERTIFICATE', 'ACCESS_LISTS_REBUILD', 'NGINX_GENERATE',
+    'NGINX_TEST', 'NGINX_RELOAD', 'TLS_LOOPBACK', 'HTTPS_UPSTREAM'))
 PINNED_IMAGE = re.compile(r'[^@\s]+@sha256:[0-9a-f]{64}\Z')
 STARTUP_CODES = {
+    'LOCAL_ENDPOINTS_RELOCATION_REFUSED', 'LOCAL_ENDPOINTS_SOURCE_DRIFT',
+    'HEADPLANE_CONTROLLER_CONFIGURATION_REQUIRED', 'HEADPLANE_BOOTSTRAP_SCOPE_REFUSED',
+    'HEADPLANE_BOOTSTRAP_STATE_CHANGED', 'HEADPLANE_CONTROLLER_API_PROBE_FAILED',
+    'HEADPLANE_API_BOOTSTRAP_FAILED', 'HEADPLANE_RECREATE_FAILED',
     'APPLICATION_IMAGE_DOWNLOAD_FAILED', 'APPLICATION_PINNED_IMAGES_REQUIRED',
     'APPLICATION_IMAGE_PLATFORM_REFUSED', 'APPLICATION_HEALTH_WAIT_FAILED',
     'APPLICATION_FINAL_CHECK_FAILED',
@@ -44,13 +51,25 @@ STARTUP_CODES = {
     'NPM_TOPOLOGY_SERVICE_UNPROVEN', 'NPM_TOPOLOGY_SOURCE_DRIFT',
     'NPM_TOPOLOGY_SOURCE_INVALID', 'NPM_TOPOLOGY_TARGET_INVALID',
     'NPM_TOPOLOGY_UNCLASSIFIED_REFERENCE',
+    'TAILSCALE_CONTROLLER_CONFIGURATION_REQUIRED', 'TAILSCALE_CONTROLLER_DNS_MISMATCH',
+    'TAILSCALE_CONTROLLER_UNREACHABLE', 'TAILSCALE_CONTROLLER_TARGET_MISMATCH',
+    'TAILSCALE_CONTROLLER_PROBE_FAILED', 'TAILSCALE_CONTROLLER_PROBE_CLEANUP_REQUIRED',
+    'TAILSCALE_CONTROLLER_OWNERSHIP_REFUSED', 'TAILSCALE_CONTROLLER_IMAGE_REFUSED',
+    'TAILSCALE_CONTROLLER_NOT_HEALTHY', 'TAILSCALE_HEADSCALE_ENROLLMENT_REQUIRED',
+    'TAILSCALE_PROFILE_SCOPE_REFUSED', 'TAILSCALE_PROFILE_KEY_REFUSED',
+    'TAILSCALE_PROFILE_TRANSACTION_FAILED',
 }
+STARTUP_CODES.update(TLS_CODES)
 DIAGNOSTIC_SERVICES = frozenset('aiomanager aiometadata aiostreams cloudflare-ddns comet cometnet '
     'deunhealth dnscrypt-proxy easyproxy gluetun gost headplane headscale honey jackett '
     'mediaflow-proxy-light microwarp npm oauth2-proxy pgbouncer portainer postgres redis '
     'seanime seanime-shared streamvix stremthru tailscale teamspeak tvvoo watchtower'.split())
 DIAGNOSTIC_STATUSES = frozenset({'NOT_STARTED', 'RUNNING', 'HEALTHY', 'UNHEALTHY', 'STARTING',
     'RESTARTING', 'PAUSED', 'EXITED', 'CREATED', 'DEAD', 'UNKNOWN', 'DEFERRED'})
+TAILSCALE_BACKEND_STATES = frozenset({'Running', 'NeedsLogin', 'NeedsMachineAuth',
+    'Stopped', 'NoState', 'Starting', 'InUseOtherUser'})
+TAILSCALE_SIGNALS = frozenset({'LOGIN_SERVER_KEY_FAILED', 'TS_UP_FAILED',
+    'AUTH_KEY_REJECTED', 'TUN_CREATE_FAILED'})
 
 
 class StartupFailure(ValueError):
@@ -88,6 +107,15 @@ def call(args, root):
     env = {k: v for k, v in os.environ.items() if not k.startswith(('COMPOSE_', 'INFISICAL_', 'PYTHON'))}
     p = subprocess.run([str(x) for x in args], cwd=root, env=env, capture_output=True, timeout=1800)
     if p.returncode:
+        if (len(args) in (6, 8) and args[:2] == [sys.executable, '-B']
+                and Path(args[2]) == Path(__file__).with_name('npm_runtime.py')
+                and args[3] in ('reissue', 'verify') and args[4] == '--target'
+                and Path(args[5]) == Path(root)
+                and (len(args) == 6 or args[3] == 'verify' and args[6] == '--state-home'
+                     and Path(args[7]).is_absolute())):
+            raw = p.stdout.decode('ascii', 'replace').strip()
+            if raw.startswith('NPM DR_REFUSED ') and raw[len('NPM DR_REFUSED '):] in TLS_CODES:
+                raise ValueError(raw[len('NPM DR_REFUSED '):])
         if (args[:5] == ['docker', 'compose', '--profile', 'all', 'up']
                 and re.search(rb'(?:^|\n)container [A-Za-z0-9][A-Za-z0-9_.-]{0,250} is unhealthy\r?(?:\n|$)',
                               p.stderr[-4096:])):
@@ -212,7 +240,9 @@ def diagnostic_unavailable(status='UNAVAILABLE', wave=()):
 def diagnostic_safe(value):
     """Producer boundary also rejects unexpected fields and private canaries."""
     try:
-        if (not isinstance(value, dict) or set(value) != {'schema', 'status', 'wave', 'services'}
+        if (not isinstance(value, dict)
+                or set(value) not in ({'schema', 'status', 'wave', 'services'},
+                                      {'schema', 'status', 'wave', 'services', 'tailscale'})
                 or type(value['schema']) is not int or value['schema'] != 1
                 or value['status'] not in {'COMPLETE', 'UNAVAILABLE', 'OWNERSHIP_REFUSED'}):
             raise ValueError()
@@ -235,6 +265,19 @@ def diagnostic_safe(value):
                     raise ValueError()
             if row['oom_killed'] is not None and type(row['oom_killed']) is not bool:
                 raise ValueError()
+        if 'tailscale' in value:
+            detail = value['tailscale']
+            if (value['status'] != 'COMPLETE' or 'tailscale' not in wave
+                    or not isinstance(detail, dict) or set(detail) != {'backend_state', 'signals'}
+                    or detail['backend_state'] is not None
+                    and (not isinstance(detail['backend_state'], str)
+                         or detail['backend_state'] not in TAILSCALE_BACKEND_STATES)):
+                raise ValueError()
+            signals = detail['signals']
+            if (not isinstance(signals, list) or len(signals) > len(TAILSCALE_SIGNALS)
+                    or any(not isinstance(signal, str) or signal not in TAILSCALE_SIGNALS
+                           for signal in signals) or signals != sorted(set(signals))):
+                raise ValueError()
         return value
     except (ValueError, TypeError, KeyError):
         return diagnostic_unavailable()
@@ -256,8 +299,53 @@ def diagnostic_status(state):
         health.get('Status'), 'UNKNOWN')
 
 
+def tailscale_diagnostic(compose, container, reader):
+    """After ownership/uniqueness checks, classify private output into fixed codes."""
+    try:
+        reference = compose['services']['tailscale']['image']
+        identity = container['Id']
+        image = container['Image']
+        if (not isinstance(reference, str) or not PINNED_IMAGE.fullmatch(reference)
+                or container['Config'].get('Image') != reference
+                or not isinstance(identity, str) or not re.fullmatch(r'[0-9a-f]{64}', identity)
+                or not isinstance(image, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image)):
+            return None
+        expected = reader(['docker', 'image', 'inspect', '--format', '{{.ID}}', reference]).decode('ascii').strip()
+        if image != expected:
+            return None
+    except Exception:
+        return None
+    signals, backend, available = set(), None, False
+    try:
+        raw = reader(['docker', 'logs', '--tail', '80', identity])
+        if len(raw) > 262144:
+            raise ValueError()
+        text = raw.decode('utf-8', 'replace')
+        patterns = {
+            'LOGIN_SERVER_KEY_FAILED': r'\b(?:fetch(?:ing)?|get(?:ting)?)\b[^\r\n]{0,60}\b(?:login server|server|control)\b[^\r\n]{0,50}\bkey\b[^\r\n]{0,120}\b(?:failed|error|dial|refused)\b',
+            'TS_UP_FAILED': r'\bfailed to (?:bring|run)[^\r\n]{0,80}\btailscale\b|\btailscale\s+up\b[^\r\n]{0,100}\b(?:failed|exit status)\b|\btailscale\b[^\r\n]{0,50}\bup failed\b',
+            'AUTH_KEY_REJECTED': r'\b(?:auth|preauth)[ -]?key\b[^\r\n]{0,80}\b(?:invalid|expired|already used|revoked)\b|\b(?:invalid|expired|already used|revoked)\b[^\r\n]{0,40}\b(?:auth|preauth)[ -]?key\b',
+            'TUN_CREATE_FAILED': r'\b(?:CreateTUN|create TUN|tstun\.New)\b[^\r\n]{0,120}\b(?:failed|error|not permitted|permission denied|no such file)\b|\bfailed to create (?:a )?TUN\b',
+        }
+        signals.update(name for name, pattern in patterns.items() if re.search(pattern, text, re.I))
+        available = True
+    except Exception:
+        pass
+    try:
+        raw = reader(['docker', 'exec', identity, 'tailscale', 'status', '--json'])
+        if len(raw) > 262144:
+            raise ValueError()
+        status = json.loads(raw)
+        candidate = status.get('BackendState') if isinstance(status, dict) else None
+        if isinstance(candidate, str) and candidate in TAILSCALE_BACKEND_STATES:
+            backend, available = candidate, True
+    except Exception:
+        pass
+    return dict(backend_state=backend, signals=sorted(signals)) if available else None
+
+
 def startup_diagnostic(compose, root, wave, reader=None):
-    """Read once under the held recovery lock; never start, retry or read logs.
+    """Read once under the held recovery lock; never start or retry services.
 
     Full current ownership is rechecked after the failed wave, before any
     service metadata may be emitted. Unknown workloads produce no details.
@@ -280,9 +368,12 @@ def startup_diagnostic(compose, root, wave, reader=None):
                        and key not in {'GH_TOKEN', 'GITHUB_TOKEN'}}
                 result = subprocess.run(args, cwd=root, env=env, capture_output=True,
                                         timeout=min(5, remaining))
-                if result.returncode or len(result.stdout) > 4*1024**2:
+                output = (result.stdout + b'\n' + result.stderr
+                          if args[:2] == ['docker', 'logs'] else result.stdout)
+                limit = 262144 if args[:2] in (['docker', 'logs'], ['docker', 'exec']) else 4*1024**2
+                if result.returncode or len(output) > limit:
                     raise ValueError()
-                return result.stdout
+                return output
         ids = reader(['docker', 'ps', '-aq']).decode('ascii').split()
         if len(ids) > len(DIAGNOSTIC_SERVICES) or any(not re.fullmatch(r'[0-9a-f]{12,64}', value) for value in ids):
             return unavailable
@@ -320,7 +411,14 @@ def startup_diagnostic(compose, root, wave, reader=None):
                 health_exit_code=number(last.get('ExitCode'), 255),
                 restarts=number(container.get('RestartCount'), 10000),
                 oom_killed=state.get('OOMKilled') if type(state.get('OOMKilled')) is bool else None)
-        return diagnostic_safe(dict(schema=1, status='COMPLETE', wave=list(wave), services=rows))
+        report = dict(schema=1, status='COMPLETE', wave=list(wave), services=rows)
+        if 'tailscale' in wave and 'tailscale' in seen:
+            tail = next(container for container in containers
+                        if container['Config']['Labels']['com.docker.compose.service'] == 'tailscale')
+            detail = tailscale_diagnostic(compose, tail, reader)
+            if detail is not None:
+                report['tailscale'] = detail
+        return diagnostic_safe(report)
     except Exception:
         return unavailable
 
@@ -400,6 +498,33 @@ def final_service_check(compose, root, runner=None, deferred=DEFERRED):
     emit('APPLICATION_CHECKS')
 
 
+def relocate_local_endpoints(root, home, state, compose, containers, save):
+    spec = importlib.util.spec_from_file_location('startup_local_endpoints',
+                                                  Path(__file__).with_name('local_endpoints.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    emit('LOCAL_ENDPOINTS', 'RUNNING')
+    evidence = module.apply(root, home, state, lambda args: call(args, root), save)
+    if state.get('local_endpoints_runtime') != evidence['sha256']:
+        affected = set(evidence['affected'])
+        if 'headscale' in affected:
+            # Headscale reads this file at boot; Headplane binds its inode.
+            affected.add('headplane')
+        owned = set()
+        for row in containers:
+            labels = row.get('Config', {}).get('Labels') or {}
+            if (labels.get('com.docker.compose.project') == compose.get('name') == 'streams-aio'
+                    and labels.get('com.docker.compose.project.working_dir') == str(root)):
+                owned.add(labels.get('com.docker.compose.service'))
+        selected = sorted(affected & owned & set(compose['services']))
+        if selected:
+            call(['docker', 'compose', '--profile', 'all', 'up', '-d', '--no-deps',
+                  '--force-recreate', *selected], root)
+        state['local_endpoints_runtime'] = evidence['sha256']
+        save(home/'state.json', state)
+    emit('LOCAL_ENDPOINTS')
+
+
 def start(root, home, tls=False, operational=False, cutover=False,
           routing_mode=None, domain_target_address=None):
     state_path = home / 'state.json'
@@ -454,6 +579,7 @@ def start(root, home, tls=False, operational=False, cutover=False,
         deferred = operational_policy.deployment(state, cutover)
         operational_policy.cometnet_endpoint(compose)
         emit('OPERATIONAL_PROFILE')
+        relocate_local_endpoints(root, home, state, compose, containers, checks.save)
     elif record.get('id') is not None and record.get('id') == getattr(profile, 'OPERATIONAL_PROFILE', None):
         raise ValueError('OPERATIONAL_DEPLOYMENT_REFUSED')
     elif record.get('origin') == 'FIRST_BOOT':
@@ -471,7 +597,27 @@ def start(root, home, tls=False, operational=False, cutover=False,
             validate_runtime(compose, root, containers, volumes)
             emit('COMETNET_TRIAL')
     manifest = json.loads((root / 'config/dr-manifest.yaml').read_bytes())
-    waves = profile.derived_waves(compose, manifest['restore_waves'])
+    tailscale_policy = None
+    headplane_policy = None
+    plan = compose
+    if operational and 'tailscale' in compose['services']:
+        tailscale_spec = importlib.util.spec_from_file_location('startup_tailscale_policy',
+            Path(__file__).with_name('tailscale_recovery.py'))
+        tailscale_policy = importlib.util.module_from_spec(tailscale_spec)
+        tailscale_spec.loader.exec_module(tailscale_policy)
+        # This is a scheduling model, not a change to the effective deployment.
+        # The private enrollment overlay is committed only after origin proof.
+        plan = tailscale_policy.planned_model(root, compose)
+        tailscale_policy.preflight_dns(root, compose, state, lambda args: call(args, root))
+    if operational and 'headplane' in compose['services']:
+        headplane_spec = importlib.util.spec_from_file_location('startup_headplane_policy',
+            Path(__file__).with_name('headplane_recovery.py'))
+        headplane_policy = importlib.util.module_from_spec(headplane_spec)
+        headplane_spec.loader.exec_module(headplane_policy)
+        # Headplane checks the public Headscale HTTPS endpoint at startup.
+        # Prepare that route after NPM is healthy, before its health wait.
+        plan = headplane_policy.planned_model(root, plan)
+    waves = profile.derived_waves(plan, manifest['restore_waves'])
     declared = [s for wave in waves for s in wave]
     if len(declared) != len(set(declared)) or set(declared) != set(compose['services']):
         raise ValueError('RESTORE_WAVES_REQUIRE_REVIEW')
@@ -498,6 +644,13 @@ def start(root, home, tls=False, operational=False, cutover=False,
         selected = [s for s in wave if s not in deferred
                     and not (operational and s in DEFERRED)]
         if selected:
+            if headplane_policy is not None and 'headplane' in selected:
+                headplane_policy.before_headplane(root, home, state, compose,
+                    lambda args: call(args, root), operational_policy, emit, checks.save)
+            if tailscale_policy is not None and 'tailscale' in selected:
+                compose = tailscale_policy.before_tailscale(root, home, state, compose,
+                    lambda args: call(args, root), profile, operational_policy, emit)
+                validate_runtime(compose, root, containers, volumes)
             if operational and 'cometnet' in selected:
                 operational_policy.before_cometnet(root, compose, lambda args: call(args, root),
                                                    emit, checks.save, state, state_path)
@@ -526,8 +679,8 @@ def start(root, home, tls=False, operational=False, cutover=False,
             if operational:
                 external = external_dependency_report(raw)
                 state['external_upstreams'] = external
-        except Exception:
-            raise ValueError('TLS_VERIFICATION_FAILED') from None
+        except Exception as error:
+            raise ValueError(str(error) if str(error) in TLS_CODES else 'TLS_VERIFICATION_FAILED') from None
         emit('TLS')
         if operational:
             print('RECOVERY_EVENT '+json.dumps(dict(stage='EXTERNAL_UPSTREAMS',

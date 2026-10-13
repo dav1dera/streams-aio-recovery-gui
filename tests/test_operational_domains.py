@@ -1,7 +1,15 @@
 """Public domain gates prove replacement identity without bypassing TLS/DNS."""
 import importlib.util
+import contextlib
+import http.client
+import io
 import json
+import os
 from pathlib import Path
+import ssl
+import sys
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -170,6 +178,128 @@ class OperationalGates(unittest.TestCase):
         error,_,_,payloads,_=self.exercise_all(fail_cleanup=True)
         self.assertEqual(error,'PUBLIC_DOMAIN_PROBE_CLEANUP_REQUIRED')
         self.assertEqual([row['action'] for row in payloads],['install','remove'])
+
+
+class StrictNonceReloadWait(unittest.TestCase):
+    NONCE = 'a' * 48
+
+    def exercise(self, responses, *, multiple=False, watchdog_interrupt=False):
+        now, sleeps, connections, timers = [0.0], [], [], []
+        context = object()
+        reply = list(responses)
+        lock = threading.Lock()
+        class Timer:
+            def __init__(timer, seconds, callback):
+                timer.seconds, timer.callback = seconds, callback
+                timer.daemon, timer.started, timer.cancelled = False, False, False
+                timers.append(timer)
+            def start(timer): timer.started = True
+            def cancel(timer): timer.cancelled = True
+        class Connection:
+            def __init__(connection, host, port, *, timeout, context):
+                connection.host, connection.port, connection.timeout = host, port, timeout
+                connection.context, connection.closed = context, False
+                connection.requested, connection.limit = None, None
+                connections.append(connection)
+                if watchdog_interrupt:
+                    timers[0].callback()
+                with lock:
+                    connection.value = reply.pop(0) if len(reply) > 1 else reply[0]
+            def request(connection, method, path):
+                connection.requested = (method, path)
+                if isinstance(connection.value, BaseException):
+                    raise connection.value
+            def getresponse(connection):
+                connection.status = connection.value[0]
+                return connection
+            def read(connection, limit):
+                connection.limit = limit
+                return connection.value[1][:limit]
+            def close(connection): connection.closed = True
+        def monotonic():
+            with lock:
+                return now[0]
+        def sleep(delay):
+            with lock:
+                sleeps.append(delay)
+                now[0] += delay
+        items = json.dumps([dict(hostname='one.example.invalid'), dict(hostname='two.example.invalid')])
+        args = ['probe', items if multiple else 'one.example.invalid', self.NONCE]
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(sys, 'argv', args), patch.object(time, 'monotonic', monotonic), \
+                patch.object(time, 'sleep', sleep), patch.object(threading, 'Timer', Timer), \
+                patch.object(http.client, 'HTTPSConnection', Connection), \
+                patch.object(ssl, 'create_default_context', return_value=context) as tls, \
+                patch.object(os, '_exit', side_effect=SystemExit(1)) as hard_exit, \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                exec(policy.nonce_probe_code(multiple=multiple), {})
+            except SystemExit as exit:
+                result = exit.code
+        self.assertEqual(out.getvalue(), '')
+        self.assertEqual(err.getvalue(), '')
+        self.assertEqual(len(timers), 1)
+        self.assertEqual(timers[0].seconds, 11)
+        self.assertTrue(timers[0].started and timers[0].daemon and timers[0].cancelled)
+        for connection in connections:
+            self.assertEqual(connection.port, 443)
+            self.assertIs(connection.context, context)
+            self.assertGreater(connection.timeout, 0)
+            self.assertLessEqual(connection.timeout, 3)
+            if not watchdog_interrupt:
+                self.assertTrue(connection.closed)
+                self.assertEqual(connection.requested,
+                                 ('GET', '/.well-known/streams-aio-recovery/' + self.NONCE))
+        return result, connections, sleeps, now[0], tls.call_count, hard_exit
+
+    def test_old_worker_404_then_exact_nonce_succeeds_after_half_second(self):
+        result, connections, sleeps, elapsed, _, _ = self.exercise([
+            (404, b'old-worker'), (200, self.NONCE.encode())])
+        self.assertEqual(result, 0)
+        self.assertEqual(len(connections), 2)
+        self.assertEqual(sleeps, [0.5])
+        self.assertEqual(elapsed, 0.5)
+        self.assertEqual(connections[-1].limit, len(self.NONCE) + 1)
+
+    def test_valid_certificate_with_wrong_nonce_still_fails_at_deadline(self):
+        for status, body in ((200, b'wrong-origin'), (200, self.NONCE.encode() + b'extra'),
+                             (404, b'not-found'), (302, self.NONCE.encode())):
+            with self.subTest(status=status, body=body):
+                result, connections, sleeps, elapsed, _, _ = self.exercise([(status, body)])
+                self.assertEqual(result, 1)
+                self.assertGreater(len(connections), 1)
+                self.assertEqual(elapsed, 10)
+                self.assertTrue(all(delay <= 0.5 for delay in sleeps))
+
+    def test_invalid_certificate_fails_first_attempt_without_retry(self):
+        result, connections, sleeps, elapsed, _, _ = self.exercise([
+            ssl.SSLCertVerificationError(1, 'SecretCanary invalid certificate')])
+        self.assertEqual(result, 1)
+        self.assertEqual(len(connections), 1)
+        self.assertEqual(sleeps, [])
+        self.assertEqual(elapsed, 0)
+
+    def test_transient_transport_reset_can_retry_but_never_changes_tls_context(self):
+        result, connections, sleeps, _, tls_count, _ = self.exercise([
+            ConnectionResetError('SecretCanary reset'), (200, self.NONCE.encode())])
+        self.assertEqual(result, 0)
+        self.assertEqual(len(connections), 2)
+        self.assertEqual(tls_count, 1)
+        self.assertEqual(sleeps, [0.5])
+
+    def test_all_domain_probe_requires_exact_nonce_for_every_declared_host(self):
+        result, connections, _, _, _, _ = self.exercise([(200, self.NONCE.encode())], multiple=True)
+        self.assertEqual(result, 0)
+        self.assertEqual({connection.host for connection in connections},
+                         {'one.example.invalid', 'two.example.invalid'})
+        result, _, _, elapsed, _, _ = self.exercise([(200, b'wrong-origin')], multiple=True)
+        self.assertEqual(result, 1)
+        self.assertEqual(elapsed, 10)
+
+    def test_watchdog_bounds_a_stalled_connection_and_emits_no_private_output(self):
+        result, _, _, _, _, hard_exit = self.exercise([(200, self.NONCE.encode())], watchdog_interrupt=True)
+        self.assertEqual(result, 1)
+        hard_exit.assert_called_once_with(1)
 
 
 if __name__=='__main__': unittest.main()

@@ -113,6 +113,19 @@ class InspectionTests(unittest.TestCase):
 
 
 class DashboardFlowTests(unittest.TestCase):
+    def test_gui_request_never_changes_host_resolver_even_with_stale_input(self):
+        for action in ('fresh', 'resume'):
+            request = operational_request({'dns_server': '192.168.178.12'}, action)
+            self.assertNotIn('dns_server', request)
+
+    def test_snapshot_recovery_ignores_leftover_legacy_files(self):
+        legacy = dict(aio_payload='missing-payload.json', aiostreams_exports=['missing-streams.json'],
+                      aiometadata_exports=['missing-metadata.json'])
+        for action in ('fresh', 'resume'):
+            request = operational_request(legacy, action, legacy)
+            self.assertEqual(request['aio_mode'], 'snapshot')
+            self.assertTrue(set(legacy).isdisjoint(request))
+
     def test_operational_defaults_require_snapshot_https_goal_and_no_reset(self):
         data = operational_request({'host': '192.168.1.10'}, 'resume')
         self.assertEqual(data['aio_mode'], 'snapshot')
@@ -142,7 +155,7 @@ class DashboardFlowTests(unittest.TestCase):
                         ssh_key='', key_password='', sudo_password='', infisical_host='192.168.1.11',
                         infisical_user='test2', infisical_port='22', infisical_password='private two',
                         infisical_key='', infisical_key_password='', infisical_sudo_password='',
-                        dr_tag=TAG, public_commit=COMMIT, github_token='fixture', age_identity=str(key), supplemental_inputs='',
+                        dr_tag=TAG, public_commit=COMMIT, github_token='fixture', age_identity=str(key), supplemental_inputs='missing-stale-supplement.age',
                         domain_target_address='192.168.1.10')
             # Exercise the production action without creating a Tk window.
             view = Mock()
@@ -164,6 +177,7 @@ class DashboardFlowTests(unittest.TestCase):
                 self.assertTrue(kwargs['tls'])
                 self.assertEqual(args[2]['aio_mode'], 'snapshot')
                 self.assertEqual(args[2]['recovery_action'], 'resume')
+                self.assertEqual(args[2]['supplemental_inputs'], '')
             with patch('recovery_gui.ui_dashboard.backend.SSH', side_effect=connections), \
                  patch('recovery_gui.ui_dashboard.backend.resolve_resume_request',side_effect=lambda a,b,r:r), \
                  patch('recovery_gui.ui_dashboard.GitHub') as github, \

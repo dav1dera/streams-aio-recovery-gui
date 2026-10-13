@@ -38,10 +38,13 @@ try {
   if (input.action === 'install') {
     requireCondition(typeof input.hostname === 'string' && /^[a-z0-9.-]+$/.test(input.hostname)
       && typeof input.nonce === 'string' && /^[0-9a-f]{48}$/.test(input.nonce)
-      && Array.isArray(input.forward_hosts) && input.forward_hosts.length > 0 && input.forward_port === 8765);
+      && Array.isArray(input.forward_hosts) && input.forward_hosts.length > 0
+      && (input.kind === 'headscale' ? input.forward_port === 8080
+        : input.kind === undefined && input.forward_port === 8765));
     const rows = (await hosts.query().where('is_deleted', 0).where('enabled', 1))
       .filter(row => Array.isArray(row.domain_names) && row.domain_names.includes(input.hostname));
-    requireCondition(rows.length === 1 && rows[0].certificate_id > 0 && [1, true].includes(rows[0].allow_websocket_upgrade));
+    requireCondition(rows.length === 1 && rows[0].certificate_id > 0
+      && (input.kind === 'headscale' || [1, true].includes(rows[0].allow_websocket_upgrade)));
     requireCondition(input.forward_hosts.includes(rows[0].forward_host)
       && Number(rows[0].forward_port) === input.forward_port && rows[0].forward_scheme === 'http');
     const row = rows[0], before = row.advanced_config || '';

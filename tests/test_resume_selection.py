@@ -139,5 +139,21 @@ class ResumeDashboardTests(unittest.TestCase):
                     restore.assert_not_called()
                 for client in clients:client.close.assert_called_once()
 
+    def test_supplement_does_not_follow_resume_to_a_different_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key=Path(directory)/'key.txt';key.write_text('fixture')
+            supplement=Path(directory)/'missing-supplement.age'
+            view=self.view(key)
+            view.snapshot.return_value.update(supplemental_inputs=str(supplement))
+            view._supplement_needed.return_value=True
+            with patch('recovery_gui.ui_dashboard.backend.SSH',side_effect=[Mock(),Mock()]), \
+                 patch('recovery_gui.ui_dashboard.backend.resolve_resume_request',side_effect=lambda a,b,r:dict(r,dr_tag=TAG,public_commit=COMMIT)), \
+                 patch('recovery_gui.ui_dashboard.GitHub') as github, \
+                 patch('recovery_gui.ui_dashboard.backend.inspect_recovery',return_value={'outcome':'RESUMABLE'}), \
+                 patch('recovery_gui.ui_dashboard.backend.restore_all') as restore:
+                github.return_value.point.return_value=dict(tag=TAG,public_commit=COMMIT,aio_snapshot=True)
+                App.recover(view,'resume')
+            self.assertEqual(restore.call_args.args[2]['supplemental_inputs'],'')
+
 
 if __name__=='__main__':unittest.main()

@@ -23,6 +23,67 @@ ERROR_CODES = frozenset({
     'PUBLIC_CONTROLLER_CUTOVER_REQUIRED', 'OPERATIONAL_TLS_REQUIRED',
 })
 CONTROLLERS = frozenset({'cloudflare-ddns', 'watchtower', 'deunhealth'})
+TLS_CODES = frozenset('TLS_NPM_' + phase + '_FAILED' for phase in (
+    'DNS01_ISSUANCE', 'CERTIFICATE', 'ACCESS_LISTS_REBUILD', 'NGINX_GENERATE',
+    'NGINX_TEST', 'NGINX_RELOAD', 'TLS_LOOPBACK', 'HTTPS_UPSTREAM'))
+
+
+def nonce_probe_code(multiple=False):
+    """Await an asynchronous Nginx reload without weakening origin evidence.
+
+    Each attempt uses normal DNS, a new verified TLS connection, and the exact
+    nonce. A wrong certificate fails immediately. Other transient failures or
+    an old configuration can retry for ten seconds; an independent watchdog
+    bounds slow DNS or worker shutdown as well. The caller always removes the
+    NPM marker after this child exits, including a deadline failure.
+    """
+    require(type(multiple) is bool, 'PUBLIC_DOMAIN_PROBE_FAILED')
+    common = '''import concurrent.futures,http.client,json,os,ssl,sys,threading,time
+def check(host,nonce,deadline):
+    expected=nonce.encode()
+    context=ssl.create_default_context()
+    while True:
+        remaining=deadline-time.monotonic()
+        if remaining<=0:
+            return False
+        connection=None
+        try:
+            connection=http.client.HTTPSConnection(host,443,timeout=min(3,remaining),context=context)
+            connection.request('GET','/.well-known/streams-aio-recovery/'+nonce)
+            response=connection.getresponse()
+            matched=response.status==200 and response.read(len(expected)+1)==expected
+            if matched:
+                return time.monotonic()<deadline
+        except ssl.SSLCertVerificationError:
+            return False
+        except (OSError,http.client.HTTPException):
+            pass
+        finally:
+            if connection is not None:
+                connection.close()
+        remaining=deadline-time.monotonic()
+        if remaining<=0:
+            return False
+        time.sleep(min(0.5,remaining))
+deadline=time.monotonic()+10
+watchdog=threading.Timer(11,lambda:os._exit(1))
+watchdog.daemon=True
+watchdog.start()
+try:
+'''
+    if multiple:
+        body = '''    items=json.loads(sys.argv[1]); nonce=sys.argv[2]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        ok=all(pool.map(lambda item:check(item['hostname'],nonce,deadline),items))
+'''
+    else:
+        body = '''    host=sys.argv[1]; nonce=sys.argv[2]
+    ok=check(host,nonce,deadline)
+'''
+    return common + body + '''    raise SystemExit(0 if ok else 1)
+finally:
+    watchdog.cancel()
+'''
 
 
 def require(ok, code):
@@ -109,8 +170,10 @@ def npm_action(root, run, action):
     require(action in ('reissue', 'verify'), 'PUBLIC_DOMAIN_PROBE_FAILED')
     try:
         run([sys.executable, '-B', Path(__file__).with_name('npm_runtime.py'), action, '--target', root])
-    except Exception:
-        raise ValueError('TLS_VERIFICATION_FAILED') from None
+    except Exception as error:
+        code = (error.args[0] if isinstance(error, ValueError) and len(error.args) == 1
+                and isinstance(error.args[0], str) else None)
+        raise ValueError(code if code in TLS_CODES else 'TLS_VERIFICATION_FAILED') from None
 
 
 def verify_public_target(root, model, run, send=None):
@@ -139,12 +202,7 @@ def verify_public_target(root, model, run, send=None):
         require(result == {'status': 'PASS'}, 'PUBLIC_DOMAIN_PROBE_FAILED')
     # HTTPS validates both the certificate and the ephemeral response body.
     # No redirects, custom resolver, --insecure, proxy environment or logs.
-    probe = ("import http.client,ssl,sys; "
-             "host=sys.argv[1]; nonce=sys.argv[2]; "
-             "c=http.client.HTTPSConnection(host,443,timeout=20,context=ssl.create_default_context()); "
-             "c.request('GET','/.well-known/streams-aio-recovery/'+nonce); r=c.getresponse(); "
-             "ok=r.status==200 and r.read(1024)==nonce.encode(); c.close(); "
-             "raise SystemExit(0 if ok else 1)")
+    probe = nonce_probe_code()
     installed = False
     try:
         # Install may have written before failing: cleanup runs even then.
@@ -247,13 +305,9 @@ def verify_all_public_targets(root, model, run, state, send=None):
         require(actual == {(row['id'], domain) for row in routes if row['id'] in active_ids
                            for domain in row['routing']['domain_names']}, 'PUBLIC_DOMAIN_PROBE_FAILED')
         return response
-    # One invocation, one HTTPS connection per declared hostname. No proxy
+    # Same strict bounded reload wait for every declared hostname. No proxy
     # environment, resolver override, redirect, insecure TLS or response log.
-    probe = ("import concurrent.futures,http.client,json,ssl,sys; "
-             "items=json.loads(sys.argv[1]); nonce=sys.argv[2]; "
-             "exec('def check(item):\\n c=http.client.HTTPSConnection(item[\"hostname\"],443,timeout=20,context=ssl.create_default_context())\\n try:\\n  c.request(\"GET\",\"/.well-known/streams-aio-recovery/\"+nonce); r=c.getresponse(); return r.status==200 and r.read(1024)==nonce.encode()\\n except Exception: return False\\n finally: c.close()'); "
-             "pool=concurrent.futures.ThreadPoolExecutor(max_workers=8); "
-             "ok=all(pool.map(check,items)); pool.shutdown(wait=True); raise SystemExit(0 if ok else 1)")
+    probe = nonce_probe_code(multiple=True)
     installed = False
     try:
         installed = True

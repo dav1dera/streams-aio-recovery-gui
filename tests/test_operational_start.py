@@ -67,6 +67,7 @@ class OperationalStartup(unittest.TestCase):
              patch.object(start.importlib.util,'spec_from_file_location',return_value=loader), \
              patch.object(start.importlib.util,'module_from_spec',side_effect=[checks,profile,operational]), \
              patch.object(start,'call',runner),patch.object(start,'prepare_images'), \
+             patch.object(start,'relocate_local_endpoints',side_effect=lambda *args:actions.append(['LOCAL_ENDPOINTS'])), \
              patch.object(start,'final_service_check',side_effect=lambda *a,**kw:actions.append(['FINAL',kw.get('deferred')])), \
              contextlib.redirect_stdout(output):
             try: start.start(root,home,tls=tls,operational=True,cutover=cutover)
@@ -78,6 +79,8 @@ class OperationalStartup(unittest.TestCase):
         self.assertIsNone(error)
         proof=actions.index(['PUBLIC_PROOF'])
         self.assertLess(actions.index(['TOPOLOGY_PROOF']),proof)
+        self.assertLess(actions.index(['TOPOLOGY_PROOF']),actions.index(['LOCAL_ENDPOINTS']))
+        self.assertLess(actions.index(['LOCAL_ENDPOINTS']),proof)
         cometnet=next(i for i,args in enumerate(actions) if 'up' in args and args[-1]=='cometnet')
         verify=next(i for i,args in enumerate(actions) if 'verify' in args)
         controllers=next(i for i,args in enumerate(actions) if 'up' in args and 'watchtower' in args)

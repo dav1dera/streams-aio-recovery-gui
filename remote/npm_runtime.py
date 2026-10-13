@@ -6,14 +6,17 @@ Cloudflare plugin. Keep the backup's tracked scripts, native lock, validation,
 journal and issuance policy intact; adapt only that exact child invocation.
 """
 import argparse
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import re
 import sys
 import stat
+import subprocess
 import types
 
 SOURCE_HASHES = {
@@ -22,6 +25,10 @@ SOURCE_HASHES = {
     'scripts/npm-dr-helper.mjs': 'ec87d93bfa7c2c719047a8a728de5bb7a30022fecbd904d02437d97a9023b8bf',
 }
 NPM_RUNTIME = '. /usr/bin/common.sh; export HOME="$NPMHOME"; exec node --input-type=module -e "$1"'
+TLS_PHASES = ('DNS01_ISSUANCE', 'CERTIFICATE', 'ACCESS_LISTS_REBUILD',
+              'NGINX_GENERATE', 'NGINX_TEST', 'NGINX_RELOAD', 'TLS_LOOPBACK', 'HTTPS_UPSTREAM')
+TLS_CODES = frozenset('TLS_NPM_' + phase + '_FAILED' for phase in TLS_PHASES)
+MAX_HELPER_STDOUT = 64 * 1024
 
 
 def require(ok):
@@ -50,6 +57,94 @@ def backend_command(args, helper):
             and isinstance(args[7], str) and re.fullmatch(r'[0-9a-f]{12,64}', args[7])
             and list(args[8:11]) == ['node','--input-type=module','-e'] and args[11] == helper)
     return [*args[:8], 'bash', '-c', NPM_RUNTIME, 'streams-aio-npm-recovery', helper]
+
+
+def diagnostic_helper(helper):
+    """Instrument only the content-pinned source, retaining private exceptions.
+
+    No restored source file is edited. Phase values are fixed literals and the
+    final catch emits only a closed code, never a library message or argument.
+    Every replacement must match the reviewed source exactly once.
+    """
+    changes = (
+        ('let recoveryHosts=[];', 'let recoveryHosts=[];let recoveryPhase=null;'),
+        ('  const input=JSON.parse(raw);const plan=input.plan;const oldId=plan.certificate.id;',
+         "  const input=JSON.parse(raw);const plan=input.plan;const oldId=plan.certificate.id;recoveryPhase='CERTIFICATE';"),
+        ('async function checkTls(name) {', "async function checkTls(name) {\n  recoveryPhase='TLS_LOOPBACK';"),
+        ('async function checkHttps(name) {', "async function checkHttps(name) {\n  recoveryPhase='HTTPS_UPSTREAM';"),
+        ('    if(!validPair(certificate.id,domains))await internalCertificate.requestLetsEncryptSslWithDnsChallenge(certificate,owner.email);',
+         "    if(!validPair(certificate.id,domains)) {recoveryPhase='DNS01_ISSUANCE';await internalCertificate.requestLetsEncryptSslWithDnsChallenge(certificate,owner.email);}recoveryPhase='CERTIFICATE';"),
+        ("    const {default: accessLists}=await import('/app/models/access_list.js');",
+         "    recoveryPhase='ACCESS_LISTS_REBUILD';const {default: accessLists}=await import('/app/models/access_list.js');"),
+        ('    for(const [table,model] of Object.entries(models)) {',
+         "    recoveryPhase='NGINX_GENERATE';for(const [table,model] of Object.entries(models)) {"),
+        ('    await internalNginx.test();await internalNginx.reload();',
+         "    recoveryPhase='NGINX_TEST';await internalNginx.test();recoveryPhase='NGINX_RELOAD';await internalNginx.reload();recoveryPhase='CERTIFICATE';"),
+        ("  requireCondition(validPair(certificate.id,domains),'CERTIFICATE_OR_KEY_MISSING');",
+         "  recoveryPhase='CERTIFICATE';requireCondition(validPair(certificate.id,domains),'CERTIFICATE_OR_KEY_MISSING');"),
+        ('  await internalNginx.test();', "  recoveryPhase='NGINX_TEST';await internalNginx.test();"),
+        ('  let checked=0;', "  recoveryPhase='TLS_LOOPBACK';let checked=0;"),
+        ("  output(JSON.stringify({status:'FAIL',code:'RECOVERY_CHECK_FAILED'})+'\\n');process.exit(1);",
+         "  const phases=" + json.dumps(TLS_PHASES) + ";const code=phases.includes(recoveryPhase)?'TLS_NPM_'+recoveryPhase+'_FAILED':'TLS_VERIFICATION_FAILED';output(JSON.stringify({status:'FAIL',code})+'\\n');process.exit(1);"),
+    )
+    for needle, replacement in changes:
+        require(helper.count(needle) == 1)
+        helper = helper.replace(needle, replacement)
+    return helper
+
+
+def safe_error_code(error):
+    """Only locally raised fixed ValueError codes cross the process boundary."""
+    code = (error.args[0] if isinstance(error, ValueError) and len(error.args) == 1
+            and isinstance(error.args[0], str) else None)
+    return code if code in TLS_CODES else 'TLS_VERIFICATION_FAILED'
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        require(key not in result)
+        result[key] = value
+    return result
+
+
+def helper_result(result, action, external=None):
+    """Validate even failed child output before discarding private diagnostics."""
+    try:
+        require(type(result.returncode) is int and isinstance(result.stdout, bytes)
+                and 0 < len(result.stdout) <= MAX_HELPER_STDOUT)
+        value = json.loads(result.stdout, object_pairs_hook=_unique_object)
+        require(isinstance(value, dict))
+        if result.returncode != 0:
+            require(set(value) == {'status', 'code'} and value['status'] == 'FAIL'
+                    and isinstance(value['code'], str) and value['code'] in TLS_CODES)
+            raise ValueError(value['code'])
+        fields = {'status', 'certificate_id', 'CERTIFICATE', 'ASSOCIATIONS', 'NGINX', 'TLS'}
+        if action == 'verify':
+            fields.add('HTTPS')
+        if external is not None:
+            fields.add('EXTERNAL_UPSTREAMS')
+        require(set(value) == fields and value['status'] == 'PASS'
+                and type(value['certificate_id']) is int and 1 <= value['certificate_id'] <= 2**31 - 1
+                and all(value[field] == 'PASS' for field in fields - {'status', 'certificate_id', 'EXTERNAL_UPSTREAMS'}))
+        if external is not None:
+            external_report(value['EXTERNAL_UPSTREAMS'], external)
+        return result.stdout
+    except Exception as error:
+        raise ValueError(safe_error_code(error)) from None
+
+
+def private_helper(args, *, action, external=None, **kw):
+    """Capture only the exact verified helper; never expose its stderr."""
+    try:
+        require(set(kw) <= {'input', 'timeout'} and isinstance(kw.get('input'), bytes))
+        timeout = kw.pop('timeout', 60)
+        require(type(timeout) is int and 0 < timeout <= 1200)
+        result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=timeout, **kw)
+        return helper_result(result, action, external)
+    except Exception as error:
+        raise ValueError(safe_error_code(error)) from None
 
 
 def external_targets(root, state_home):
@@ -113,13 +208,13 @@ def external_report(value, expected):
     return value
 
 
-def execute(root, action, state_home=None):
+def _execute(root, action, state_home=None):
     require(action in ('reissue', 'verify'))
     root, sources = checked_sources(root)
     helper = sources['scripts/npm-dr-helper.mjs']
     require(state_home is None or action == 'verify')
     external = external_targets(root,state_home) if state_home is not None else None
-    adapted_helper = scoped_helper(helper) if external is not None else helper
+    adapted_helper = diagnostic_helper(scoped_helper(helper) if external is not None else helper)
     report = None
     # Load only the three content-pinned public scripts. Do not import a module
     # named dr from the working directory or modify the restored Git tree.
@@ -137,14 +232,18 @@ def execute(root, action, state_home=None):
         def command(args, **kw):
             nonlocal report
             adapted = backend_command(args, helper)
-            if list(args[:2]) == ['docker','exec'] and external is not None:
+            is_helper = list(args[:2]) == ['docker','exec']
+            if is_helper and external is not None:
                 data = json.loads(kw['input'])
                 require(data.get('action') == 'verify' and 'external_https_hosts' not in data)
                 data['external_https_hosts'] = external
                 kw['input'] = json.dumps(data).encode()
+            if is_helper:
                 adapted[-1] = adapted_helper
-            raw = original(adapted, **kw)
-            if list(args[:2]) == ['docker','exec'] and external is not None:
+                raw = private_helper(adapted, action=action, external=external, **kw)
+            else:
+                raw = original(adapted, **kw)
+            if is_helper and external is not None:
                 result = json.loads(raw)
                 require(result.get('status') == 'PASS')
                 report = external_report(result.get('EXTERNAL_UPSTREAMS'),external)
@@ -163,16 +262,32 @@ def execute(root, action, state_home=None):
             sys.modules['dr'] = prior_dr
 
 
-if __name__ == '__main__':
+def execute(root, action, state_home=None):
+    """A failure exposes a fixed code without partial success output."""
+    captured = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(captured):
+            _execute(root, action, state_home)
+    except Exception as error:
+        raise ValueError(safe_error_code(error)) from None
+    print(captured.getvalue(), end='')
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=('reissue', 'verify'))
     parser.add_argument('--target', required=True)
     parser.add_argument('--state-home')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         require(os.geteuid() == 0)
         execute(args.target, args.action, args.state_home)
-    except Exception:
+    except Exception as error:
         # Native/library exceptions may contain domains or credentials.
-        print('NPM DR_REFUSED TLS_VERIFICATION_FAILED')
-        sys.exit(1)
+        print('NPM DR_REFUSED ' + safe_error_code(error))
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

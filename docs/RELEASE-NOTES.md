@@ -1,3 +1,17 @@
+# 0.4.17 · Recupero collaudato e guida italiana
+
+Ordine OAuth2 Proxy/NPM corretto, attesa limitata dei proxy HTTPS,
+collegamenti Headplane/Headscale e Tailscale sulle nuove VM, ripresa Agent
+e guida italiana per setup, sincronizzazione e backup.
+
+Il 14 ottobre 2026 il recupero applicativo su due VM svuotate ha completato
+i controlli finali; Docker era già installato. AIOStreams e AIOMetadata
+sono stati provati da Stremio sul telefono. Riavvio delle VM recuperate,
+integrazioni esterne complete e P2P pubblico restano da collaudare.
+[Note complete e checksum della build provata](RELEASE-NOTES-v0.4.17.md).
+
+---
+
 # v0.4.8 · Trasferimento sulle VM appena installate
 
 Sulle VM nuove il trasferimento poteva fermarsi con `OPERATION_STOPPED`

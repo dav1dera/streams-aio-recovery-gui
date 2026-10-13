@@ -30,7 +30,8 @@ class RemoteModuleUploads(unittest.TestCase):
     def assert_runtime_modules(self):
         names = {name for name,destination in self.sent}
         self.assertTrue({'recover.py','runtime_profile.py','aio_snapshot.py',
-            'operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs'} <= names)
+            'operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs',
+            'tailscale_recovery.py'} <= names)
         self.assertEqual(len(names),len(self.sent))
 
     def test_prepare_transfers_helpers_and_preserves_selected_schema_two_pin(self):
