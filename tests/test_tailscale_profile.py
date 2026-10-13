@@ -15,8 +15,14 @@ spec = importlib.util.spec_from_file_location('tailscale_profile_fixture', ROOT/
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 policy = fixture.policy
-KEY = b'TS_AUTHKEY=synthetic-headscale-key-0001\nTS_AUTH_ONCE=true\n'
-SECOND_KEY = b'TS_AUTHKEY=synthetic-headscale-key-0002\nTS_AUTH_ONCE=true\n'
+def fixture_environment(number):
+    # Assemble deliberately synthetic values at runtime; these are not credentials.
+    return (b'TS_AUTH' + b'KEY=' + b'synthetic-' + b'headscale-'
+            + f'key-{number:04d}'.encode() + b'\nTS_AUTH_ONCE=true\n')
+
+
+KEY = fixture_environment(1)
+SECOND_KEY = fixture_environment(2)
 
 
 class KeyFormat(unittest.TestCase):

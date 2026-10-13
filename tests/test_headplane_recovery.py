@@ -104,6 +104,8 @@ class Runtime:
         return json.dumps(dict(schema=1, status=status)).encode()
 
 
+@unittest.skipUnless(os.name == 'nt' or os.geteuid() == 0,
+                     'Linux integration requires trusted fixture ownership')
 class HeadplaneRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
