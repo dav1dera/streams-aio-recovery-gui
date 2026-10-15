@@ -127,7 +127,7 @@ class TailscaleStartupIntegration(unittest.TestCase):
         self.assertEqual(state['private_marker'], 'preserved')
         self.assertEqual(state['application_recovery'], 'STARTED_NEEDS_FUNCTIONAL_TEST')
         self.assertNotIn('application_wave', state)
-        self.assertFalse(any('watchtower' in names for names, model in self.wave_models))
+        self.assertFalse(any(start.DEFERRED & set(names) for names, model in self.wave_models))
 
     def test_dns_refusal_preserves_prepared_checkpoint_before_images_or_start(self):
         before = self.state_path.read_bytes()

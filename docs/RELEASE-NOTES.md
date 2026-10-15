@@ -1,3 +1,15 @@
+# 0.4.18 · WUD nel recupero
+
+WUD resta escluso dalla Prova affiancata e viene avviato nel Recupero della
+produzione soltanto dopo HTTPS e i controlli della destinazione. La diagnostica
+della GUI riconosce il servizio; Watchtower resta supportato per i backup precedenti.
+
+66 test mirati superati. Il recupero completo con WUD e il riavvio delle VM
+non sono stati ripetuti per questa versione.
+[Note complete](RELEASE-NOTES-v0.4.18.md).
+
+---
+
 # 0.4.17 · Recupero collaudato e guida italiana
 
 Ordine OAuth2 Proxy/NPM corretto, attesa limitata dei proxy HTTPS,

@@ -2,7 +2,7 @@
 
 **Guida in italiano per organizzare lo stack, conservarne i backup e recuperarlo su due VM.**
 
-**Versione 0.4.17** · [Scarica programma e checksum](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.17) · [Setup iniziale](docs/SETUP-DA-ZERO.md) · [Uso della GUI](docs/USAGE.md) · [Note della versione](docs/RELEASE-NOTES-v0.4.17.md)
+**Versione 0.4.18** · [Scarica programma e checksum](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.18) · [Setup iniziale](docs/SETUP-DA-ZERO.md) · [Uso della GUI](docs/USAGE.md) · [Note della versione](docs/RELEASE-NOTES-v0.4.18.md)
 
 La GUI Windows recupera **Infisical su una VM separata** e **Streams AIO sull'altra** partendo da un backup completo. Ripristina configurazioni, segreti, database AIO e NPM; prepara Agent, tunnel SSH, servizi e HTTPS.
 
@@ -12,6 +12,7 @@ La GUI Windows recupera **Infisical su una VM separata** e **Streams AIO sull'al
 
 - **Hai già il sistema e un backup completo?** Vai a [recuperare con la GUI](#recuperare-con-la-gui).
 - **Vuoi costruire un sistema simile da zero?** Leggi [il setup iniziale](docs/SETUP-DA-ZERO.md): creare il primo sistema e recuperare un sistema già salvato sono due percorsi diversi.
+- **Vuoi aggiungere un container?** Usa il [template completo in sei passaggi](#aggiungere-un-container-sei-passaggi).
 - **Vuoi capire cosa succede alle modifiche quotidiane?** Leggi [aggiornamenti e backup](#aggiornamenti-e-backup).
 
 ## Come è organizzato il sistema
@@ -59,6 +60,7 @@ Nel deployment di riferimento sono attivi processi diversi:
 | --- | --- | --- |
 | **Sincronizzazione pubblica** | Circa ogni 15 minuti | Controlla le modifiche locali ammesse e pubblica un commit solo se necessario. |
 | **Backup DR cifrato** | Ogni giorno alle 04:30 Europe/Rome, con ritardo fino a 10 minuti | Sincronizza prima la parte pubblica e pubblica un nuovo punto completo; conserva gli ultimi cinque punti verificati. |
+| **Aggiornamenti dei container con WUD** | Ogni giorno alle 05:00 Europe/Rome | Aggiorna il digest del tag scelto, esclude Gluetun, rimuove le vecchie immagini dopo gli aggiornamenti riusciti e include il proprio aggiornamento. |
 | **Agent Infisical** | Secondo il suo polling | Aggiorna i file privati previsti dai mapping. Non sostituisce il backup DR. |
 
 La direzione della sincronizzazione è **VM locale → GitHub**. Modificare GitHub non distribuisce automaticamente una configurazione ai container. Anche modificare un `.env` o un secret può richiedere di ricreare il servizio interessato per applicarlo al processo già avviato.
@@ -86,6 +88,118 @@ Un servizio a esecuzione singola può risultare `inactive` dopo aver finito: con
 
 **Aggiungere un servizio non aggiunge automaticamente il backup del suo database.** Prepara variabili pubbliche, mapping Agent per i secret, directory/permessi, dipendenze e inizializzazione. Decidi se i suoi dati possono ripartire vuoti o richiedono backup e ripristino dedicati. [Esempi pratici](https://github.com/dav1dera/streams-aio-sanitized/blob/main/docs/ESEMPI-PRATICI.md).
 
+## Aggiungere un container: sei passaggi
+
+Per lo stack `/home/pi/streams-aio`, progetto Infisical **streams-aio**, ambiente **Production (`prod`)**. Sostituisci `nuovo-servizio`, immagine, porte, percorso dati e `API_TOKEN` con quelli dell'applicazione. L'esempio non richiede un database separato: se serve, prepara anche utenti, schema e inizializzazione.
+
+### 1. Cartelle, impostazioni pubbliche e Infisical
+
+```bash
+cd /home/pi/streams-aio
+mkdir -p data/nuovo-servizio/data
+```
+
+Crea `data/nuovo-servizio/.env` con sole impostazioni pubbliche, ad esempio `LOG_LEVEL=info`. Assegna alla directory dati UID/GID richiesti dall'immagine. In Infisical apri **streams-aio → Production**, crea `/nuovo-servizio` e il secret `API_TOKEN`; verifica che l'identità dell'Agent possa leggerlo. Password, token e URL con credenziali restano qui; IP e porte ordinari restano nello stack.
+
+### 2. Agent: mapping e verifica
+
+Nel file **esistente** `/etc/infisical/agent-config.yaml` aggiungi sotto `templates:` questa voce, conservando autenticazione, proprietari e template precedenti:
+
+```yaml
+  - template-content: |
+      API_TOKEN={{ with getSecretByName "f80601b1-73fb-49bd-9373-f3687cd5c8eb" "prod" "/nuovo-servizio" "API_TOKEN" }}{{ .Value | replace "$" "$$" | printf "%q" }}{{ end }}
+    destination-path: /home/pi/streams-aio/.secrets/nuovo-servizio.env
+    config:
+      polling-interval: 60s
+```
+
+Ripeti la riga per ogni secret. `replace` protegge i dollari dall'interpolazione Compose; `%q` quota il valore. Il progetto è identificato dall'ID. Prima di riusare il pattern con credenziali particolari verifica l'equivalenza **Infisical → Agent → Compose → renderer DR**, con valori fittizi contenenti `$`, virgolette, apostrofi e backslash: confronta in memoria e stampa solo PASS/FAIL. I secret multilinea richiedono una prova specifica. Non aggiungere `format: raw` senza rendere compatibile anche il DR.
+
+```bash
+sudo systemctl restart infisical-agent.service
+systemctl is-active infisical-agent.service
+test -s .secrets/nuovo-servizio.env
+stat -c '%a %U:%G' .secrets/nuovo-servizio.env
+```
+
+Attendi la generazione. Il file deve essere privato e leggibile dall'utente Compose: sull'originale può essere **640 root:pi**; dopo il recupero **600 dell'utente di deployment**. Non usare 644 e non stampare il contenuto.
+
+### 3. Compose e label WUD
+
+Inserisci sotto `services:`, adattando reti, healthcheck e dipendenze:
+
+```yaml
+  nuovo-servizio:
+    image: REGISTRY/IMMAGINE:TAG_VERIFICATO
+    container_name: nuovo-servizio
+    restart: unless-stopped
+    profiles: [all]
+    env_file:
+      - ./data/nuovo-servizio/.env
+      - ./.secrets/nuovo-servizio.env
+    volumes:
+      - ./data/nuovo-servizio/data:/PERCORSO_DATI
+    ports:
+      - "127.0.0.1:PORTA_HOST:PORTA_CONTAINER"
+    labels:
+      wud.tag.include: '^$${raw}$$'
+      wud.watch.digest: 'true'
+```
+
+Il binding localhost è un esempio: per NPM usa una rete Docker comune o un collegamento adeguato. Per un dominio nuovo configura anche proxy e DNS. Senza secret ometti secondo env file e mapping. Non duplicare variabili private in `environment:`, che prevale sugli env file.
+
+Le label mantengono il tag corrente e controllano il digest; diventano effettive **ricreando il container**. Per escluderlo aggiungi `wud.watch: 'false'`. Gluetun è escluso anche con `EXCLUDE=^gluetun$`. Nel riferimento WUD aggiorna automaticamente alle **05:00 Europe/Rome**: escludi i servizi che vuoi aggiornare personalmente.
+
+### 4. Contratto DR sul repository pubblico
+
+Il worker legge `config/dr-render-plan.json` da **GitHub main**, non dal piano modificato soltanto nello stack locale. Dentro `env_files` aggiungi:
+
+```json
+".secrets/nuovo-servizio.env": {
+  "API_TOKEN": {"path": "/nuovo-servizio", "key": "API_TOKEN"}
+}
+```
+
+In `required_values` aggiungi `/nuovo-servizio/API_TOKEN`; ripeti per ogni secret. Conserva il resto del JSON e non inserire valori privati. Senza mapping il renderer iniziale non sa creare il file. File misti YAML/JSON richiedono template e binding dedicati. Un updater richiede anche la policy GUI: escluso nella prova affiancata, avviato per ultimo in produzione.
+
+**I dati non sono inclusi automaticamente:** la directory viene ricreata vuota. Per WUD è il mount `/store`; dati indispensabili richiedono backup e ripristino dedicati.
+
+### 5. Valida, avvia e prova il singolo servizio
+
+```bash
+cd /home/pi/streams-aio
+test -s .secrets/nuovo-servizio.env
+docker compose --profile all config --quiet
+docker compose --profile all pull nuovo-servizio
+docker compose --profile all up -d --no-deps nuovo-servizio
+docker compose --profile all ps nuovo-servizio
+docker inspect --format '{{ index .Config.Labels "wud.tag.include" }} | {{ index .Config.Labels "wud.watch.digest" }} | {{ index .Config.Labels "wud.watch" }}' nuovo-servizio
+```
+
+Ometti `test -s` solo senza secret. Prosegui soltanto se ogni comando riesce. Le dipendenze devono già essere disponibili; controlla eventuali override Compose attivi. Prova login/API e funzione reale, non solo lo stato del container.
+
+### 6. Sincronizza e verifica un nuovo backup
+
+L'unità verificata `streams-aio-public-sync.service` usa il worker separato e **`--seamless --publish`**. Controlla subito senza pubblicare:
+
+```bash
+SYNC_HOME=/home/pi/.local/share/streams-aio-public-sync
+"$SYNC_HOME/venv/bin/python" -B "$SYNC_HOME/tooling/scripts/sync-public-stack.py" \
+  --source /home/pi/streams-aio --seamless
+```
+
+Dopo `PUBLIC_SYNC_CHECK PASS`, pubblica e, terminata la sincronizzazione, crea il backup come utente `pi`:
+
+```bash
+"$SYNC_HOME/venv/bin/python" -B "$SYNC_HOME/tooling/scripts/sync-public-stack.py" \
+  --source /home/pi/streams-aio --seamless --publish
+/home/pi/streams-aio-dr/scripts/update-dr.sh
+```
+
+Su GitHub controlla nuovo commit, servizio, env pubblico, immagini fissate e mapping; `.secrets` e password devono essere assenti. Verifica poi una **nuova release completa schema 2**: sei `.age`, manifest e checksum, associata al commit corretto e successiva al mapping Agent. Richiedi `DR_UPDATE PASS` e pubblicazione verificata. I timer restano automatici; evita esecuzioni contemporanee.
+
+Il servizio è **operativo** dopo la prova d'uso; le modifiche sono **salvate nel DR** dopo la nuova release verificata. Un recupero su VM di test conferma anche il ripristino del nuovo servizio.
+
 ## Cosa contiene un backup completo
 
 Il recupero automatico usa una release **schema 2**, composta da otto file:
@@ -109,9 +223,9 @@ Non è un'immagine completa delle VM: database/cache dichiarati ricostruibili, c
 
 ## Recuperare con la GUI
 
-### 1. Scarica la versione 0.4.17
+### 1. Scarica la versione 0.4.18
 
-Dalla [release](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.17) scarica `StreamsAIO-Recovery.exe` e `SHA256SUMS`. Sono inclusi anche i sorgenti. Confronta l'hash prima di avviare:
+Dalla [release](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.18) scarica `StreamsAIO-Recovery.exe` e `SHA256SUMS`. Sono inclusi anche i sorgenti. Confronta l'hash prima di avviare:
 
 ```powershell
 Get-FileHash .\StreamsAIO-Recovery.exe -Algorithm SHA256
@@ -157,7 +271,7 @@ Nel riquadro **Domini e controller prima dell'avvio** scegli modalità e **indir
 
 | Modalità | Quando usarla |
 | --- | --- |
-| **Prova affiancata alle VM operative** | Collaudo con instradamento dedicato verso le VM di prova. DDNS, Watchtower e Deunhealth vengono esclusi. |
+| **Prova affiancata alle VM operative** | Collaudo con instradamento dedicato verso le VM di prova. DDNS, WUD (oppure Watchtower nei backup precedenti) e Deunhealth vengono esclusi. |
 | **Recupero della produzione** | Sostituzione delle originali. Attiva i controller pubblici per ultimi; evita istanze originali e recuperate concorrenti. |
 
 La modalità affiancata non crea domini nuovi o isolamento automatico. Se sposti gli stessi DNS e inoltri, sposti il traffico. Per provare la modalità produzione spegni prima le originali.
@@ -193,6 +307,8 @@ La GUI scarica i backup da GitHub: non offre un import completamente offline. La
 
 ## Stato delle verifiche
 
+La **0.4.18** aggiunge WUD alla policy del recupero: escluso nella prova affiancata, avviato dopo i controlli pubblici in produzione e riconosciuto nei report diagnostici. Sono passati **66 test mirati**, il self-test dell’eseguibile e il confronto dei 23 moduli remoti inclusi. Questa verifica non aggiunge un nuovo collaudo completo su due VM alla prova della 0.4.17 descritta sotto.
+
 Il **14 ottobre 2026**, la **0.4.17** ha completato il recupero applicativo da due VM di prova pulite di container, volumi, configurazioni, database e checkpoint precedenti, usando `dr-20261013T023710Z`. **Docker e cache delle immagini erano già presenti**: questa prova non equivale a installare nuovamente Ubuntu senza Docker.
 
 Sono passati i controlli Infisical, AIO, Agent/tunnel, Headplane/Headscale, Tailscale, NPM, HTTPS, CometNet, controller e servizi. È rimasto un avviso per un upstream esterno non raggiungibile. L'utente ha confermato AIOStreams e AIOMetadata funzionanti da Stremio sul telefono; sul PC è stata rilevata una differenza di risoluzione DNS.
@@ -201,6 +317,6 @@ La suite locale comprende **769 test, zero errori/fallimenti e 49 controlli POSI
 
 ## Guide e sviluppo
 
-[Setup iniziale](docs/SETUP-DA-ZERO.md) · [Uso dettagliato](docs/USAGE.md) · [Proxmox](docs/PROXMOX.md) · [Note 0.4.17](docs/RELEASE-NOTES-v0.4.17.md)
+[Setup iniziale](docs/SETUP-DA-ZERO.md) · [Uso dettagliato](docs/USAGE.md) · [Proxmox](docs/PROXMOX.md) · [Note 0.4.18](docs/RELEASE-NOTES-v0.4.18.md)
 
 Il programma usa Python/Tk e SSH. `build.ps1` crea l'eseguibile Windows; `tests/` contiene i test e la pipeline GitHub verifica codice, compatibilità Ubuntu e build Windows. Le guide degli altri repository descrivono i rispettivi strumenti; per il percorso corrente con snapshot AIO nativi usa questa guida e un backup schema 2, evitando di mescolarlo con importazioni JSON dei formati storici.

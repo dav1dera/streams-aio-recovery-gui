@@ -3,7 +3,7 @@
 SERVICES = frozenset('aiomanager aiometadata aiostreams cloudflare-ddns comet cometnet '
     'deunhealth dnscrypt-proxy easyproxy gluetun gost headplane headscale honey jackett '
     'mediaflow-proxy-light microwarp npm oauth2-proxy pgbouncer portainer postgres redis '
-    'seanime seanime-shared streamvix stremthru tailscale teamspeak tvvoo watchtower'.split())
+    'seanime seanime-shared streamvix stremthru tailscale teamspeak tvvoo watchtower wud'.split())
 STATUSES = frozenset({'NOT_STARTED', 'RUNNING', 'HEALTHY', 'UNHEALTHY', 'STARTING',
     'RESTARTING', 'PAUSED', 'EXITED', 'CREATED', 'DEAD', 'UNKNOWN', 'DEFERRED'})
 RESULTS = frozenset({'COMPLETE', 'UNAVAILABLE', 'OWNERSHIP_REFUSED'})

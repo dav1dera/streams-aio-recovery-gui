@@ -22,7 +22,7 @@ ERROR_CODES = frozenset({
     'PUBLIC_DOMAIN_PROBE_FAILED', 'PUBLIC_DOMAIN_PROBE_CLEANUP_REQUIRED',
     'PUBLIC_CONTROLLER_CUTOVER_REQUIRED', 'OPERATIONAL_TLS_REQUIRED',
 })
-CONTROLLERS = frozenset({'cloudflare-ddns', 'watchtower', 'deunhealth'})
+CONTROLLERS = frozenset({'cloudflare-ddns', 'watchtower', 'wud', 'deunhealth'})
 TLS_CODES = frozenset('TLS_NPM_' + phase + '_FAILED' for phase in (
     'DNS01_ISSUANCE', 'CERTIFICATE', 'ACCESS_LISTS_REBUILD', 'NGINX_GENERATE',
     'NGINX_TEST', 'NGINX_RELOAD', 'TLS_LOOPBACK', 'HTTPS_UPSTREAM'))

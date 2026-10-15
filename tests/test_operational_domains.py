@@ -31,6 +31,7 @@ class OperationalGates(unittest.TestCase):
     def test_controller_scope_requires_explicit_production_cutover(self):
         state={'operational_deployment':{'routing_mode':'parallel_test','domain_target_address':'192.0.2.29'}}
         self.assertEqual(policy.deployment(state), set(policy.CONTROLLERS))
+        self.assertTrue({'wud', 'watchtower'} <= policy.deployment(state))
         with self.assertRaisesRegex(ValueError,'PUBLIC_CONTROLLER_CUTOVER_REQUIRED'):
             policy.deployment(state, True)
         state['operational_deployment']['routing_mode']='production_recovery'

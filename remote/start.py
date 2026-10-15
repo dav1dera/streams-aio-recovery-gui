@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-DEFERRED = {'watchtower', 'cloudflare-ddns', 'deunhealth'}
+DEFERRED = {'watchtower', 'wud', 'cloudflare-ddns', 'deunhealth'}
 TLS_CODES = frozenset('TLS_NPM_' + phase + '_FAILED' for phase in (
     'DNS01_ISSUANCE', 'CERTIFICATE', 'ACCESS_LISTS_REBUILD', 'NGINX_GENERATE',
     'NGINX_TEST', 'NGINX_RELOAD', 'TLS_LOOPBACK', 'HTTPS_UPSTREAM'))
@@ -63,7 +63,7 @@ STARTUP_CODES.update(TLS_CODES)
 DIAGNOSTIC_SERVICES = frozenset('aiomanager aiometadata aiostreams cloudflare-ddns comet cometnet '
     'deunhealth dnscrypt-proxy easyproxy gluetun gost headplane headscale honey jackett '
     'mediaflow-proxy-light microwarp npm oauth2-proxy pgbouncer portainer postgres redis '
-    'seanime seanime-shared streamvix stremthru tailscale teamspeak tvvoo watchtower'.split())
+    'seanime seanime-shared streamvix stremthru tailscale teamspeak tvvoo watchtower wud'.split())
 DIAGNOSTIC_STATUSES = frozenset({'NOT_STARTED', 'RUNNING', 'HEALTHY', 'UNHEALTHY', 'STARTING',
     'RESTARTING', 'PAUSED', 'EXITED', 'CREATED', 'DEAD', 'UNKNOWN', 'DEFERRED'})
 TAILSCALE_BACKEND_STATES = frozenset({'Running', 'NeedsLogin', 'NeedsMachineAuth',

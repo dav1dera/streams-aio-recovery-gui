@@ -34,7 +34,7 @@ class ColdStart(unittest.TestCase):
                 raise ValueError('private error must not be logged')
             return METADATA
         model = {'services': {'one': {'image': IMAGE}, 'two': {'image': IMAGE},
-                              'watchtower': {'image': 'ignored-tag'}}}
+                              'watchtower': {'image': 'ignored-tag'}, 'wud': {'image': 'ignored-tag'}}}
         with contextlib.redirect_stdout(io.StringIO()) as log:
             start.prepare_images(model, Path('/synthetic'), runner)
         self.assertEqual([args for args in calls if args[1] == 'pull'], [['docker', 'pull', IMAGE]])
@@ -178,7 +178,7 @@ class ColdStart(unittest.TestCase):
                 validate_first_boot_choice(dict(choice, **{field: 'different'}))
 
     def test_complete_service_check_catches_earlier_service_failure(self):
-        model = dict(name='streams-aio', services={'one': {}, 'two': {}, 'watchtower': {}})
+        model = dict(name='streams-aio', services={'one': {}, 'two': {}, 'watchtower': {}, 'wud': {}})
         for failure in ('missing', 'stopped', 'unhealthy', 'foreign'):
             rows = [dict(service=name, project='streams-aio', directory='/synthetic', running=True, health='healthy')
                     for name in ('one', 'two')]

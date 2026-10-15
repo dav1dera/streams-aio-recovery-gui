@@ -174,9 +174,21 @@ class FailedWaveDiagnostic(unittest.TestCase):
         self.assertEqual(STATUSES, start.DIAGNOSTIC_STATUSES)
         self.assertEqual(TAILSCALE_BACKEND_STATES, start.TAILSCALE_BACKEND_STATES)
         self.assertEqual(TAILSCALE_SIGNALS, start.TAILSCALE_SIGNALS)
-        self.assertEqual(len(SERVICES), 31)
+        self.assertEqual(len(SERVICES), 32)
         report = start.startup_diagnostic(model(), Path('/synthetic'), ['postgres'], Snapshot(Path('/synthetic')).read)
         self.assertEqual(start.diagnostic_safe(report), validate(report))
+
+    def test_wud_failure_metadata_reaches_gui_without_private_values(self):
+        root = Path('/synthetic')
+        compose = model()
+        compose['services']['wud'] = {'image': IMAGE}
+        row = container(root, service='wud')
+        report = start.startup_diagnostic(compose, root, ['wud'], Snapshot(root, [row]).read)
+        self.assertEqual(report['status'], 'COMPLETE')
+        self.assertEqual(report['services']['wud']['status'], 'UNHEALTHY')
+        self.assertEqual(parsed(report)['diagnostic'], report)
+        self.assertNotIn(CANARY, json.dumps(report))
+        self.assertTrue(any('SERVIZIO=wud' in line for line in lines(report)))
 
     def test_tailscale_signals_and_backend_are_finite_without_log_or_json_values(self):
         root = Path('/synthetic')

@@ -21,7 +21,7 @@ class OperationalStartup(unittest.TestCase):
                      'NPM_TOPOLOGY_SOURCE_DRIFT','NPM_TOPOLOGY_PRIVATE_FILE_REQUIRED'):
             self.assertEqual(start.failure_code(ValueError(code)),code)
         self.assertEqual(start.failure_code(ValueError('private-host.example.invalid')),'APPLICATION_START_REFUSED')
-    def exercise(self,cutover=False,fail_proof=False,tls=True):
+    def exercise(self,cutover=False,fail_proof=False,tls=True,controllers=None):
         temp=tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
         root=Path(temp.name)/'stack'; home=Path(temp.name)/'recovery'
         (root/'config').mkdir(parents=True); home.mkdir()
@@ -31,7 +31,7 @@ class OperationalStartup(unittest.TestCase):
             operational_deployment={'routing_mode':'production_recovery' if cutover else 'parallel_test',
                                     'domain_target_address':'192.0.2.29'})
         state_path.write_text(json.dumps(state))
-        waves=[['npm','comet'],['cometnet'],sorted(start.DEFERRED)]
+        waves=[['npm','comet'],['cometnet'],sorted(start.DEFERRED if controllers is None else controllers)]
         (root/'config/dr-manifest.yaml').write_text(json.dumps({'restore_waves':waves}))
         services={name:{'image':name+'@sha256:'+'a'*64} for name in sum(waves,[])}
         model={'name':'streams-aio','services':services,'volumes':{}}
@@ -83,7 +83,7 @@ class OperationalStartup(unittest.TestCase):
         self.assertLess(actions.index(['LOCAL_ENDPOINTS']),proof)
         cometnet=next(i for i,args in enumerate(actions) if 'up' in args and args[-1]=='cometnet')
         verify=next(i for i,args in enumerate(actions) if 'verify' in args)
-        controllers=next(i for i,args in enumerate(actions) if 'up' in args and 'watchtower' in args)
+        controllers=next(i for i,args in enumerate(actions) if 'up' in args and start.DEFERRED & set(args))
         self.assertLess(proof,cometnet); self.assertLess(cometnet,verify); self.assertLess(verify,controllers)
         self.assertTrue(state['public_controllers_enabled']); self.assertEqual(state['deferred_controllers'],[])
         self.assertEqual(state['private_marker'],'preserve')
@@ -93,8 +93,31 @@ class OperationalStartup(unittest.TestCase):
     def test_parallel_domain_test_never_starts_public_controllers(self):
         error,actions,state=self.exercise()
         self.assertIsNone(error)
-        self.assertFalse(any('up' in args and 'watchtower' in args for args in actions))
+        self.assertFalse(any('up' in args and start.DEFERRED & set(args) for args in actions))
         self.assertEqual(set(state['deferred_controllers']),start.DEFERRED)
+
+    def test_wud_only_backup_is_deferred_in_parallel_test(self):
+        error,actions,state=self.exercise(controllers={'wud'})
+        self.assertIsNone(error)
+        self.assertFalse(any('up' in args and 'wud' in args for args in actions))
+        self.assertIn('wud',state['deferred_controllers'])
+        self.assertFalse(state['public_controllers_enabled'])
+
+    def test_wud_only_backup_starts_after_https_in_production(self):
+        error,actions,state=self.exercise(cutover=True,controllers={'wud'})
+        self.assertIsNone(error)
+        verify=next(i for i,args in enumerate(actions) if 'verify' in args)
+        starts=[i for i,args in enumerate(actions) if 'up' in args and 'wud' in args]
+        self.assertEqual(len(starts),1)
+        self.assertLess(verify,starts[0])
+        self.assertFalse(any('up' in args and 'watchtower' in args for args in actions))
+        self.assertTrue(state['public_controllers_enabled'])
+        self.assertEqual(state['deferred_controllers'],[])
+
+    def test_wrong_public_target_never_starts_wud(self):
+        error,actions,state=self.exercise(cutover=True,fail_proof=True,controllers={'wud'})
+        self.assertEqual(error,'PUBLIC_DOMAIN_TARGET_MISMATCH')
+        self.assertFalse(any('up' in args and 'wud' in args for args in actions))
 
     def test_original_domain_or_wrong_routing_stops_before_cometnet(self):
         error,actions,state=self.exercise(fail_proof=True)
