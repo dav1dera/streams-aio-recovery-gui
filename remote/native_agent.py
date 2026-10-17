@@ -1,6 +1,7 @@
 """Install the pinned native Agent and an SSH-only API path on replacement VMs."""
 import base64
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -208,15 +209,25 @@ def private_templates(obj, archive, root):
     """Keep recovered private env mappings; mutable app config is initialized once."""
     import yaml
     result = []
-    require(isinstance(obj.get('templates'),list), 'AGENT_BOOTSTRAP_CONFIG_NOT_UNIQUE')
+    require(isinstance(obj,dict) and isinstance(obj.get('templates'),list)
+            and 0 < len(obj['templates']) <= 200, 'AGENT_BOOTSTRAP_CONFIG_NOT_UNIQUE')
+    source_root = None
     for original in obj['templates']:
+        require(isinstance(original,dict), 'AGENT_TEMPLATE_PATH_UNSUPPORTED')
         row = copy.deepcopy(original)
         destination = row.get('destination-path')
         require(isinstance(destination,str), 'AGENT_TEMPLATE_PATH_UNSUPPORTED')
         old = PurePosixPath(destination)
-        source_root = PurePosixPath('/home/pi/streams-aio')
-        require(old.is_relative_to(source_root) and '..' not in old.parts,
+        require(old.is_absolute() and old.as_posix() == destination and '\\' not in destination
+                and '..' not in old.parts and len(old.parts) >= 5
+                and old.parts[1] == 'home' and re.fullmatch(r'[a-z_][a-z0-9_-]*',old.parts[2])
+                and old.parts[3] == 'streams-aio',
                 'AGENT_TEMPLATE_PATH_UNSUPPORTED')
+        # The explicit archived destination determines the old host root.
+        # This also accepts backups made by a previously recovered Agent.
+        current_root = PurePosixPath(*old.parts[:4])
+        require(source_root is None or source_root == current_root, 'AGENT_TEMPLATE_ROOT_NOT_UNIQUE')
+        source_root = current_root
         relative = old.relative_to(source_root)
         # Public templates and mutable application-owned files are never watched.
         if not relative.parts or relative.parts[0] != '.secrets':
@@ -236,6 +247,234 @@ def private_templates(obj, archive, root):
     require(bool(result), 'AGENT_PRIVATE_TEMPLATE_REQUIRES_REVIEW')
     require(len({row['destination-path'] for row in result}) == len(result), 'AGENT_DUPLICATE_DESTINATION')
     return result
+
+
+def required_private_envs(root, plan):
+    """New required Compose env files; no secret folder or key is inferred."""
+    import yaml
+    root = safe_path(root)
+    compose = safe_path(root/'docker-compose.yml')
+    require(compose.is_file() and compose.stat().st_size <= 4*1024*1024, 'AGENT_SEED_COMPOSE_INVALID')
+    try:
+        obj = yaml.safe_load(compose.read_bytes())
+        require(isinstance(obj,dict) and isinstance(obj.get('services'),dict), 'AGENT_SEED_COMPOSE_INVALID')
+        require('include' not in obj, 'AGENT_SEED_COMPOSE_INCLUDE_UNSUPPORTED')
+        # New service secrets belong in their explicit private env template.
+        # Never silently turn an unmapped required root interpolation into an
+        # empty string or replace the public renderer's root .env policy.
+        declared = set(plan.get('root_env',{})) | {'COMPOSE_PROJECT_NAME','COMPOSE_FILE'}
+        def check_root(value):
+            if isinstance(value,dict):
+                for item in value.values():
+                    check_root(item)
+            elif isinstance(value,list):
+                for item in value:
+                    check_root(item)
+            elif isinstance(value,str):
+                offset = 0
+                while offset < len(value):
+                    if value[offset:offset+2] == '$$':
+                        offset += 2
+                        continue
+                    if value[offset] != '$':
+                        offset += 1
+                        continue
+                    if value[offset:offset+2] == '${':
+                        end, depth = offset+2,1
+                        while end < len(value) and depth:
+                            depth += (value[end] == '{')-(value[end] == '}')
+                            end += 1
+                        if depth:
+                            break  # Compose retains validation of malformed syntax.
+                        expression = value[offset+2:end-1]
+                        match = re.fullmatch(r'([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-+?])(.*))?',expression,re.S)
+                        if match and match[2] in (None,'?',':?'):
+                            require(match[1] in declared, 'AGENT_SEED_ROOT_ENV_MAPPING_REQUIRED')
+                        elif match:
+                            # A default may itself require a private variable.
+                            # Optional outer names must not hide missing inputs.
+                            check_root(match[3])
+                        offset = end
+                    else:
+                        match = re.match(r'\$([A-Za-z_][A-Za-z0-9_]*)',value[offset:])
+                        if match:
+                            require(match[1] in declared, 'AGENT_SEED_ROOT_ENV_MAPPING_REQUIRED')
+                            offset += len(match[0])
+                        else:
+                            offset += 1
+        check_root(obj)
+        targets = set()
+        for service in obj['services'].values():
+            require(isinstance(service,dict), 'AGENT_SEED_COMPOSE_INVALID')
+            require('extends' not in service, 'AGENT_SEED_COMPOSE_EXTENDS_UNSUPPORTED')
+            entries = service.get('env_file',[])
+            if isinstance(entries,(str,dict)):
+                entries = [entries]
+            require(isinstance(entries,list), 'AGENT_SEED_COMPOSE_INVALID')
+            for entry in entries:
+                require(isinstance(entry,(str,dict)), 'AGENT_SEED_COMPOSE_INVALID')
+                name = entry if isinstance(entry,str) else entry.get('path')
+                required = True if isinstance(entry,str) else entry.get('required',True)
+                require(isinstance(name,str) and type(required) is bool, 'AGENT_SEED_COMPOSE_INVALID')
+                name = name.removeprefix('./')
+                relative = PurePosixPath(name)
+                if not relative.parts or relative.parts[0] != '.secrets':
+                    continue
+                require(not relative.is_absolute() and '..' not in relative.parts
+                        and relative.as_posix() == name and '\\' not in name
+                        and re.fullmatch(r'\.secrets/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.env',name),
+                        'AGENT_SEED_TARGET_INVALID')
+                if required:
+                    targets.add(name)
+        require(len(targets) <= 200, 'AGENT_SEED_TARGET_INVALID')
+        known = set(plan['env_files']) | set(plan.get('service_folder_exports',{}))
+        return sorted(targets-known)
+    except (ValueError,TypeError,KeyError,UnicodeError,yaml.YAMLError):
+        raise Refused('AGENT_SEED_COMPOSE_INVALID') from None
+
+
+def recovered_private_templates(archive, root):
+    import yaml
+    candidates = [path for path in archive.rglob('*') if path.is_file()
+                  and path.name in ('agent-config.json','agent-config.yaml','agent-config.yml')]
+    require(len(candidates) == 1, 'AGENT_BOOTSTRAP_CONFIG_NOT_UNIQUE')
+    try:
+        obj = yaml.safe_load(private_file(candidates[0]).read_bytes())
+    except (ValueError,TypeError,UnicodeError,yaml.YAMLError):
+        raise Refused('AGENT_BOOTSTRAP_CONFIG_NOT_UNIQUE') from None
+    return private_templates(obj,archive,root)
+
+
+def pinned_cli(area, user):
+    archive = area/'cli.tar.gz'
+    if not archive.exists():
+        command(['curl','--fail','--silent','--show-error','--location','--proto','=https',
+                 '--proto-redir','=https','--max-time','180','--output',archive,CLI_URL], 'AGENT_CLI_DOWNLOAD_FAILED')
+    binary = install_cli(archive)
+    require(command(['sudo','-H','-u',user,'--',binary,'--version'],
+                    'AGENT_CLI_VERSION_MISMATCH').decode().strip() == 'infisical version '+VERSION,
+            'AGENT_CLI_VERSION_MISMATCH')
+    return binary
+
+
+def reconcile_seed_journal(root, journal, scope, targets, uid, gid):
+    """Reuse a complete seed or remove only a fully verified partial seed."""
+    if not journal.exists():
+        require(all(not safe_path(root/name).exists() for name in targets), 'AGENT_SEED_EXISTING_OUTPUT')
+        return None
+    info = private_file(journal).stat()
+    require(info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o600
+            and info.st_nlink == 1 and info.st_size <= 1024*1024,
+            'AGENT_SEED_JOURNAL_INVALID')
+    try:
+        evidence = json.loads(journal.read_bytes())
+    except (ValueError,UnicodeError):
+        raise Refused('AGENT_SEED_JOURNAL_INVALID') from None
+    require(isinstance(evidence,dict) and set(evidence) == {'schema','scope','outputs'}
+            and type(evidence['schema']) is int and evidence['schema'] == 1
+            and evidence['scope'] == scope and isinstance(evidence['outputs'],dict)
+            and set(evidence['outputs']) == set(targets)
+            and all(isinstance(value,str) and re.fullmatch(r'[0-9a-f]{64}',value)
+                    for value in evidence['outputs'].values()), 'AGENT_SEED_JOURNAL_INVALID')
+    existing = []
+    fields = ('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink','st_size','st_mtime_ns','st_ctime_ns')
+    for name, expected in evidence['outputs'].items():
+        path = safe_path(root/name)
+        if path.exists():
+            info = path.stat()
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                    and stat.S_IMODE(info.st_mode) == 0o600 and info.st_uid == uid and info.st_gid == gid
+                    and digest(path) == expected, 'AGENT_SEED_OUTPUT_CHANGED')
+            existing.append((path,tuple(getattr(info,field) for field in fields),expected))
+    if len(existing) == len(targets):
+        return evidence['outputs']
+    # Validate the entire partial set before deleting any file. A missing file
+    # is allowed; an unjournaled or changed file is never replaced or removed.
+    for path, metadata, expected in existing:
+        info = safe_path(path).stat()
+        require(tuple(getattr(info,field) for field in fields) == metadata
+                and digest(path) == expected, 'AGENT_SEED_OUTPUT_CHANGED')
+        path.unlink()
+    return None
+
+
+def seed_required_envs(root, home, archive, plan, address, *, uid=1000, gid=1000, user=None):
+    """Render exact archived mappings once, before the first Compose inspection.
+
+    This prepares only new required .secrets env files. Root .env interpolation
+    remains governed by the public renderer's explicit root_env bindings.
+    """
+    targets = required_private_envs(root,plan)
+    if not targets:
+        return {}
+    root, home = safe_path(root), safe_path(home)
+    journal = safe_path(home/'agent-seed-journal.json')
+    scope = dict(root=str(root),archive_sha256=digest(private_file(archive)),
+                 plan_sha256=digest(safe_path(root/'config/dr-render-plan.json')),
+                 compose_sha256=digest(safe_path(root/'docker-compose.yml')),uid=uid,gid=gid)
+    if user is None:
+        import pwd
+        user = pwd.getpwuid(uid).pw_name
+    with tempfile.TemporaryDirectory(prefix='agent-seed-',dir=home) as name:
+        area = safe_path(Path(name))
+        os.chown(area,uid,gid)
+        backup = area/'backup'
+        unpack_agent(private_file(archive),backup)
+        recovered = agent_bootstrap(backup)
+        rows = recovered_private_templates(backup,root)
+        by_path = {Path(row['destination-path']).relative_to(root).as_posix():row for row in rows}
+        require(set(targets) <= by_path.keys(), 'AGENT_SEED_MAPPING_INCOMPLETE')
+        selected = [by_path[path] for path in targets]
+        resumed = reconcile_seed_journal(root,journal,scope,targets,uid,gid)
+        if resumed is not None:
+            return resumed
+        for field in ('client_id','client_secret'):
+            write_owned(area/field,private_file(recovered[field]).read_bytes(),uid,gid)
+        config = dict(infisical={'address':address},
+                      auth={'type':'universal-auth','config':{'client-id':str(area/'client_id'),
+                            'client-secret':str(area/'client_secret'),'remove_client_secret_on_read':False}},
+                      templates=selected)
+        binary = pinned_cli(area,user)
+        # Root promotes the staged output; the deployment user needs traversal,
+        # not write access to the private input directories or extracted archive.
+        parents = set()
+        for path in targets:
+            parent = safe_path(root/path).parent
+            while parent != root:
+                parents.add(parent)
+                parent = parent.parent
+        for parent in sorted(parents,key=lambda p:len(p.parts)):
+            if parent.exists():
+                info = parent.stat()
+                require(stat.S_ISDIR(info.st_mode) and info.st_uid in (0,uid)
+                        and not info.st_mode & 0o022, 'AGENT_SEED_TARGET_INVALID')
+            else:
+                parent.mkdir(mode=0o750)
+                parent.chmod(0o750)
+                os.chown(parent,0,gid)
+        def journal_outputs(destinations, material):
+            require(destinations == [safe_path(root/path) for path in targets], 'AGENT_SEED_JOURNAL_INVALID')
+            outputs = {path:hashlib.sha256(raw).hexdigest() for path,raw in zip(targets,material)}
+            save(journal,{'schema':1,'scope':scope,'outputs':outputs})
+        first_render(config,area,binary,user,uid,gid,before_promote=journal_outputs)
+    outputs = {path:digest(private_file(root/path)) for path in targets}
+    verify_seeded_envs(root,plan,outputs,uid=uid,gid=gid)
+    return outputs
+
+
+def verify_seeded_envs(root, plan, outputs, *, check_hash=True, uid=1000, gid=1000):
+    """Private preparation evidence; a later continuous Agent may rotate values."""
+    require(isinstance(outputs,dict) and set(outputs) == set(required_private_envs(root,plan))
+            and all(isinstance(value,str) and re.fullmatch(r'[0-9a-f]{64}',value) for value in outputs.values()),
+            'AGENT_SEED_CHECKPOINT_INVALID')
+    for name, expected in outputs.items():
+        path = safe_path(root/name)
+        require(path.is_file(), 'AGENT_SEED_OUTPUT_CHANGED')
+        info = path.stat()
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                and stat.S_IMODE(info.st_mode) == 0o600 and info.st_uid == uid and info.st_gid == gid,
+                'AGENT_SEED_OUTPUT_CHANGED')
+        require(not check_hash or digest(path) == expected, 'AGENT_SEED_OUTPUT_CHANGED')
 
 
 def tunnel_unit(home,user,host,port,api_port):
@@ -319,7 +558,7 @@ def install_cli(archive, library=Path('/usr/local/lib/streams-aio-recovery'), ui
     return binary
 
 
-def first_render(agent, area, binary, user, uid=1000, gid=1000, dry_run=False):
+def first_render(agent, area, binary, user, uid=1000, gid=1000, dry_run=False, before_promote=None):
     """Require every fresh output before replacing any prepared env file.
 
     The pinned CLI can report a write error while exiting successfully, so an
@@ -365,6 +604,8 @@ def first_render(agent, area, binary, user, uid=1000, gid=1000, dry_run=False):
                 require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
                         and stat.S_IMODE(info.st_mode) == 0o600 and info.st_uid == uid,
                         'AGENT_PRIVATE_OUTPUT_PERMISSIONS_INVALID')
+        if before_promote is not None:
+            before_promote(destinations,material)
         for path, raw in zip(destinations, material):
             fd, temp = tempfile.mkstemp(prefix='.agent-render-', dir=path.parent)
             try:
@@ -383,7 +624,6 @@ def first_render(agent, area, binary, user, uid=1000, gid=1000, dry_run=False):
 
 def install(home,root,config):
     import pwd
-    import yaml
     state = checkpoint(home,root)
     user = pwd.getpwuid(1000).pw_name
     host,port,api = config['host'],config['port'],config['api_port']
@@ -427,11 +667,7 @@ def install(home,root,config):
     if not (area/'backup').exists():
         unpack_agent(private_file(home/'private/infisical-agent.tar.gz'),area/'backup')
     recovered = agent_bootstrap(area/'backup')
-    candidates = [path for path in (area/'backup').rglob('*') if path.is_file()
-                  and path.name in ('agent-config.json','agent-config.yaml','agent-config.yml')]
-    require(len(candidates) == 1, 'AGENT_BOOTSTRAP_CONFIG_NOT_UNIQUE')
-    obj = yaml.safe_load(candidates[0].read_bytes())
-    rows = private_templates(obj,area/'backup',root)
+    rows = recovered_private_templates(area/'backup',root)
     plan = json.loads((root/'config/dr-render-plan.json').read_bytes())
     preserve_local_inputs(area/'backup',plan)
     # Refuse an incomplete native mapping instead of losing secret updates.
@@ -446,15 +682,7 @@ def install(home,root,config):
                  templates=rows)
     save(area/'agent-config.json',agent)
     os.chown(area/'agent-config.json',1000,1000)
-    archive = area/'cli.tar.gz'
-    if not archive.exists():
-        command(['curl','--fail','--silent','--show-error','--location','--proto','=https',
-                 '--proto-redir','=https','--max-time','180','--output',archive,CLI_URL], 'AGENT_CLI_DOWNLOAD_FAILED')
-    require(digest(archive) == CLI_SHA256, 'AGENT_CLI_SHA256_MISMATCH')
-    binary = install_cli(archive)
-    require(command(['sudo','-H','-u',user,'--',binary,'--version'],
-                    'AGENT_CLI_VERSION_MISMATCH').decode().strip() == 'infisical version '+VERSION,
-            'AGENT_CLI_VERSION_MISMATCH')
+    binary = pinned_cli(area,user)
     once = copy.deepcopy(agent)
     once['infisical']['exit-after-auth'] = True
     save(area/'agent-once.json',once)

@@ -1,3 +1,17 @@
+# 0.4.19 · Nuovi env privati dai template Agent
+
+Il recupero genera i nuovi env privati richiesti dal Compose usando i template
+Agent espliciti del backup cifrato, prima dei controlli Compose. Il percorso
+standard con env pubblico e `.secrets/servizio.env` non richiede nuovi mapping
+manuali su GitHub. La ripresa verifica configurazioni e file della generazione;
+errori di mapping, integrità o formato hanno messaggi italiani specifici.
+
+790 test raccolti: 741 eseguiti con successo e 49 saltati su Windows.
+Questa verifica dei sorgenti non costituisce un nuovo recupero completo su due VM.
+[Note complete e limiti](RELEASE-NOTES-v0.4.19.md).
+
+---
+
 # 0.4.18 · WUD nel recupero
 
 WUD resta escluso dalla Prova affiancata e viene avviato nel Recupero della

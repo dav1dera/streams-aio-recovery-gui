@@ -5,7 +5,7 @@ import re
 import unittest
 
 from recovery_gui.app import ERRORS
-from recovery_gui.backend import parse_event
+from recovery_gui.backend import parse_event, remote_failure_code
 from recovery_gui.codes import ERROR_CODES
 from recovery_gui.ui_state import error_destination
 
@@ -14,6 +14,39 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 class DashboardErrors(unittest.TestCase):
+    def test_new_private_env_failures_survive_event_and_command_transport_with_guidance(self):
+        names=set()
+        for file in ('native_agent.py','recover.py'):
+            names.update(re.findall(r"'((?:AGENT_SEED_|AGENT_RENDER_BASE_)[A-Z0-9_]+)'",
+                                   (ROOT/'remote'/file).read_text()))
+        names.update({'AGENT_TEMPLATE_ROOT_NOT_UNIQUE','INVALID_RECOVERY_REQUEST'})
+        self.assertEqual(len(names),16)
+        for code in names:
+            with self.subTest(code=code):
+                self.assertIn(code,ERROR_CODES)
+                self.assertIn(code,ERRORS)
+                self.assertGreater(len(ERRORS[code]),50)
+                event=dict(stage='REFUSED',status='REFUSED',code=code)
+                raw='RECOVERY_EVENT '+json.dumps(event)
+                self.assertEqual(parse_event(raw),event)
+                self.assertEqual(remote_failure_code(raw.encode()),code)
+                self.assertEqual(remote_failure_code(json.dumps({'error':code}).encode()),code)
+
+    def test_private_env_error_allowlist_stays_closed_and_guidance_preserves_scope(self):
+        unknown='AGENT_SEED_PRIVATE_CANARY'
+        raw='RECOVERY_EVENT '+json.dumps(dict(stage='REFUSED',status='REFUSED',code=unknown))
+        self.assertIsNone(parse_event(raw))
+        self.assertEqual(remote_failure_code(raw.encode()),'REMOTE_OPERATION_FAILED')
+        self.assertIn('template esplicito',ERRORS['AGENT_SEED_MAPPING_INCOMPLETE'])
+        self.assertIn('nuovo backup',ERRORS['AGENT_SEED_MAPPING_INCOMPLETE'])
+        self.assertIn('data/servizio/.env',ERRORS['AGENT_SEED_ROOT_ENV_MAPPING_REQUIRED'])
+        self.assertIn('.secrets/servizio.env',ERRORS['AGENT_SEED_ROOT_ENV_MAPPING_REQUIRED'])
+        for code in ('AGENT_SEED_JOURNAL_INVALID','AGENT_SEED_EXISTING_OUTPUT','AGENT_SEED_OUTPUT_CHANGED',
+                     'AGENT_RENDER_BASE_CHANGED','AGENT_RENDER_BASE_INVALID'):
+            self.assertIn('conserva',ERRORS[code].lower())
+        self.assertIn('include',ERRORS['AGENT_SEED_COMPOSE_INCLUDE_UNSUPPORTED'])
+        self.assertIn('extends',ERRORS['AGENT_SEED_COMPOSE_EXTENDS_UNSUPPORTED'])
+
     def test_all_native_capsule_and_topology_codes_survive_with_guided_text(self):
         names=set()
         for file in ('aio_snapshot.py','npm_topology.py'):

@@ -709,6 +709,36 @@ def upstream_targets(value):
     return dict(value)
 
 
+def render_base_snapshot(root):
+    """Private evidence of the completed pinned renderer, never marker-only."""
+    root = safe_path(root)
+    try:
+        plan_path, compose_path = root/'config/dr-render-plan.json',root/'docker-compose.yml'
+        plan = json.loads(safe_path(plan_path).read_bytes())
+        marker_path = private_file(root/'.generated/dr-render-complete.json')
+        marker = json.loads(marker_path.read_bytes())
+        expected = (set(plan['env_files']) | set(plan.get('service_folder_exports',{})) | {'.env'}
+                    | {row['destination'] for row in plan['files']} | {plan['postgres_bootstrap']['destination']})
+        require(isinstance(marker,dict) and marker.get('root') == str(root)
+                and isinstance(marker.get('outputs'),list)
+                and all(isinstance(name,str) for name in marker['outputs'])
+                and len(marker['outputs']) == len(set(marker['outputs']))
+                and set(marker['outputs']) == expected, 'AGENT_RENDER_BASE_INVALID')
+        outputs = {}
+        for name in sorted(expected):
+            relative = PurePosixPath(name)
+            require(relative.as_posix() == name and not relative.is_absolute() and '..' not in relative.parts
+                    and re.fullmatch(r'[A-Za-z0-9_./-]+',name), 'AGENT_RENDER_BASE_INVALID')
+            path = safe_path(root/name)
+            info = path.stat()
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, 'AGENT_RENDER_BASE_INVALID')
+            outputs[name] = dict(sha256=digest(path),uid=info.st_uid,gid=info.st_gid,mode=stat.S_IMODE(info.st_mode))
+        return dict(schema=1,root=str(root),plan_sha256=digest(safe_path(plan_path)),
+                    compose_sha256=digest(safe_path(compose_path)),marker_sha256=digest(marker_path),outputs=outputs)
+    except (ValueError,TypeError,KeyError,OSError):
+        raise Refused('AGENT_RENDER_BASE_INVALID') from None
+
+
 class Recovery:
     def __init__(self, args):
         self.args = args
@@ -755,6 +785,13 @@ class Recovery:
                                 and not (self.root / '.generated/aio-import-complete.json').exists(),
                          'INFISICAL_SERVER': self.config.get('role') == 'infisical'
                                 and 'INFISICAL_DATABASE' in self.state['completed']}
+            if pending == 'RENDER' and self.state.get('render_base') is not None:
+                state_info = self.state_path.stat()
+                require(state_info.st_uid == os.geteuid() and stat.S_IMODE(state_info.st_mode) == 0o600
+                        and state_info.st_nlink == 1,
+                        'AGENT_RENDER_BASE_INVALID')
+                self.verify_render_base()
+                retryable['RENDER'] = True
             require(not pending or retryable.get(pending, False), 'INCOMPLETE_STEP_REQUIRES_REVIEW')
             self.state['in_progress'] = None
         else:
@@ -919,6 +956,11 @@ class Recovery:
             self.state['supplemental_inputs'] = dict(provenance, applied=sorted(applied))
 
     def run_script(self, name, action, *extra, root=False):
+        if name == 'dr.py' and action == 'render' and self.state.get('render_base') is not None:
+            require(root and extra == ('--mode','fresh'), 'AGENT_RENDER_BASE_INVALID')
+            self.verify_render_base()
+            self.seed_private_envs()
+            return
         if name == 'dr.py' and action == 'render' and self.config.get('aio_mode', 'import') in ('manual', 'snapshot'):
             # Run the pinned renderer with the same in-memory input plan as
             # INPUTS. Its files, permissions, marker and SQL checks are intact.
@@ -932,12 +974,76 @@ class Recovery:
                     dr.render(args)
             except Exception:
                 raise Refused('FRESH_RENDERER_REFUSED') from None
+            self.record_render_base()
+            self.seed_private_envs()
             return
         args = [sys.executable, '-B', self.root / 'scripts' / name, action, '--target', self.root, *extra]
         if root and os.geteuid() != 0:
             args = ['sudo', '--', *args]
         command(args, {'dr.py': 'FRESH_RENDERER_REFUSED', 'npm-dr.py': 'NPM_RECOVERY_REFUSED',
                        'aio-dr.py': 'AIO_IMPORT_REFUSED'}[name], cwd=self.root)
+        if name == 'dr.py' and action == 'render':
+            self.record_render_base()
+            self.seed_private_envs()
+
+    def record_render_base(self):
+        # Persist this boundary before any new private output can be promoted.
+        self.state['render_base'] = render_base_snapshot(self.root)
+        save(self.state_path,self.state)
+
+    def verify_render_base(self):
+        prefix = {'CLONES','DOWNLOAD','DECRYPT','INITIALIZE','INPUTS'}
+        completed = self.state.get('completed')
+        require(isinstance(completed,list) and len(completed) == len(prefix) and set(completed) == prefix
+                and self.state.get('in_progress') in (None,'RENDER')
+                and self.state.get('preparation') is None and self.state.get('runtime_profile') is None
+                and self.state.get('native_agent') is None
+                and not self.state.get('application_start_attempted',False), 'AGENT_RENDER_BASE_INVALID')
+        require(self.state.get('render_base') == render_base_snapshot(self.root), 'AGENT_RENDER_BASE_CHANGED')
+
+    def seed_private_envs(self):
+        """Complete RENDER from exact encrypted Agent templates, before Compose."""
+        native = load_module(self.tooling/'native_agent.py','recovery_early_agent')
+        plan = json.loads(safe_path(self.root/'config/dr-render-plan.json').read_bytes())
+        try:
+            targets = native.required_private_envs(self.root,plan)
+            outputs = {}
+            if targets:
+                # Only the recovered scope is authoritative for private mappings.
+                require(not any(self.config.get(key) for key in
+                        ('project_id','environment','client_id_file','client_secret_file')),
+                        'NATIVE_AGENT_REQUIRES_RECOVERED_SCOPE')
+                require(self.config.get('native_agent',True) is True, 'AGENT_SEED_CONTINUOUS_AGENT_REQUIRED')
+                address = validate_address(self.config.get('infisical_address'),
+                                           ssh_bridge=self.config.get('ssh_bridge') is True)
+                outputs = native.seed_required_envs(self.root,self.home,
+                    self.private/'infisical-agent.tar.gz',plan,address)
+            self.state['agent_seed'] = {'schema':1,'outputs':outputs}
+        except native.Refused as error:
+            # native_agent may import recover under another module name when
+            # this runner is __main__; translate its finite errors explicitly.
+            raise Refused(str(error)) from None
+
+    def verify_seeded_envs(self):
+        evidence = self.state.get('agent_seed')
+        native = load_module(self.tooling/'native_agent.py','recovery_seed_verifier')
+        plan = json.loads(safe_path(self.root/'config/dr-render-plan.json').read_bytes())
+        # After permanent installation, the Agent intentionally owns secret
+        # rotation. Preparation resumes before then must match the seed bytes.
+        rotating = (self.state.get('preparation') == 'PASS'
+                    and self.state.get('native_agent') == 'ACTIVE_NO_RESTART_HOOKS')
+        try:
+            if evidence is None:
+                # Legacy checkpoints are compatible only when the original
+                # public plan already covers every required private env file.
+                require(not native.required_private_envs(self.root,plan), 'AGENT_SEED_CHECKPOINT_REQUIRED')
+                return
+            require(isinstance(evidence,dict) and set(evidence) == {'schema','outputs'}
+                    and type(evidence['schema']) is int and evidence['schema'] == 1,
+                    'AGENT_SEED_CHECKPOINT_INVALID')
+            native.verify_seeded_envs(self.root,plan,evidence['outputs'],check_hash=not rotating)
+        except native.Refused as error:
+            raise Refused(str(error)) from None
 
     def npm(self):
         target = self.root / 'data/npm/data/database.sqlite'
@@ -991,6 +1097,10 @@ class Recovery:
         self.run_script('aio-dr.py', 'import', '--payload', path, root=True)
 
     def validate_resume(self):
+        if 'RENDER' in self.state.get('completed',[]):
+            self.verify_seeded_envs()
+        elif self.state.get('render_base') is not None:
+            self.verify_render_base()
         if self.state.get('operational_deployment') is not None:
             require(self.config.get('operational_profile') is True, 'OPERATIONAL_DEPLOYMENT_REFUSED')
         if self.config.get('operational_profile') is True:
@@ -1010,6 +1120,8 @@ class Recovery:
                     marker = json.loads((self.root / '.generated/dr-render-complete.json').read_bytes())
                     require(marker.get('root') == str(self.root), 'INVALID_RENDER_MARKER')
                     allowed = set(marker['outputs'])
+                elif folder == self.root and self.state.get('render_base') is not None:
+                    allowed = set(self.state['render_base']['outputs'])
                 require(changed <= allowed and not command(['git', '-C', folder, 'ls-files', '--others', '--exclude-standard'],
                                                           'RECOVERY_UNTRACKED_CHECK_FAILED'), 'RECOVERY_TREE_MODIFIED')
         if 'DOWNLOAD' in self.state['completed']:

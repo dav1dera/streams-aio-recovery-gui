@@ -451,6 +451,8 @@ class SSH:
             config = {key: request[key] for key in ('github_token', 'public_commit', 'dr_tag',
                       'infisical_address', 'project_id', 'environment')}
             config.update(role=role, ssh_bridge=request.get('ssh_bridge') is True)
+            require(type(request.get('native_agent',True)) is bool, 'INVALID_RECOVERY_REQUEST')
+            config['native_agent'] = request.get('native_agent',True)
             if request.get('operational_profile') is True:
                 config.update(operational_profile=True, routing_mode=request.get('routing_mode'),
                               domain_target_address=request.get('domain_target_address'),

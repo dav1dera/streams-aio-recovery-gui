@@ -2,7 +2,7 @@
 
 **Guida in italiano per organizzare lo stack, conservarne i backup e recuperarlo su due VM.**
 
-**Versione 0.4.18** · [Scarica programma e checksum](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.18) · [Setup iniziale](docs/SETUP-DA-ZERO.md) · [Uso della GUI](docs/USAGE.md) · [Note della versione](docs/RELEASE-NOTES-v0.4.18.md)
+**Versione 0.4.19** · [Scarica programma e checksum](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.19) · [Setup iniziale](docs/SETUP-DA-ZERO.md) · [Uso della GUI](docs/USAGE.md) · [Note della versione](docs/RELEASE-NOTES-v0.4.19.md)
 
 La GUI Windows recupera **Infisical su una VM separata** e **Streams AIO sull'altra** partendo da un backup completo. Ripristina configurazioni, segreti, database AIO e NPM; prepara Agent, tunnel SSH, servizi e HTTPS.
 
@@ -64,6 +64,10 @@ Nel deployment di riferimento sono attivi processi diversi:
 | **Agent Infisical** | Secondo il suo polling | Aggiorna i file privati previsti dai mapping. Non sostituisce il backup DR. |
 
 La direzione della sincronizzazione è **VM locale → GitHub**. Modificare GitHub non distribuisce automaticamente una configurazione ai container. Anche modificare un `.env` o un secret può richiedere di ricreare il servizio interessato per applicarlo al processo già avviato.
+
+Per il percorso standard basta modificare **Compose e gli env pubblici sulla VM**, inserire i secret nella **GUI Infisical** e mantenere un **template Agent esplicito** per il file privato del servizio. Il worker aggiornato pubblica le modifiche ammesse; il backup cifrato conserva valori e configurazione Agent. La GUI **0.4.19** può ricreare anche un nuovo `.secrets/servizio.env` prima dei controlli Compose, senza aggiungere a mano il suo mapping su GitHub. Segui i sei passaggi sotto e verifica il successivo backup riuscito.
+
+In **Honey**, il worker pubblico aggiornato conserva le associazioni private sulla scheda riconosciuta tramite riferimenti pubblici univoci, anziché spostarle con l'indice della riga. Inserire o riordinare schede riconoscibili mantiene le associazioni; riferimenti ambigui o la rimozione di una scheda con binding fermano la sincronizzazione con `HONEY_BOUND_LAYOUT_REVIEW_REQUIRED`. Conserva le identità riconoscibili e controlla la modifica. Questa correzione richiede il worker aggiornato sulla VM; aggiornare la sola GUI non aggiorna quel processo.
 
 Ogni backup è una **fotografia del momento della cattura**. Una modifica a Infisical, AIOStreams o AIOMetadata entra nel successivo backup riuscito; le release già pubblicate non si aggiornano. Il timer attivo non prova da solo che l'ultima esecuzione sia riuscita.
 
@@ -150,17 +154,13 @@ Il binding localhost è un esempio: per NPM usa una rete Docker comune o un coll
 
 Le label mantengono il tag corrente e controllano il digest; diventano effettive **ricreando il container**. Per escluderlo aggiungi `wud.watch: 'false'`. Gluetun è escluso anche con `EXCLUDE=^gluetun$`. Nel riferimento WUD aggiorna automaticamente alle **05:00 Europe/Rome**: escludi i servizi che vuoi aggiornare personalmente.
 
-### 4. Contratto DR sul repository pubblico
+### 4. Contratto DR: il template Agent resta la sorgente privata
 
-Il worker legge `config/dr-render-plan.json` da **GitHub main**, non dal piano modificato soltanto nello stack locale. Dentro `env_files` aggiungi:
+Per questo percorso **non occorre modificare a mano `env_files` o `required_values` su GitHub**. Il worker inventaria il servizio, pubblica l'env pubblico ammesso e registra che il file privato deve essere generato dall'Agent. Il template del passo 2, conservato nel backup cifrato dell'Agent, indica esplicitamente cosa leggere e dove scriverlo: il nome del file non viene usato per indovinare la cartella Infisical.
 
-```json
-".secrets/nuovo-servizio.env": {
-  "API_TOKEN": {"path": "/nuovo-servizio", "key": "API_TOKEN"}
-}
-```
+Durante il recupero, la GUI **0.4.19** usa quel template per generare il nuovo env privato prima del primo controllo Compose. Dopo la preparazione installa l'Agent continuo, che mantiene i successivi aggiornamenti dei secret. Verifica che la destinazione del template e il percorso `env_file` di Compose coincidano esattamente.
 
-In `required_values` aggiungi `/nuovo-servizio/API_TOKEN`; ripeti per ogni secret. Conserva il resto del JSON e non inserire valori privati. Senza mapping il renderer iniziale non sa creare il file. File misti YAML/JSON richiedono template e binding dedicati. Un updater richiede anche la policy GUI: escluso nella prova affiancata, avviato per ultimo in produzione.
+Il percorso supportato usa servizi dichiarati direttamente in `docker-compose.yml`, impostazioni pubbliche in `data/servizio/.env` ed env privati obbligatori `.secrets/*.env`. Gli `env_file` del servizio non alimentano l'interpolazione `${VAR}` o `$VAR` del Compose: una nuova variabile obbligatoria non prevista dai binding del `.env` principale viene rifiutata. Le normali impostazioni pubbliche negli env del servizio restano supportate e i binding già previsti per il file principale vengono conservati. I Compose con `include` o `extends` e i file misti YAML/JSON richiedono una verifica dedicata. Un updater richiede anche la policy GUI: escluso nella prova affiancata, avviato per ultimo in produzione.
 
 **I dati non sono inclusi automaticamente:** la directory viene ricreata vuota. Per WUD è il mount `/store`; dati indispensabili richiedono backup e ripristino dedicati.
 
@@ -180,7 +180,9 @@ Ometti `test -s` solo senza secret. Prosegui soltanto se ogni comando riesce. Le
 
 ### 6. Sincronizza e verifica un nuovo backup
 
-L'unità verificata `streams-aio-public-sync.service` usa il worker separato e **`--seamless --publish`**. Controlla subito senza pubblicare:
+I timer sincronizzano automaticamente le modifiche pubbliche ammesse e creano il successivo punto DR. L'unità verificata `streams-aio-public-sync.service` usa il worker separato e **`--seamless --publish`**; il backup DR esegue prima la sincronizzazione pubblica. I comandi sotto servono ad anticipare il controllo e il backup, senza attendere gli orari configurati.
+
+Per controllare subito senza pubblicare:
 
 ```bash
 SYNC_HOME=/home/pi/.local/share/streams-aio-public-sync
@@ -188,7 +190,7 @@ SYNC_HOME=/home/pi/.local/share/streams-aio-public-sync
   --source /home/pi/streams-aio --seamless
 ```
 
-Dopo `PUBLIC_SYNC_CHECK PASS`, pubblica e, terminata la sincronizzazione, crea il backup come utente `pi`:
+Se vuoi anticipare il salvataggio, dopo `PUBLIC_SYNC_CHECK PASS` pubblica e, terminata la sincronizzazione, crea il backup come utente `pi`:
 
 ```bash
 "$SYNC_HOME/venv/bin/python" -B "$SYNC_HOME/tooling/scripts/sync-public-stack.py" \
@@ -196,9 +198,9 @@ Dopo `PUBLIC_SYNC_CHECK PASS`, pubblica e, terminata la sincronizzazione, crea i
 /home/pi/streams-aio-dr/scripts/update-dr.sh
 ```
 
-Su GitHub controlla nuovo commit, servizio, env pubblico, immagini fissate e mapping; `.secrets` e password devono essere assenti. Verifica poi una **nuova release completa schema 2**: sei `.age`, manifest e checksum, associata al commit corretto e successiva al mapping Agent. Richiedi `DR_UPDATE PASS` e pubblicazione verificata. I timer restano automatici; evita esecuzioni contemporanee.
+Su GitHub controlla nuovo commit, servizio, env pubblico e immagini fissate; i valori `.secrets`, le credenziali e il template Agent privato devono essere assenti. Verifica poi una **nuova release completa schema 2**: sei `.age`, manifest e checksum, associata al commit corretto e catturata dopo aver salvato template Agent e secret Infisical. Richiedi `DR_UPDATE PASS` e pubblicazione verificata. Un timer attivo o un commit pubblico, da soli, non attestano il salvataggio privato. Evita esecuzioni contemporanee.
 
-Il servizio è **operativo** dopo la prova d'uso; le modifiche sono **salvate nel DR** dopo la nuova release verificata. Un recupero su VM di test conferma anche il ripristino del nuovo servizio.
+Il servizio è **operativo** dopo la prova d'uso; le modifiche sono **salvate nel DR** dopo la nuova release verificata. I backup precedenti non acquisiscono retroattivamente template e secret nuovi. Un recupero su VM di test conferma anche il ripristino del nuovo servizio.
 
 ## Cosa contiene un backup completo
 
@@ -223,9 +225,9 @@ Non è un'immagine completa delle VM: database/cache dichiarati ricostruibili, c
 
 ## Recuperare con la GUI
 
-### 1. Scarica la versione 0.4.18
+### 1. Scarica la versione 0.4.19
 
-Dalla [release](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.18) scarica `StreamsAIO-Recovery.exe` e `SHA256SUMS`. Sono inclusi anche i sorgenti. Confronta l'hash prima di avviare:
+Dalla [release](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.19) scarica `StreamsAIO-Recovery.exe` e `SHA256SUMS`. Sono inclusi anche i sorgenti. Confronta l'hash prima di avviare:
 
 ```powershell
 Get-FileHash .\StreamsAIO-Recovery.exe -Algorithm SHA256
@@ -307,16 +309,18 @@ La GUI scarica i backup da GitHub: non offre un import completamente offline. La
 
 ## Stato delle verifiche
 
+La **0.4.19** aggiunge la generazione iniziale dei nuovi env privati dai template Agent espliciti nel backup, prima dei controlli Compose. La ripresa riconosce soltanto file verificati della stessa generazione: riusa un risultato completo o ricrea una generazione parziale verificata, conservando file estranei o modificati. La suite locale su Windows comprende **790 test raccolti: 741 eseguiti con successo e 49 saltati**, senza errori o fallimenti. Include 15 test del nuovo percorso e i controlli dei messaggi italiani. Non attesta un nuovo recupero completo su due VM; [limiti e dettagli della versione](docs/RELEASE-NOTES-v0.4.19.md).
+
 La **0.4.18** aggiunge WUD alla policy del recupero: escluso nella prova affiancata, avviato dopo i controlli pubblici in produzione e riconosciuto nei report diagnostici. Sono passati **66 test mirati**, il self-test dell’eseguibile e il confronto dei 23 moduli remoti inclusi. Questa verifica non aggiunge un nuovo collaudo completo su due VM alla prova della 0.4.17 descritta sotto.
 
 Il **14 ottobre 2026**, la **0.4.17** ha completato il recupero applicativo da due VM di prova pulite di container, volumi, configurazioni, database e checkpoint precedenti, usando `dr-20261013T023710Z`. **Docker e cache delle immagini erano già presenti**: questa prova non equivale a installare nuovamente Ubuntu senza Docker.
 
 Sono passati i controlli Infisical, AIO, Agent/tunnel, Headplane/Headscale, Tailscale, NPM, HTTPS, CometNet, controller e servizi. È rimasto un avviso per un upstream esterno non raggiungibile. L'utente ha confermato AIOStreams e AIOMetadata funzionanti da Stremio sul telefono; sul PC è stata rilevata una differenza di risoluzione DNS.
 
-La suite locale comprende **769 test, zero errori/fallimenti e 49 controlli POSIX saltati su Windows**; self-test dell'eseguibile e corrispondenza delle risorse incluse verificati. Non sono stati completati in questa prova il riavvio delle due VM recuperate, tutte le integrazioni esterne e il P2P pubblico. [Checklist finale](docs/USAGE.md#collaudo-finale).
+La suite locale di quella prova comprendeva **769 test, zero errori/fallimenti e 49 controlli POSIX saltati su Windows**; self-test dell'eseguibile e corrispondenza delle risorse incluse verificati. Non sono stati completati in questa prova il riavvio delle due VM recuperate, tutte le integrazioni esterne e il P2P pubblico. [Checklist finale](docs/USAGE.md#collaudo-finale).
 
 ## Guide e sviluppo
 
-[Setup iniziale](docs/SETUP-DA-ZERO.md) · [Uso dettagliato](docs/USAGE.md) · [Proxmox](docs/PROXMOX.md) · [Note 0.4.18](docs/RELEASE-NOTES-v0.4.18.md)
+[Setup iniziale](docs/SETUP-DA-ZERO.md) · [Uso dettagliato](docs/USAGE.md) · [Proxmox](docs/PROXMOX.md) · [Note 0.4.19](docs/RELEASE-NOTES-v0.4.19.md)
 
 Il programma usa Python/Tk e SSH. `build.ps1` crea l'eseguibile Windows; `tests/` contiene i test e la pipeline GitHub verifica codice, compatibilità Ubuntu e build Windows. Le guide degli altri repository descrivono i rispettivi strumenti; per il percorso corrente con snapshot AIO nativi usa questa guida e un backup schema 2, evitando di mescolarlo con importazioni JSON dei formati storici.
