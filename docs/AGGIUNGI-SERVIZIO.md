@@ -22,7 +22,8 @@ anche l’instradamento dei domini; questo laboratorio prepara soltanto file e A
 2. In **Accessi e backup** compila le due VM, il token GitHub con **Contents: Read**
    sui repository del recupero e il file della chiave age. Carica un backup completo.
    Per esempio: stack `test@192.168.178.30`, Infisical `test2@192.168.178.33`.
-3. Torna in **Aggiungi servizio** e premi **Prepara le VM di collaudo**. Il programma
+3. Torna in **Aggiungi servizio**. Nel passo **Destinazione** scegli **Collaudo
+   locale**, quindi premi **Prepara le VM di collaudo**. Il programma
    controlla che entrambe siano vuote prima dei trasferimenti, ripristina Infisical,
    prepara lo stack e collega il suo Agent alla VM Infisical di prova tramite SSH.
    Non avvia l’intero stack e non installa i processi di pubblicazione automatica.
