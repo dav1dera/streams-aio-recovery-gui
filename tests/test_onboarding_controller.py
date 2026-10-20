@@ -3,7 +3,8 @@ from pathlib import Path
 import threading
 import unittest
 
-from recovery_gui.onboarding import OnboardingError, PRIVATE_PROOF, ServiceController
+from recovery_gui.onboarding import (OnboardingError, PRIVATE_PROOF, ServiceController,
+                                     ONBOARDING_FRAME, PRIVATE_PROOF_FRAME)
 from recovery_gui.onboarding_infisical import InfisicalFailure
 from recovery_gui.service_plan import analyze_inputs
 
@@ -24,22 +25,27 @@ class FakeSSH:
         self.proof = True
         self.job = None
         self.started = False
+        self.agent_output = dict(uid=0, gid=1000, mode=0o640)
+        self.api_address = ''
 
     def run(self, args, **kwargs):
-        request = json.loads(kwargs['input'])
+        frame = PRIVATE_PROOF_FRAME if args[-1] == PRIVATE_PROOF else ONBOARDING_FRAME
+        request = json.loads(kwargs['input'].rpartition(frame)[2])
         self.calls.append((args, request))
         if args[-1] == PRIVATE_PROOF:
             return json.dumps({'status': 'PASS' if self.proof else 'REFUSED'}).encode()
         action = request['action']
         if action == 'inspect':
-            result = dict(schema=1, status='PREVIEW', fingerprint=self.preview)
+            result = dict(schema=1, status='PREVIEW', fingerprint=self.preview,
+                          agent_output=self.agent_output, api_address=self.api_address)
         else:
             self.job = request['job_id']
             if action == 'apply':
                 self.started = True
             result = dict(schema=1, status='SERVICE_READY' if action in ('apply', 'status') else 'COMPLETE',
                           job_id=self.job, application_verified=True, backup_integrity_verified=self.complete,
-                          public_commit=COMMIT, backup_tag=TAG)
+                          public_commit=COMMIT, backup_tag=TAG, agent_output=self.agent_output,
+                          api_address=self.api_address)
         return json.dumps(result).encode()
 
     def close(self):
@@ -74,7 +80,7 @@ class ControllerTests(unittest.TestCase):
         self.ssh, self.api = FakeSSH(), FakeAPI()
         self.events = []
         self.controller = ServiceController(lambda *_: False,
-            ssh_factory=lambda *_args, **_kw: self.ssh, api_factory=lambda *_args: self.api,
+            ssh_factory=lambda *_args, **_kw: self.ssh, api_factory=lambda *_args, **_kw: self.api,
             resource_dir=RESOURCE, sleeper=lambda _: None)
 
     def inspect(self):
@@ -108,6 +114,54 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(OnboardingError, '^SERVICE_INPUTS_CHANGED$'):
             self.apply(receipt)
         self.assertFalse(self.ssh.started)
+
+    def test_recovered_agent_output_metadata_passes_to_private_proof(self):
+        self.ssh.agent_output = dict(uid=1000, gid=1000, mode=0o600)
+        self.assertEqual(self.apply(self.inspect())['status'], 'PASS')
+        proofs = [request for args, request in self.ssh.calls if args[-1] == PRIVATE_PROOF]
+        self.assertTrue(proofs)
+        self.assertTrue(all(row['metadata'] == self.ssh.agent_output for row in proofs))
+
+    def test_agent_output_profile_change_refuses_before_api_write(self):
+        receipt = self.inspect()
+        self.ssh.agent_output = dict(uid=1000, gid=1000, mode=0o600)
+        with self.assertRaisesRegex(OnboardingError, '^ONBOARDING_AGENT_PROFILE_CHANGED$'):
+            self.apply(receipt)
+        self.assertNotIn('ensure', [row[0] for row in self.api.calls])
+
+    def test_agent_output_metadata_cannot_request_loose_permissions(self):
+        self.ssh.agent_output = dict(uid=1000, gid=1000, mode=0o644)
+        with self.assertRaisesRegex(OnboardingError, '^SERVICE_RESPONSE_INVALID$'):
+            self.inspect()
+        self.assertFalse(self.api.calls)
+
+    def test_agent_api_tunnel_change_refuses_before_writes(self):
+        receipt = self.inspect()
+        self.ssh.api_address = 'http://127.0.0.1:8080'
+        with self.assertRaisesRegex(OnboardingError, '^ONBOARDING_AGENT_PROFILE_CHANGED$'):
+            self.apply(receipt)
+        self.assertNotIn('ensure', [row[0] for row in self.api.calls])
+
+    def test_agent_api_cannot_redirect_desktop_to_another_host(self):
+        self.ssh.api_address = 'http://192.0.2.44:8080'
+        with self.assertRaisesRegex(OnboardingError, '^SERVICE_RESPONSE_INVALID$'):
+            self.inspect()
+        self.assertFalse(self.api.calls)
+
+    def test_local_lab_never_publishes_or_returns_full_success(self):
+        self.connection['verification_scope'] = 'local_lab'
+        result = self.apply(self.inspect())
+        self.assertEqual(result['status'], 'PASS_LOCAL')
+        self.assertEqual(result['checks'], dict(service=True, agent=True, github=False, backup=False))
+        self.assertNotIn('backup_tag', result)
+        self.assertFalse(any(row[1].get('action') == 'finalize' for row in self.ssh.calls))
+        self.assertEqual([row for row in self.events if row['stage'] == 'BACKUP'][-1]['status'], 'SKIPPED')
+
+    def test_unknown_scope_refused_before_ssh(self):
+        self.connection['verification_scope'] = 'pretend_success'
+        with self.assertRaisesRegex(OnboardingError, '^SERVICE_VERIFICATION_SCOPE_INVALID$'):
+            self.inspect()
+        self.assertFalse(self.ssh.calls)
 
     def test_remote_drift_refuses_before_api_writes(self):
         receipt = self.inspect()

@@ -18,6 +18,8 @@ from .backend import Failure, Host, SSH, resources
 from .onboarding_infisical import InfisicalClient, InfisicalFailure, validate_private_values
 from .service_plan import ServiceAnalysis
 
+ONBOARDING_FRAME = b'STREAMS_ONBOARDING_V1\n'
+PRIVATE_PROOF_FRAME = b'STREAMS_PRIVATE_PROOF_V1\n'
 
 # Independent, memory-only proof of the exact Agent output. The request carries
 # a fresh challenge and keyed digests, never plaintext secret values. Neither
@@ -25,14 +27,24 @@ from .service_plan import ServiceAnalysis
 PRIVATE_PROOF = r'''
 import hashlib, hmac, json, os, pathlib, re, stat, sys
 try:
-    request = json.loads(sys.stdin.buffer.read(131072))
+    raw_request = sys.stdin.buffer.read(131073)
+    prefix, marker, payload = raw_request.rpartition(b'STREAMS_PRIVATE_PROOF_V1\n')
+    assert len(raw_request) <= 131072 and marker
+    assert not prefix or (len(prefix) <= 16385 and prefix.endswith(b'\n') and prefix.count(b'\n') == 1)
+    request = json.loads(payload)
     path = pathlib.Path(request['path'])
     assert re.fullmatch(r'/home/[A-Za-z_][A-Za-z0-9_-]*/streams-aio/\.secrets/[a-z][a-z0-9_-]*\.env', str(path))
     assert not any(p.is_symlink() for p in (path, *path.parents))
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(fd)
-        assert stat.S_ISREG(info.st_mode) and info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o640
+        metadata = request['metadata']
+        assert set(metadata) == {'uid', 'gid', 'mode'}
+        assert all(type(metadata[key]) is int for key in metadata)
+        assert metadata['gid'] > 0 and metadata['uid'] >= 0
+        assert metadata['mode'] == (0o640 if metadata['uid'] == 0 else 0o600)
+        assert stat.S_ISREG(info.st_mode) and info.st_uid == metadata['uid']
+        assert info.st_gid == metadata['gid'] and stat.S_IMODE(info.st_mode) == metadata['mode']
         assert info.st_size < 1024 * 1024 and info.st_nlink == 1
         raw = os.read(fd, 1024 * 1024).decode('utf-8')
     finally:
@@ -72,6 +84,8 @@ class InspectionReceipt:
     job_id: str
     binding: bytes = field(repr=False)
     resume: bool = False
+    agent_output: tuple = ()
+    api_address: str = ''
 
     def __repr__(self):
         return '<InspectionReceipt values=redacted>'
@@ -102,6 +116,8 @@ class ServiceController:
         need(isinstance(root, str) and re.fullmatch(r'/home/[A-Za-z_][A-Za-z0-9_-]*/streams-aio', root),
              'SERVICE_STACK_ROOT_REQUIRED')
         need(root.split('/')[2] == connection.get('user'), 'SERVICE_STACK_OWNER_MISMATCH')
+        need(connection.get('verification_scope', 'full') in ('full', 'local_lab'),
+             'SERVICE_VERIFICATION_SCOPE_INVALID')
         # Bind all submitted inputs, including secrets, with an ephemeral HMAC.
         # This is never exported; public plans have no private-value fingerprints.
         try:
@@ -112,7 +128,8 @@ class ServiceController:
         signature = hmac.digest(self.__binding_key, raw, 'sha256')
         key = hashlib.sha256(json.dumps([connection.get('host'), connection.get('port'),
             connection.get('user'), root, analysis.plan.fingerprint,
-            infisical.get('project_id'), infisical.get('environment')], sort_keys=True).encode()).hexdigest()
+            infisical.get('project_id'), infisical.get('environment'),
+            connection.get('verification_scope', 'full')], sort_keys=True).encode()).hexdigest()
         return values, signature, key
 
     def _connect(self, connection):
@@ -128,9 +145,20 @@ class ServiceController:
         except Exception:
             raise OnboardingError('SSH_CONNECTION_FAILED') from None
 
-    def _api(self, infisical):
+    def _api(self, infisical, ssh=None, receipt=None):
+        if receipt and receipt.api_address:
+            from .onboarding_ssh_api import SSHInfisicalOpener, SSH_ORIGIN
+            return self._api_factory(SSH_ORIGIN, infisical.get('project_id', ''),
+                infisical.get('environment', ''), infisical.get('access_token', ''),
+                opener=SSHInfisicalOpener(ssh, receipt.api_address))
         return self._api_factory(infisical.get('endpoint', ''), infisical.get('project_id', ''),
                                  infisical.get('environment', ''), infisical.get('access_token', ''))
+
+    def prepare_lab(self, snapshot, progress_callback=None):
+        from .lab_prepare import prepare_lab
+        return prepare_lab(snapshot, confirm_key=self.confirm_key,
+            confirm_changed_key=self.confirm_changed_key, cancelled=self.cancelled,
+            progress_callback=progress_callback, ssh_factory=self._ssh_factory)
 
     @staticmethod
     def _progress(callback, stage, status):
@@ -140,22 +168,46 @@ class ServiceController:
     def _request(self, action, analysis, connection, infisical, receipt=None):
         request = dict(action=action, root=connection['stack_root'], plan=analysis.plan.deployment_payload(),
                        project_id=infisical.get('project_id', ''), environment=infisical.get('environment', ''),
-                       probe_url=connection.get('probe_url', ''))
+                       probe_url=connection.get('probe_url', ''),
+                       verification_scope=connection.get('verification_scope', 'full'))
         if receipt:
             request.update(fingerprint=receipt.fingerprint, job_id=receipt.job_id)
         return request
 
-    def _verify_private(self, ssh, analysis, connection, values):
+    @staticmethod
+    def _agent_output(result, private_required):
+        if not private_required:
+            return ()
+        metadata = result.get('agent_output')
+        need(isinstance(metadata, dict) and set(metadata) == {'uid', 'gid', 'mode'}
+             and all(type(value) is int for value in metadata.values())
+             and 0 <= metadata['uid'] < 2 ** 32 and 0 < metadata['gid'] < 2 ** 32
+             and metadata['mode'] == (0o640 if metadata['uid'] == 0 else 0o600),
+             'SERVICE_RESPONSE_INVALID')
+        return metadata['uid'], metadata['gid'], metadata['mode']
+
+    @staticmethod
+    def _agent_api(result):
+        address = result.get('api_address', '')
+        need(isinstance(address, str), 'SERVICE_RESPONSE_INVALID')
+        if address:
+            need(re.fullmatch(r'http://127\.0\.0\.1:[0-9]{1,5}', address) is not None,
+                 'SERVICE_RESPONSE_INVALID')
+            need(1 <= int(address.rsplit(':', 1)[1]) <= 65535, 'SERVICE_RESPONSE_INVALID')
+        return address
+
+    def _verify_private(self, ssh, analysis, connection, values, agent_output):
         if not values:
             return
         challenge = secrets.token_bytes(32)
         request = dict(path=connection['stack_root'] + '/' + analysis.plan.private_env_path,
+                       metadata=dict(zip(('uid', 'gid', 'mode'), agent_output)),
                        challenge=challenge.hex(), expected={name: hmac.digest(challenge,
                            (name + '\0' + value).encode('utf-8'), 'sha256').hex()
                            for name, value in values.items()})
         try:
             result = json.loads(ssh.run(['python3', '-B', '-c', PRIVATE_PROOF], sudo=True,
-                                        input=json.dumps(request).encode() + b'\n', timeout=30))
+                                        input=PRIVATE_PROOF_FRAME + json.dumps(request).encode() + b'\n', timeout=30))
             need(result == {'status': 'PASS'}, 'ONBOARDING_AGENT_VALUE_READBACK_FAILED')
         except (OnboardingError, Failure):
             raise
@@ -168,7 +220,8 @@ class ServiceController:
         try:
             source = (folder / 'service_onboarding.py').read_text(encoding='utf-8')
             raw = ssh.run(['python3', '-B', '-c', source], sudo=True,
-                          input=json.dumps(request, ensure_ascii=False).encode('utf-8') + b'\n', timeout=1200)
+                          input=ONBOARDING_FRAME + json.dumps(request, ensure_ascii=False).encode('utf-8') + b'\n',
+                          timeout=1200)
             need(len(raw) <= 256 * 1024, 'SERVICE_RESPONSE_INVALID')
             result = json.loads(raw)
             need(isinstance(result, dict) and result.get('schema') == 1,
@@ -197,7 +250,12 @@ class ServiceController:
                 state = self._remote(ssh, self._request('status', analysis, connection, infisical, previous))
                 need(state.get('job_id') == previous.job_id, 'SERVICE_RESPONSE_INVALID')
                 if state['status'] in ('SERVICE_READY', 'PUBLIC_PUBLISHED', 'BACKUP_RUNNING', 'COMPLETE'):
-                    receipt = InspectionReceipt(previous.fingerprint, previous.job_id, binding, resume=True)
+                    output = self._agent_output(state, bool(values))
+                    address = self._agent_api(state)
+                    need(output == previous.agent_output and address == previous.api_address,
+                         'ONBOARDING_AGENT_PROFILE_CHANGED')
+                    receipt = InspectionReceipt(previous.fingerprint, previous.job_id, binding,
+                                                resume=True, agent_output=output, api_address=address)
                 elif state['status'] == 'ROLLED_BACK':
                     self.__jobs.pop(key, None)
                     previous = None
@@ -208,11 +266,12 @@ class ServiceController:
                 fingerprint = result.get('fingerprint')
                 need(result['status'] == 'PREVIEW' and isinstance(fingerprint, str)
                      and re.fullmatch(r'[0-9a-f]{64}', fingerprint), 'SERVICE_RESPONSE_INVALID')
-                receipt = InspectionReceipt(fingerprint, uuid.uuid4().hex, binding)
+                receipt = InspectionReceipt(fingerprint, uuid.uuid4().hex, binding,
+                    agent_output=self._agent_output(result, bool(values)), api_address=self._agent_api(result))
             self._progress(progress_callback, 'HOST', 'PASS')
             if values:
                 self._progress(progress_callback, 'INFISICAL', 'RUNNING')
-                self._api(infisical).inspect(analysis.plan.service_name, values)
+                self._api(infisical, ssh, receipt).inspect(analysis.plan.service_name, values)
                 self._progress(progress_callback, 'INFISICAL', 'PASS')
             return receipt
         finally:
@@ -227,9 +286,12 @@ class ServiceController:
             if not receipt.resume:
                 fresh = self._remote(ssh, self._request('inspect', analysis, connection, infisical))
                 need(fresh.get('fingerprint') == receipt.fingerprint, 'ONBOARDING_PREVIEW_STALE')
+                need(self._agent_output(fresh, bool(values)) == receipt.agent_output
+                     and self._agent_api(fresh) == receipt.api_address,
+                     'ONBOARDING_AGENT_PROFILE_CHANGED')
             if values:
                 self._progress(progress_callback, 'INFISICAL', 'RUNNING')
-                self._api(infisical).ensure(analysis.plan.service_name, values)
+                self._api(infisical, ssh, receipt).ensure(analysis.plan.service_name, values)
                 self._progress(progress_callback, 'INFISICAL', 'PASS')
             self._check_cancel()
             self.__jobs[key] = receipt
@@ -239,9 +301,14 @@ class ServiceController:
                  and result['status'] in ('SERVICE_READY', 'PUBLIC_PUBLISHED', 'BACKUP_RUNNING', 'COMPLETE'),
                  'SERVICE_OPERATION_INCOMPLETE')
             need(result.get('application_verified') is True, 'SERVICE_OPERATION_INCOMPLETE')
-            self._verify_private(ssh, analysis, connection, values)
+            self._verify_private(ssh, analysis, connection, values, receipt.agent_output)
             for stage in ('FILES', 'AGENT', 'SERVICE'):
                 self._progress(progress_callback, stage, 'PASS')
+            if connection.get('verification_scope') == 'local_lab':
+                self._progress(progress_callback, 'GITHUB', 'SKIPPED')
+                self._progress(progress_callback, 'BACKUP', 'SKIPPED')
+                return dict(status='PASS_LOCAL', checks=dict(service=True, agent=True, github=False, backup=False),
+                            job_id=receipt.job_id)
             self._progress(progress_callback, 'GITHUB', 'RUNNING')
             deadline = self._clock() + self._backup_timeout
             if result['status'] == 'COMPLETE':
@@ -268,7 +335,7 @@ class ServiceController:
                  and isinstance(result.get('backup_tag'), str)
                  and re.fullmatch(r'dr-[0-9]{8}T[0-9]{6}Z', result['backup_tag']),
                  'SERVICE_OPERATION_INCOMPLETE')
-            self._verify_private(ssh, analysis, connection, values)
+            self._verify_private(ssh, analysis, connection, values, receipt.agent_output)
             self._progress(progress_callback, 'BACKUP', 'PASS')
             return dict(status='PASS', checks=dict(service=True, agent=True, github=True, backup=True),
                         public_commit=result['public_commit'], backup_tag=result['backup_tag'])

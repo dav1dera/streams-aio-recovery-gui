@@ -2,10 +2,12 @@
 
 **Guida in italiano per organizzare lo stack, conservarne i backup e recuperarlo su due VM.**
 
-**Sviluppo 0.5.0-dev:** è presente una nuova scheda **Aggiungi servizio**, con analisi offline,
+**Sviluppo 0.5.0-dev.2:** è presente una nuova scheda **Aggiungi servizio**, con analisi offline,
 separazione pubblico/privato e procedura per Agent, avvio, pubblicazione e backup verificato.
 È un’anteprima in collaudo, separata dalla versione stabile 0.4.19. Non è stata ancora
 provata sulle VM reali e non supporta l’aggiunta di nuovi volumi o database persistenti.
+Il riquadro di laboratorio prepara due VM vuote senza avviare lo stack completo;
+il collaudo locale esclude esplicitamente pubblicazione GitHub e backup.
 Leggi [uso e limiti dell’anteprima](docs/AGGIUNGI-SERVIZIO.md) prima di applicare modifiche.
 
 **Versione 0.4.19** · [Scarica programma e checksum](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.19) · [Setup iniziale](docs/SETUP-DA-ZERO.md) · [Uso della GUI](docs/USAGE.md) · [Note della versione](docs/RELEASE-NOTES-v0.4.19.md)

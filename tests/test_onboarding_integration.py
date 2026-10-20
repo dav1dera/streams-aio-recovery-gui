@@ -23,7 +23,8 @@ from unittest.mock import patch
 
 import yaml
 
-from recovery_gui.onboarding import OnboardingError, PRIVATE_PROOF, ServiceController
+from recovery_gui.onboarding import (ONBOARDING_FRAME, PRIVATE_PROOF_FRAME, OnboardingError,
+                                     PRIVATE_PROOF, ServiceController)
 from recovery_gui.service_plan import analyze_inputs
 
 
@@ -41,27 +42,29 @@ ROOT = PurePosixPath('/home/pi/streams-aio')
 PRIVATE_PATH = ROOT / '.secrets/demo.env'
 
 
-def execute_private_proof(request, raw, *, metadata=None, symlink=False):
+def execute_private_proof(request, raw, *, metadata=None, symlink=False, unused_sudo=b''):
     """Run the real shipped program with no possibility of opening a real path."""
     class ProofPath(PurePosixPath):
         def is_symlink(self):
             return symlink
 
-    info = dict(st_mode=stat.S_IFREG | 0o640, st_uid=0, st_size=len(raw), st_nlink=1)
+    info = dict(st_mode=stat.S_IFREG | 0o640, st_uid=0, st_gid=1000, st_size=len(raw), st_nlink=1)
     info.update(metadata or {})
     output = io.StringIO()
     with patch('pathlib.Path', ProofPath), patch('os.open', return_value=47) as opened, \
             patch('os.fstat', return_value=SimpleNamespace(**info)), patch('os.read', return_value=raw), \
             patch('os.O_NOFOLLOW', 0x20000, create=True), patch('os.O_NONBLOCK', 0x800, create=True), \
-            patch('os.close'), patch('sys.stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode()))), \
+            patch('os.close'), patch('sys.stdin', SimpleNamespace(buffer=io.BytesIO(
+                unused_sudo + PRIVATE_PROOF_FRAME + json.dumps(request).encode()))), \
             redirect_stdout(output):
         exec(compile(PRIVATE_PROOF, '<synthetic-private-proof>', 'exec'), {})
     return json.loads(output.getvalue()), opened.call_count
 
 
-def proof_request(values, *, path=str(PRIVATE_PATH)):
+def proof_request(values, *, path=str(PRIVATE_PATH), metadata=None):
     challenge = bytes(range(32))
-    return dict(path=path, challenge=challenge.hex(), expected={name: hmac.digest(
+    return dict(path=path, metadata=metadata or dict(uid=0, gid=1000, mode=0o640),
+                challenge=challenge.hex(), expected={name: hmac.digest(
         challenge, (name + '\0' + value).encode(), 'sha256').hex() for name, value in values.items()})
 
 
@@ -72,6 +75,18 @@ class PrivateProofIntegrationTests(unittest.TestCase):
         self.assertEqual(result, {'status': 'PASS'})
         self.assertEqual(opened, 1)
         self.assertNotIn(SECRET, json.dumps(result))
+
+    def test_actual_proof_accepts_one_unused_sudo_line_but_not_malformed_framing(self):
+        raw = ("API_KEY='" + SECRET + "'\n").encode()
+        request = proof_request({'API_KEY': SECRET})
+        self.assertEqual(execute_private_proof(request, raw, unused_sudo=b'cached-sudo-password\n')[0],
+                         {'status': 'PASS'})
+        for prefix in (b'no-newline', b'two\nlines\n', b'x' * 16385 + b'\n'):
+            with self.subTest(prefix_length=len(prefix)):
+                result, opened = execute_private_proof(request, raw, unused_sudo=prefix)
+                self.assertEqual(result, {'status': 'REFUSED'})
+                self.assertEqual(opened, 0)
+                self.assertNotIn('cached-sudo-password', json.dumps(result))
 
     def test_wrong_value_or_swapped_key_mac_never_discloses_material(self):
         request = proof_request({'API_KEY': SECRET})
@@ -87,7 +102,7 @@ class PrivateProofIntegrationTests(unittest.TestCase):
 
     def test_path_and_metadata_refuse_without_reading_real_files(self):
         raw = ("API_KEY='" + SECRET + "'\n").encode()
-        for metadata in ({'st_uid': 1000}, {'st_mode': stat.S_IFREG | 0o644},
+        for metadata in ({'st_uid': 1000}, {'st_gid': 1001}, {'st_mode': stat.S_IFREG | 0o644},
                          {'st_nlink': 2}, {'st_mode': stat.S_IFDIR | 0o640}, {'st_size': 1024 * 1024}):
             with self.subTest(metadata=metadata):
                 result, _ = execute_private_proof(proof_request({'API_KEY': SECRET}), raw, metadata=metadata)
@@ -95,6 +110,17 @@ class PrivateProofIntegrationTests(unittest.TestCase):
         result, opened = execute_private_proof(proof_request({'API_KEY': SECRET}), raw, symlink=True)
         self.assertEqual(result, {'status': 'REFUSED'})
         self.assertEqual(opened, 0)
+
+    def test_recovered_user_owned_agent_output_requires_its_exact_group_and_private_mode(self):
+        raw = ("API_KEY='" + SECRET + "'\n").encode()
+        expected = dict(uid=1000, gid=1000, mode=0o600)
+        request = proof_request({'API_KEY': SECRET}, metadata=expected)
+        info = dict(st_uid=1000, st_gid=1000, st_mode=stat.S_IFREG | 0o600)
+        self.assertEqual(execute_private_proof(request, raw, metadata=info)[0], {'status': 'PASS'})
+        for changed in (dict(st_gid=1001), dict(st_uid=0), dict(st_mode=stat.S_IFREG | 0o640)):
+            with self.subTest(changed=changed):
+                self.assertEqual(execute_private_proof(request, raw, metadata=dict(info, **changed))[0],
+                                 {'status': 'REFUSED'})
         result, opened = execute_private_proof(proof_request({'API_KEY': SECRET}, path='/etc/shadow'), raw)
         self.assertEqual(result, {'status': 'REFUSED'})
         self.assertEqual(opened, 0)
@@ -149,26 +175,33 @@ class MemoryStore:
 
 
 class MemoryRunner:
-    def __init__(self, layout, store):
+    def __init__(self, layout, store, recovered=False):
         self.layout, self.store = layout, store
         self.values, self.calls, self.public_files = {}, [], {}
         self.release, self.assets = None, {}
         self.running, self.agent_mismatch, self.mutate_public_command = False, False, False
         self.explicit_mapping, self.missing_agent_target = False, False
+        self.recovered = recovered
+        self.agent_config = (layout.home / '.local/share/streams-aio-recovery/native-agent/agent-config.json'
+                             if recovered else layout.agent)
 
     def props(self, unit):
         if unit == REMOTE.AGENT_UNIT:
-            return dict(ActiveState='active', User='root', Group='pi', UMask='0027',
-                        KillMode='control-group', ExecStart='/usr/bin/infisical agent --config=' + str(self.layout.agent))
-        return dict(ActiveState='inactive', Result='success', ExecMainStatus='0',
+            return dict(LoadState='loaded', ActiveState='active', User='pi' if self.recovered else 'root',
+                        Group='pi', UMask='0077' if self.recovered else '0027',
+                        KillMode='control-group', ExecStart='/usr/bin/infisical agent --config=' + str(self.agent_config))
+        return dict(LoadState='loaded', ActiveState='inactive', Result='success', ExecMainStatus='0',
                     InvocationID='new-backup' if self.release else 'old-backup', User='pi',
                     ExecStart='/home/pi/streams-aio-dr/scripts/update-dr.sh')
 
     def run(self, args, code, timeout=120, user=False):
         args = [str(value) for value in args]
         self.calls.append(args)
+        if args[:2] == ['test', '-x']:
+            assert self.store.exists(args[2])
+            return b''
         if args[:3] == ['systemctl', 'restart', REMOTE.AGENT_UNIT]:
-            document = yaml.safe_load(self.store.read(self.layout.agent))
+            document = yaml.safe_load(self.store.read(self.agent_config))
             for row in document['templates']:
                 if row['destination-path'] != str(PRIVATE_PATH):
                     continue
@@ -177,7 +210,8 @@ class MemoryRunner:
                     key = line.split('=', 1)[0]
                     value = self.values[key] + ('-wrong' if self.agent_mismatch else '')
                     lines.append(key + "='" + value + "'\n")
-                self.store.seed(PRIVATE_PATH, ''.join(lines).encode(), 0, 1000, 0o640)
+                self.store.seed(PRIVATE_PATH, ''.join(lines).encode(),
+                                1000 if self.recovered else 0, 1000, 0o600 if self.recovered else 0o640)
             return b''
         if args[:2] == ['docker', 'compose']:
             command = args[args.index('-f') + 2:]
@@ -282,25 +316,41 @@ class MemoryEngine(REMOTE.Engine):
 
 
 class MemoryHost:
-    def __init__(self):
+    def __init__(self, recovered=False):
         self.layout = REMOTE.Layout(ROOT, ROOT.parent, 'pi', 1000, 1000)
         self.store = MemoryStore()
-        self.runner = MemoryRunner(self.layout, self.store)
+        self.runner = MemoryRunner(self.layout, self.store, recovered)
         self.engine = MemoryEngine(self.layout, self.runner, self.store)
         for path, owner in ((ROOT, (1000, 1000, 0o750)), (ROOT / 'data', (1000, 1000, 0o750)),
-                            (ROOT / '.secrets', (0, 1000, 0o750))):
+                            (ROOT / '.secrets', (1000, 1000, 0o700) if recovered else (0, 1000, 0o750))):
             self.store.directories[str(path)] = owner
         self.original_compose = b'# keep original\nservices:\n  existing:\n    image: example/existing:latest\n\nnetworks:\n  default: {}\n'
         self.store.seed(ROOT / 'docker-compose.yml', self.original_compose)
         self.store.seed('/etc/machine-id', b'synthetic-machine-id\n', 0, 0, 0o444)
-        self.store.seed(self.layout.agent, b'# keep Agent\ntemplates:\n- template-content: ordinary\n  destination-path: /home/pi/streams-aio/.secrets/existing.env\n', 0, 1000, 0o640)
+        agent_content = dict(infisical={'address': 'http://127.0.0.1:18180'},
+                            templates=[{'template-content': 'ordinary',
+                            'destination-path': '/home/pi/streams-aio/.secrets/existing.env'}])
+        raw = (json.dumps(agent_content).encode() if recovered else
+               b'# keep Agent\n' + yaml.safe_dump(agent_content).encode())
+        self.store.seed(self.runner.agent_config, raw, 1000 if recovered else 0, 1000, 0o600 if recovered else 0o640)
+        for path, mode in ((ROOT.parent / '.local/share/streams-aio-public-sync/tooling/scripts/sync-public-stack.py', 0o644),
+                           (ROOT.parent / '.local/share/streams-aio-public-sync/venv/bin/python', 0o755),
+                           (ROOT.parent / 'streams-aio-dr/scripts/update-dr.sh', 0o750),
+                           (ROOT.parent / '.local/state/streams-aio-public-sync/run.lock', 0o600),
+                           (ROOT.parent / '.local/state/streams-aio-dr/run.lock', 0o600)):
+            self.store.seed(path, b'synthetic-worker-fixture\n', 1000, 1000, mode)
         self.wire, self.closed = [], 0
 
     def run(self, args, **kwargs):
-        request = json.loads(kwargs['input'])
+        frame = PRIVATE_PROOF_FRAME if args[-1] == PRIVATE_PROOF else ONBOARDING_FRAME
+        prefix, marker, payload = kwargs['input'].rpartition(frame)
+        assert marker and not prefix
+        request = json.loads(payload)
         self.wire.append(request)
         if args[-1] == PRIVATE_PROOF:
-            result, _ = execute_private_proof(request, self.store.read(PRIVATE_PATH))
+            item = self.store.snapshot(PRIVATE_PATH)
+            result, _ = execute_private_proof(request, item.raw, metadata=dict(
+                st_uid=item.uid, st_gid=item.gid, st_mode=stat.S_IFREG | item.mode))
         else:
             with patch.object(REMOTE, 'Engine', return_value=self.engine):
                 result = REMOTE.handle(request, runner=self.runner, store=self.store, layout=self.layout)
@@ -330,7 +380,7 @@ class OnboardingEndToEndTests(unittest.TestCase):
         self.api = MemoryInfisical(self.host)
         self.controller = ServiceController(lambda *_: False,
             ssh_factory=lambda *_args, **_kwargs: self.host,
-            api_factory=lambda *_args: self.api, resource_dir=RESOURCE, sleeper=lambda _: None)
+            api_factory=lambda *_args, **_kwargs: self.api, resource_dir=RESOURCE, sleeper=lambda _: None)
         self.connection = dict(host='192.0.2.10', user='pi', port=22, password='synthetic-ssh-password',
                                stack_root=str(ROOT), ssh_key='', key_password='', sudo_password='')
         self.infisical = dict(endpoint='https://infisical.example.test', project_id=PROJECT,
@@ -409,6 +459,46 @@ class OnboardingEndToEndTests(unittest.TestCase):
         receipt = self.controller.inspect(analysis, self.connection, self.infisical)
         result = self.controller.apply(analysis, self.connection, self.infisical, receipt)
         self.assertEqual(result['status'], 'PASS')
+
+    def test_fresh_gui_recovered_agent_json_profile_completes_same_private_contract(self):
+        self.host = MemoryHost(recovered=True)
+        self.api = MemoryInfisical(self.host)
+        analysis = self.analysis(True)
+        receipt = self.controller.inspect(analysis, self.connection, self.infisical)
+        self.assertEqual(receipt.agent_output, (1000, 1000, 0o600))
+        result = self.controller.apply(analysis, self.connection, self.infisical, receipt)
+        self.assertEqual(result['status'], 'PASS')
+        self.assertEqual(self.host.store.snapshot(PRIVATE_PATH).mode, 0o600)
+
+    def test_guarded_local_lab_uses_agent_without_worker_or_publication_claims(self):
+        self.host = MemoryHost(recovered=True)
+        self.api = MemoryInfisical(self.host)
+        self.host.store.seed('/etc/machine-id', b'1' * 32 + b'\n', 0, 0, 0o444)
+        self.host.store.directory(self.host.layout.state, 0, 0, 0o700, create=True)
+        marker = dict(schema=1, kind='prepared_onboarding_lab', root=str(ROOT), owner='pi',
+                      machine_id='1' * 32, publications_disabled=True)
+        self.host.store.seed(self.host.layout.state / 'lab.json', json.dumps(marker).encode(), 0, 0, 0o600)
+        for path in tuple(self.host.store.files):
+            if ('/streams-aio-public-sync/' in path or '/streams-aio-dr/' in path):
+                del self.host.store.files[path]
+        self.connection['verification_scope'] = 'local_lab'
+        analysis = self.analysis(True)
+        events = []
+        receipt = self.controller.inspect(analysis, self.connection, self.infisical, events.append)
+        result = self.controller.apply(analysis, self.connection, self.infisical, receipt, events.append)
+        self.assertEqual(result['status'], 'PASS_LOCAL')
+        self.assertEqual(result['checks'], dict(service=True, agent=True, github=False, backup=False))
+        self.assertFalse(self.host.runner.public_files)
+        self.assertIsNone(self.host.runner.release)
+        self.assertFalse(any(row.get('action') == 'finalize' for row in self.host.wire))
+        self.assertIn(dict(stage='GITHUB', status='SKIPPED'), events)
+        self.assertIn(dict(stage='BACKUP', status='SKIPPED'), events)
+        request = self.controller._request('finalize', analysis, self.connection, self.infisical, receipt)
+        denied = REMOTE.handle(request, runner=self.host.runner, store=self.host.store, layout=self.host.layout)
+        self.assertEqual(denied['code'], 'ONBOARDING_LAB_PUBLICATION_REFUSED')
+        self.connection['verification_scope'] = 'full'
+        with self.assertRaisesRegex(OnboardingError, '^ONBOARDING_LAB_PUBLICATION_REFUSED$'):
+            self.controller.inspect(analysis, self.connection, self.infisical)
 
 
 if __name__ == '__main__':

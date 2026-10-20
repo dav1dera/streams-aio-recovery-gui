@@ -32,6 +32,13 @@ STAGE_ALIASES = {
     'INSPECT': 'HOST', 'PREFLIGHT': 'HOST', 'CONFIGURATION': 'FILES',
     'PUBLIC_SYNC': 'GITHUB', 'DR': 'BACKUP', 'HEALTH': 'SERVICE',
     'START': 'SERVICE', 'STARTED': 'SERVICE', 'NATIVE_AGENT': 'AGENT',
+    'DEPENDENCIES': 'HOST',
+    'INFISICAL_CONFIG': 'INFISICAL', 'INFISICAL_DATABASE': 'INFISICAL',
+    'INFISICAL_SERVER': 'INFISICAL', 'INFISICAL_TRANSFER': 'INFISICAL',
+    'STACK_TRANSFER': 'FILES', 'CLONES': 'FILES', 'DOWNLOAD': 'FILES',
+    'DECRYPT': 'FILES', 'INITIALIZE': 'FILES', 'INPUTS': 'FILES',
+    'RENDER': 'FILES', 'EMPTY_STATE': 'FILES', 'RUNTIME_PROFILE': 'FILES',
+    'NPM': 'FILES', 'AIO': 'FILES', 'NPM_TOPOLOGY': 'FILES', 'PREPARED': 'FILES',
 }
 STATUS_LABELS = {
     'RUNNING': 'In corso', 'START': 'In corso', 'PASS': 'Verificato',
@@ -47,7 +54,8 @@ ERROR_TEXT = {
     'SERVICE_INPUTS_CHANGED': 'I dati sono cambiati: prepara e verifica di nuovo il piano.',
     'SERVICE_OPERATION_INCOMPLETE': 'Il servizio non ha ancora superato tutti i controlli. Consulta il passaggio indicato.',
     'SERVICE_OPERATION_STOPPED': 'Operazione fermata. Verifica lo stato registrato prima di riprendere.',
-    'SERVICE_INFISICAL_ADDRESS_REQUIRED': 'Inserisci l’indirizzo HTTPS di Infisical, senza credenziali nel collegamento.',
+    'SERVICE_LAB_PREPARATION_INCOMPLETE': 'La preparazione delle VM di collaudo non è stata verificata. Controlla l’esito prima di aggiungere un servizio.',
+    'SERVICE_INFISICAL_ADDRESS_REQUIRED': 'Per l’accesso alternativo inserisci un indirizzo HTTPS diretto di Infisical, senza credenziali nel collegamento. Il tunnel Agent viene preferito quando disponibile.',
     'SERVICE_INFISICAL_ACCESS_REQUIRED': 'Per creare i segreti servono progetto, ambiente e un token Infisical con permessi di scrittura.',
     'SERVICE_STACK_ROOT_REQUIRED': 'Questa anteprima richiede lo stack in /home/utente-SSH/streams-aio, per esempio /home/pi/streams-aio.',
     'SERVICE_STACK_OWNER_MISMATCH': 'La cartella dello stack deve appartenere allo stesso utente usato per il collegamento SSH.',
@@ -63,6 +71,8 @@ ERROR_TEXT = {
     'INFISICAL_API_VERSION_UNSUPPORTED': 'Le API richieste non sono disponibili a questo indirizzo Infisical. Verifica indirizzo e versione del server.',
     'INFISICAL_RATE_LIMITED': 'Infisical ha temporaneamente limitato le richieste. Attendi e verifica di nuovo la VM.',
     'INFISICAL_READBACK_FAILED': 'Non è stato possibile rileggere tutti i segreti creati. Lo stato resta conservato: verifica di nuovo prima di riprovare.',
+    'INFISICAL_SSH_TARGET_INVALID': 'Il tunnel Agent non espone una destinazione locale valida. Controlla il collegamento di Infisical sulla VM stack.',
+    'INFISICAL_SSH_REQUEST_REFUSED': 'Il controllo ha rifiutato una richiesta fuori dal percorso previsto per Infisical. Nessuna destinazione alternativa viene usata.',
     'SERVICE_PROBE_URL_INVALID': 'Il controllo HTTP deve usare http://127.0.0.1:porta/percorso, senza credenziali o parametri.',
     'SSH_ADDRESS_REQUIRED': 'Completa l’accesso della VM stack in Accessi e backup.',
     'SERVICE_TOOL_FAILED': 'Il controllo non è stato completato. Nessuna credenziale viene inserita negli esiti.',
@@ -111,7 +121,17 @@ def verified_completion(result):
             and TAG.fullmatch(result['backup_tag']) is not None)
 
 
-def connection_from_snapshot(snapshot, stack_root, *, probe_url=''):
+def verified_local_completion(result):
+    """A local trial proves service/Agent only, never publication or backup."""
+    if not isinstance(result, dict) or result.get('status') != 'PASS_LOCAL':
+        return False
+    checks = result.get('checks')
+    return (isinstance(checks, dict) and checks.get('service') is True and checks.get('agent') is True
+            and checks.get('github') is False and checks.get('backup') is False
+            and result.get('public_commit') in (None, '') and result.get('backup_tag') in (None, ''))
+
+
+def connection_from_snapshot(snapshot, stack_root, *, probe_url='', verification_scope='full'):
     """No backup, recovery identity or unrelated VM credentials enter this job."""
     if not isinstance(snapshot, dict):
         raise InputFailure('SSH_ADDRESS_REQUIRED')
@@ -151,13 +171,16 @@ def connection_from_snapshot(snapshot, stack_root, *, probe_url=''):
         if not valid:
             raise InputFailure('SERVICE_PROBE_URL_INVALID')
     result['probe_url'] = probe_url
+    if verification_scope not in ('full', 'local_lab'):
+        raise InputFailure('SERVICE_INPUTS_CHANGED')
+    result['verification_scope'] = verification_scope
     return result
 
 
 def infisical_from_fields(endpoint, project_id, environment, access_token, *, private_required):
     """Fields are captured on the UI thread; the token is never in a report."""
     endpoint, project_id, environment = endpoint.strip(), project_id.strip(), environment.strip()
-    if private_required or endpoint:
+    if endpoint:
         try:
             parts = urlsplit(endpoint)
             valid = (parts.scheme == 'https' and bool(parts.hostname) and parts.username is None
@@ -217,6 +240,8 @@ class ServiceOnboardingPanel(ttk.Frame):
         self.service_name = tk.StringVar(self)
         self.stack_root = tk.StringVar(self)
         self.probe_url = tk.StringVar(self)
+        self.local_lab = tk.BooleanVar(self, False)
+        self.lab_hint = tk.StringVar(self, 'Usa solo due VM vuote dedicate al collaudo; configura i loro accessi e il backup in Accessi e backup.')
         self.endpoint = tk.StringVar(self, self._app_value('infisical_address'))
         self.project_id = tk.StringVar(self, self._app_value('project_id'))
         self.environment = tk.StringVar(self, self._app_value('environment') or 'prod')
@@ -237,6 +262,7 @@ class ServiceOnboardingPanel(ttk.Frame):
             if variable is not None:
                 self._trace(variable, lambda *_: self._connection_changed())
         self._trace(self.reviewed, lambda *_: self._refresh_buttons())
+        self._trace(self.local_lab, lambda *_: self._connection_changed())
         self.bind('<Destroy>', self._destroyed, add='+')
         self._refresh_connection_hint()
         self._refresh_buttons()
@@ -291,6 +317,13 @@ class ServiceOnboardingPanel(ttk.Frame):
         return text
 
     def _build(self):
+        lab = self._card('Collaudo su due VM vuote', 'Solo VM di prova: non usare le VM operative. La preparazione recupera file e Agent senza avviare lo stack completo.')
+        ttk.Label(lab, textvariable=self.lab_hint, style='CardHint.TLabel', wraplength=820).pack(anchor='w', pady=(0, 9))
+        self.lab_button = self._control(ttk.Button(lab, text='Prepara le VM di collaudo', command=self.prepare_lab))
+        self.lab_button.pack(anchor='w', pady=(0, 9))
+        self.lab_check = self._control(ttk.Checkbutton(lab,
+            text='Solo collaudo locale: non pubblicare su GitHub né creare backup', variable=self.local_lab))
+        self.lab_check.pack(anchor='w')
         connection = self._card('1. Destinazione', 'Si usa l’accesso SSH della sola VM stack configurato in Accessi e backup.')
         ttk.Label(connection, textvariable=self.connection_hint, style='CardHint.TLabel').pack(anchor='w', pady=(0, 8))
         grid = ttk.Frame(connection)
@@ -337,15 +370,15 @@ class ServiceOnboardingPanel(ttk.Frame):
         self.plan_button = self._control(ttk.Button(classification, text='Prepara piano', command=self.prepare_plan))
         self.plan_button.pack(anchor='w', pady=(10, 0))
 
-        infisical = self._card('4. Infisical', 'Serve un token con permessi di scrittura nel progetto. Token e valori privati restano soltanto in questa sessione.')
+        infisical = self._card('4. Infisical', 'Si preferisce il tunnel Agent rilevato sulla VM: non serve raggiungere il dominio di produzione. Lascia vuoto l’indirizzo HTTPS se usi il tunnel. Progetto, ambiente e token con permessi di scrittura servono per creare i segreti; restano in memoria.')
         grid = ttk.Frame(infisical)
         grid.pack(fill='x')
-        self._entry(grid, 'Indirizzo HTTPS Infisical', self.endpoint, column=0)
+        self._entry(grid, 'HTTPS alternativo (facoltativo)', self.endpoint, column=0)
         self._entry(grid, 'ID del progetto', self.project_id, column=1)
         self._entry(grid, 'Ambiente', self.environment, row=1, column=0)
         self._entry(grid, 'Token di accesso Infisical', self.access_token, secret=True, row=1, column=1)
 
-        review = self._card('5. Verifica e aggiungi', 'Prima si controlla la VM. L’aggiunta viene completata solo dopo servizio, Agent, GitHub e backup verificati.')
+        review = self._card('5. Verifica e aggiungi', 'Prima si controlla la VM. Il percorso completo verifica servizio, Agent, GitHub e backup. Il collaudo locale verifica solo servizio e Agent e lascia esclusi GitHub e backup.')
         self.preview = tk.Text(review, height=9, wrap='word', font=('Consolas', 9),
                                bg='#f8fafd', fg='#52647d', relief='flat', state='disabled')
         self.preview.pack(fill='x')
@@ -505,7 +538,8 @@ class ServiceOnboardingPanel(ttk.Frame):
             raise InputFailure('SERVICE_ANALYSIS_REQUIRED')
         if self._scan_sources != self._sources():
             raise InputFailure('SERVICE_INPUTS_CHANGED')
-        connection = connection_from_snapshot(self.app.snapshot(), self.stack_root.get(), probe_url=self.probe_url.get())
+        connection = connection_from_snapshot(self.app.snapshot(), self.stack_root.get(), probe_url=self.probe_url.get(),
+            verification_scope='local_lab' if self.local_lab.get() else 'full')
         infisical = infisical_from_fields(self.endpoint.get(), self.project_id.get(), self.environment.get(),
                                         self.access_token.get(), private_required=bool(self.private_names))
         return self.state.analysis, connection, infisical
@@ -541,22 +575,42 @@ class ServiceOnboardingPanel(ttk.Frame):
     def apply(self):
         self._start_job('apply')
 
+    def prepare_lab(self):
+        self._start_job('prepare_lab')
+
     def _start_job(self, action):
         if self._operation_running():
             return
         try:
             if self.controller is None:
                 raise InputFailure('SERVICE_CONTROLLER_REQUIRED')
-            analysis, connection, infisical = self._capture()
+            if action not in ('inspect', 'apply', 'prepare_lab'):
+                raise InputFailure('SERVICE_TOOL_FAILED')
+            if action == 'prepare_lab':
+                lab_snapshot = self.app.snapshot()
+                if not isinstance(lab_snapshot, dict) or not callable(getattr(self.controller, 'prepare_lab', None)):
+                    raise InputFailure('SERVICE_CONTROLLER_REQUIRED')
+                analysis = connection = infisical = None
+            else:
+                analysis, connection, infisical = self._capture()
             if action == 'apply' and self.state.inspection is None:
                 raise InputFailure('SERVICE_INSPECTION_REQUIRED')
             receipt, revision = self.state.inspection, self.state.revision
             self._busy = self.app.busy = True
             self.app.cancelled.clear()
             self._freeze()
-            self.status.set('Controllo della VM in corso.' if action == 'inspect' else 'Aggiunta del servizio e verifica completa in corso.')
-            for label in self.stage_labels.values():
-                label.configure(text='In attesa', foreground='#64748b')
+            self._active_action = action
+            if action == 'prepare_lab':
+                self.status.set('Preparazione delle sole VM di collaudo in corso. Lo stack completo non viene avviato.')
+                self.lab_hint.set('Preparazione delle sole VM di collaudo in corso. Attendi l’esito verificato.')
+            elif action == 'inspect':
+                self.status.set('Controllo della VM in corso.')
+            else:
+                self.status.set('Aggiunta del servizio e collaudo locale in corso.' if self.local_lab.get()
+                                else 'Aggiunta del servizio e verifica completa in corso.')
+            for stage, label in self.stage_labels.items():
+                skipped = stage in ('GITHUB', 'BACKUP') and (action == 'prepare_lab' or self.local_lab.get())
+                label.configure(text='Escluso dal collaudo' if skipped else 'In attesa', foreground='#64748b')
             controller = self.controller
             def progress(value):
                 event = safe_stage_event(value)
@@ -564,7 +618,9 @@ class ServiceOnboardingPanel(ttk.Frame):
                     self.events.put(('stage', event))
             def worker():
                 try:
-                    if action == 'inspect':
+                    if action == 'prepare_lab':
+                        result = controller.prepare_lab(lab_snapshot, progress)
+                    elif action == 'inspect':
                         result = controller.inspect(analysis, connection, infisical, progress)
                     else:
                         result = controller.apply(analysis, connection, infisical, receipt, progress)
@@ -585,6 +641,7 @@ class ServiceOnboardingPanel(ttk.Frame):
             return
         running = self._operation_running()
         ready = self.state.analysis is not None
+        self.lab_button.configure(state='normal' if not running and self.controller is not None else 'disabled')
         self.analyse_button.configure(state='disabled' if running else 'normal')
         self.plan_button.configure(state='normal' if not running and self._scan_sources is not None and self.reviewed.get() else 'disabled')
         self.inspect_button.configure(state='normal' if not running and ready and self.controller is not None else 'disabled')
@@ -613,10 +670,32 @@ class ServiceOnboardingPanel(ttk.Frame):
                 break
             if kind == 'stage':
                 stage, status = value['stage'], value['status']
+                if stage in ('GITHUB', 'BACKUP') and (self.local_lab.get() or getattr(self, '_active_action', '') == 'prepare_lab'):
+                    value = dict(stage=stage, status='SKIPPED')
+                    status = 'SKIPPED'
                 self.safe_events.append(value)
                 tone = '#1e8069' if status in ('PASS', 'VERIFIED') else '#a6413c' if status in ('REFUSED', 'FAILED', 'ERROR') else '#5563df'
                 self.stage_labels[stage].configure(text=STATUS_LABELS[status], foreground=tone)
                 self.status.set(STAGES[stage] + ' · ' + STATUS_LABELS[status] + (' · ' + value['code'] if value.get('code') else ''))
+                if getattr(self, '_active_action', '') == 'prepare_lab':
+                    self.lab_hint.set('Preparazione VM di collaudo · ' + STAGES[stage] + ' · ' + STATUS_LABELS[status])
+            elif kind == 'prepare_lab':
+                revision, result = value
+                try:
+                    if revision != self.state.revision:
+                        raise InputFailure('SERVICE_INPUTS_CHANGED')
+                    if not isinstance(result, dict) or result.get('status') != 'PREPARED_LAB':
+                        raise InputFailure('SERVICE_LAB_PREPARATION_INCOMPLETE')
+                    user = self._app_value('user').strip()
+                    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*', user):
+                        raise InputFailure('SSH_ADDRESS_REQUIRED')
+                    self.state.invalidate()
+                    self.local_lab.set(True)
+                    self.stack_root.set('/home/' + user + '/streams-aio')
+                    self.lab_hint.set('File e Agent preparati. Stack completo non avviato; puoi aggiungere un servizio di prova.')
+                    self.status.set('VM di collaudo preparate. Aggiungi un servizio di prova: GitHub e backup restano esclusi.')
+                except InputFailure as error:
+                    self._show_error(error)
             elif kind == 'inspect':
                 revision, receipt = value
                 try:
@@ -629,10 +708,20 @@ class ServiceOnboardingPanel(ttk.Frame):
                 self.state.inspection = None
                 if revision != self.state.revision:
                     self._show_error(InputFailure('SERVICE_INPUTS_CHANGED'))
-                elif verified_completion(result):
+                elif not self.local_lab.get() and verified_completion(result):
                     self.status.set('Servizio aggiunto e verificato. GitHub aggiornato · backup ' + result['backup_tag'] + '.')
                     for label in self.stage_labels.values():
                         label.configure(text='Verificato', foreground='#1e8069')
+                    self.access_token.set('')
+                    self.state.private_values.clear()
+                    self.secret_value.set('')
+                    self.state.analysis = None
+                elif self.local_lab.get() and verified_local_completion(result):
+                    self.status.set('Collaudo locale completato: servizio e Agent verificati. GitHub e backup non eseguiti.')
+                    for stage, label in self.stage_labels.items():
+                        skipped = stage in ('GITHUB', 'BACKUP')
+                        label.configure(text='Escluso dal collaudo' if skipped else 'Verificato',
+                                        foreground='#64748b' if skipped else '#1e8069')
                     self.access_token.set('')
                     self.state.private_values.clear()
                     self.secret_value.set('')
@@ -644,6 +733,7 @@ class ServiceOnboardingPanel(ttk.Frame):
                 self._show_error(InputFailure(value))
             elif kind == 'done':
                 self._busy = self.app.busy = False
+                self._active_action = ''
                 self._unfreeze()
         self._refresh_buttons()
         self._poll_id = self.after(100, self.poll)

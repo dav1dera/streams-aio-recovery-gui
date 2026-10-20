@@ -21,10 +21,13 @@ def check_package():
     import yaml
     from recovery_gui.backend import resources, validate_remote_shell_scripts
     from recovery_gui.onboarding import ServiceController
+    from recovery_gui.lab_prepare import prepare_lab
+    from recovery_gui.onboarding_ssh_api import SSHInfisicalOpener
     from recovery_gui.service_plan import analyze_inputs
     from recovery_gui.ui_onboarding import ServiceOnboardingPanel
     assert paramiko.__version__ and yaml.__version__
     assert ServiceController is not None and ServiceOnboardingPanel is not None
+    assert prepare_lab is not None and SSHInfisicalOpener is not None
     validate_remote_shell_scripts()
     for path in resources().glob('*.py'):
         compile(path.read_bytes(), path.name, 'exec')

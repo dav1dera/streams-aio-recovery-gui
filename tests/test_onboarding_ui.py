@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from recovery_gui.ui_onboarding import (
     InputFailure, OnboardingState, ServiceOnboardingPanel, STAGES,
     connection_from_snapshot, infisical_from_fields, safe_code,
-    safe_stage_event, verified_completion,
+    safe_stage_event, verified_completion, verified_local_completion,
 )
 
 
@@ -25,6 +25,10 @@ def complete_result():
                 public_commit=COMMIT, backup_tag=TAG)
 
 
+def local_result():
+    return dict(status='PASS_LOCAL', checks=dict(service=True, agent=True, github=False, backup=False))
+
+
 def poll_view():
     view = Mock()
     view._alive = True
@@ -33,6 +37,7 @@ def poll_view():
     view.stage_labels = {stage: Mock() for stage in STAGES}
     view.safe_events = []
     view.app.busy = True
+    view.local_lab.get.return_value = False
     return view
 
 
@@ -77,6 +82,20 @@ class WorkflowStateTests(unittest.TestCase):
             self.assertFalse(verified_completion(result))
         self.assertTrue(verified_completion(complete_result()))
 
+    def test_local_completion_cannot_be_confused_with_github_and_backup_proofs(self):
+        self.assertTrue(verified_local_completion(local_result()))
+        self.assertFalse(verified_completion(local_result()))
+        self.assertFalse(verified_local_completion(complete_result()))
+        for key in ('github', 'backup'):
+            result = local_result()
+            result['checks'][key] = True
+            self.assertFalse(verified_local_completion(result))
+            result['checks'][key] = 0
+            self.assertFalse(verified_local_completion(result))
+        result = local_result()
+        result['backup_tag'] = TAG
+        self.assertFalse(verified_local_completion(result))
+
 
 class PrivatePresentationTests(unittest.TestCase):
     def test_arbitrary_exception_text_is_never_a_user_visible_error(self):
@@ -94,6 +113,18 @@ class PrivatePresentationTests(unittest.TestCase):
         self.assertIsNone(safe_stage_event(dict(stage=SECRET, status='PASS')))
         self.assertIsNone(safe_stage_event(dict(stage='BACKUP', status=SECRET)))
 
+    def test_laboratory_restore_progress_maps_only_fixed_stages_without_raw_text(self):
+        mappings = dict(DEPENDENCIES='HOST', INFISICAL_CONFIG='INFISICAL',
+            INFISICAL_DATABASE='INFISICAL', INFISICAL_SERVER='INFISICAL', INFISICAL_TRANSFER='INFISICAL',
+            STACK_TRANSFER='FILES', CLONES='FILES', DOWNLOAD='FILES', DECRYPT='FILES',
+            RENDER='FILES', EMPTY_STATE='FILES', RUNTIME_PROFILE='FILES', NPM='FILES',
+            AIO='FILES', NPM_TOPOLOGY='FILES', PREPARED='FILES', NATIVE_AGENT='AGENT')
+        for original, stage in mappings.items():
+            with self.subTest(original=original):
+                event = safe_stage_event(dict(stage=original, status='RUNNING', output=SECRET, message=SECRET))
+                self.assertEqual(event, dict(stage=stage, status='RUNNING'))
+                self.assertNotIn(SECRET, repr(event))
+
     def test_connection_contains_no_recovery_or_second_vm_credentials(self):
         snapshot = dict(host='192.0.2.10', user='pi', port='22', password=SECRET,
                         ssh_key='', key_password='', sudo_password=SECRET,
@@ -103,7 +134,8 @@ class PrivatePresentationTests(unittest.TestCase):
         self.assertEqual(result['port'], 22)
         self.assertEqual(result['stack_root'], '/home/pi/streams-aio')
         self.assertEqual(set(result), {'host', 'user', 'port', 'password', 'ssh_key',
-                                      'key_password', 'sudo_password', 'stack_root', 'probe_url'})
+                                      'key_password', 'sudo_password', 'stack_root', 'probe_url', 'verification_scope'})
+        self.assertEqual(result['verification_scope'], 'full')
         self.assertEqual(result['password'], SECRET)
         for root in ('/', '/home', '/home/pi/../other', '/home//pi/streams-aio', '/home/pi\nother',
                      '/root/streams-aio', '/opt/streams-aio', '/home/pi/different-stack'):
@@ -122,7 +154,7 @@ class PrivatePresentationTests(unittest.TestCase):
             with self.assertRaisesRegex(InputFailure, 'SERVICE_PROBE_URL_INVALID'):
                 connection_from_snapshot(snapshot, '/home/pi/streams-aio', probe_url=url)
 
-    def test_private_api_access_requires_https_origin_and_write_token(self):
+    def test_private_api_access_prefers_agent_tunnel_but_fallback_requires_https(self):
         for endpoint in ('http://example.test', 'https://user:pass@example.test',
                          'https://example.test/api', 'https://example.test/?token=x',
                          'https://example.test/#fragment', 'https://example.test:99999'):
@@ -133,10 +165,106 @@ class PrivatePresentationTests(unittest.TestCase):
         result = infisical_from_fields('https://example.test/', 'project', 'prod', SECRET, private_required=True)
         self.assertEqual(result, dict(endpoint='https://example.test', project_id='project',
                                       environment='prod', access_token=SECRET))
+        self.assertEqual(infisical_from_fields('', 'project', 'prod', SECRET, private_required=True)['endpoint'], '')
+        with self.assertRaisesRegex(InputFailure, 'SERVICE_INFISICAL_ACCESS_REQUIRED'):
+            infisical_from_fields('', 'project', 'prod', '', private_required=True)
         self.assertEqual(infisical_from_fields('', '', 'prod', '', private_required=False)['endpoint'], '')
 
 
 class MainThreadFlowTests(unittest.TestCase):
+    def test_capture_carries_local_scope_and_can_use_agent_tunnel_without_https_field(self):
+        view = Mock()
+        view.state = OnboardingState(analysis=object())
+        view._scan_sources = ('compose', 'env', 'example')
+        view._sources.return_value = view._scan_sources
+        view.app.snapshot.return_value = dict(host='192.0.2.10', user='pi', port='22', password=SECRET)
+        view.stack_root.get.return_value = '/home/pi/streams-aio'
+        view.probe_url.get.return_value = ''
+        view.local_lab.get.return_value = True
+        view.endpoint.get.return_value = ''
+        view.project_id.get.return_value = 'project'
+        view.environment.get.return_value = 'prod'
+        view.access_token.get.return_value = SECRET
+        view.private_names = {'API_KEY'}
+        analysis, connection, infisical = ServiceOnboardingPanel._capture(view)
+        self.assertIs(analysis, view.state.analysis)
+        self.assertEqual(connection['verification_scope'], 'local_lab')
+        self.assertEqual(infisical['endpoint'], '')
+        self.assertEqual(infisical['access_token'], SECRET)
+
+    def test_laboratory_preparation_does_not_require_a_service_plan_or_call_apply(self):
+        view = Mock()
+        view._operation_running.return_value = False
+        snapshot = {'host': '192.0.2.10', 'user': 'pi', 'password': SECRET, 'github_token': SECRET}
+        view.app.snapshot.return_value = snapshot
+        view.state = OnboardingState()
+        view.events = queue.Queue()
+        view.app.cancelled = threading.Event()
+        view.stage_labels = {stage: Mock() for stage in STAGES}
+        view.local_lab.get.return_value = False
+        view.controller.prepare_lab.return_value = {'status': 'PREPARED_LAB'}
+        class InlineThread:
+            def __init__(self, target, daemon): self.target = target
+            def start(self): self.target()
+        with patch('recovery_gui.ui_onboarding.threading.Thread', InlineThread):
+            ServiceOnboardingPanel._start_job(view, 'prepare_lab')
+        view._capture.assert_not_called()
+        view.controller.prepare_lab.assert_called_once()
+        self.assertIs(view.controller.prepare_lab.call_args.args[0], snapshot)
+        view.controller.apply.assert_not_called()
+        view.controller.inspect.assert_not_called()
+        events = [view.events.get_nowait() for _ in range(view.events.qsize())]
+        self.assertEqual(events, [('prepare_lab', (0, {'status': 'PREPARED_LAB'})), ('done', None)])
+        self.assertNotIn(SECRET, repr(events))
+        for stage in ('GITHUB', 'BACKUP'):
+            self.assertEqual(view.stage_labels[stage].configure.call_args.kwargs['text'], 'Escluso dal collaudo')
+
+    def test_verified_laboratory_preparation_sets_local_scope_and_owner_root(self):
+        view = poll_view()
+        view._app_value.return_value = 'pi'
+        view.events.put(('prepare_lab', (0, {'status': 'PREPARED_LAB'})))
+        ServiceOnboardingPanel.poll(view)
+        view.local_lab.set.assert_called_once_with(True)
+        view.stack_root.set.assert_called_once_with('/home/pi/streams-aio')
+        self.assertIn('Stack completo non avviato', view.lab_hint.set.call_args.args[0])
+        self.assertIsNone(view.state.analysis)
+        self.assertIsNone(view.state.inspection)
+        view.access_token.set.assert_not_called()
+
+    def test_incomplete_or_stale_laboratory_preparation_does_not_enable_local_scope(self):
+        for revision, result, expected in ((0, {'status': 'PASS'}, 'SERVICE_LAB_PREPARATION_INCOMPLETE'),
+                                           (1, {'status': 'PREPARED_LAB'}, 'SERVICE_INPUTS_CHANGED')):
+            view = poll_view()
+            view.events.put(('prepare_lab', (revision, result)))
+            ServiceOnboardingPanel.poll(view)
+            self.assertEqual(str(view._show_error.call_args.args[0]), expected)
+            view.local_lab.set.assert_not_called()
+            view.stack_root.set.assert_not_called()
+
+    def test_local_success_marks_publication_and_backup_excluded_and_clears_private_buffers(self):
+        view = poll_view()
+        view.local_lab.get.return_value = True
+        view.events.put(('apply', (0, local_result())))
+        ServiceOnboardingPanel.poll(view)
+        self.assertIn('GitHub e backup non eseguiti', view.status.set.call_args.args[0])
+        for stage in ('GITHUB', 'BACKUP'):
+            self.assertEqual(view.stage_labels[stage].configure.call_args.kwargs['text'], 'Escluso dal collaudo')
+            self.assertNotEqual(view.stage_labels[stage].configure.call_args.kwargs['foreground'], '#1e8069')
+        self.assertEqual(view.state.private_values, {})
+        view.access_token.set.assert_called_once_with('')
+        self.assertFalse(verified_completion(local_result()))
+
+    def test_local_scope_rejects_full_success_and_suppresses_green_backup_events(self):
+        view = poll_view()
+        view.local_lab.get.return_value = True
+        view.events.put(('stage', {'stage': 'BACKUP', 'status': 'PASS'}))
+        view.events.put(('apply', (0, complete_result())))
+        ServiceOnboardingPanel.poll(view)
+        self.assertEqual(str(view._show_error.call_args.args[0]), 'SERVICE_OPERATION_INCOMPLETE')
+        self.assertEqual(view.safe_events, [{'stage': 'BACKUP', 'status': 'SKIPPED'}])
+        self.assertNotEqual(view.stage_labels['BACKUP'].configure.call_args.kwargs['foreground'], '#1e8069')
+        view.access_token.set.assert_not_called()
+
     def test_reanalysis_discards_private_override_when_variable_returns_to_public(self):
         view = Mock()
         view._operation_running.return_value = False
@@ -206,6 +334,7 @@ class MainThreadFlowTests(unittest.TestCase):
         view.state = OnboardingState(analysis=analysis, inspection=receipt)
         view.events = queue.Queue()
         view.app.cancelled = threading.Event()
+        view.local_lab.get.return_value = False
         view.stage_labels = {stage: Mock() for stage in STAGES}
         calls = []
         def apply(a, c, i, r, progress):

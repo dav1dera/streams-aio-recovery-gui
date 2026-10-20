@@ -1,9 +1,36 @@
-# Aggiungi servizio — anteprima 0.5.0-dev
+# Aggiungi servizio — anteprima 0.5.0-dev.2
 
 Questa scheda aggiunge **un servizio nuovo** a uno stack Streams AIO già configurato.
 L’analisi iniziale funziona offline. La connessione diretta alla VM viene aperta solo
 premendo **Verifica VM**; le modifiche richiedono **Aggiungi e verifica**.
 Non occorre tenere aperto VS Code o permettere il controllo del desktop Windows.
+
+## Collaudo su due VM Ubuntu vuote
+
+Usa il riquadro **Collaudo su due VM vuote** della nuova scheda, senza premere
+«Crea da zero» in Panoramica. Il normale recupero avvia lo stack completo e richiede
+anche l’instradamento dei domini; questo laboratorio prepara soltanto file e Agent.
+
+1. Crea uno snapshot delle due VM pulite. Devono avere OpenSSH attivo e un utente
+   con sudo; non serve installare Docker a mano.
+2. In **Accessi e backup** compila le due VM, il token GitHub con **Contents: Read**
+   sui repository del recupero e il file della chiave age. Carica un backup completo.
+   Per esempio: stack `test@192.168.178.30`, Infisical `test2@192.168.178.33`.
+3. Torna in **Aggiungi servizio** e premi **Prepara le VM di collaudo**. Il programma
+   controlla che entrambe siano vuote prima dei trasferimenti, ripristina Infisical,
+   prepara lo stack e collega il suo Agent alla VM Infisical di prova tramite SSH.
+   Non avvia l’intero stack e non installa i processi di pubblicazione automatica.
+4. Mantieni selezionato **Solo collaudo locale** e prepara il nuovo servizio secondo
+   i passaggi sotto. Un controllo protetto sulla VM impedisce di pubblicare dal
+   laboratorio nei repository principali, anche se viene tolta la selezione.
+5. L’esito locale verifica il servizio e il collegamento Agent. **GitHub e backup
+   risultano esclusi**, non verificati. Il collaudo completo della pubblicazione
+   richiede successivamente repository e processi di backup dedicati alla prova.
+
+Puoi lasciare accese le VM principali. Non cambiare AdGuard, DNS di Ubuntu o porte
+del router per questa preparazione. Se la preparazione viene interrotta dopo aver
+iniziato a ripristinare dati, questa anteprima richiede di tornare agli snapshot
+puliti per ripetere il pulsante di laboratorio; non cancella automaticamente le VM.
 
 ## Stato della versione
 
@@ -21,12 +48,13 @@ richiedono un’estensione e un collaudo separati.
 ## Prima di iniziare
 
 - La VM stack deve avere lo stack già funzionante in `/home/<utente>/streams-aio`.
-- Agent Infisical, worker pubblico con modalità `--seamless` e coordinatore DR devono
+- Per il percorso completo, Agent Infisical, worker pubblico con modalità `--seamless` e coordinatore DR devono
   essere installati e funzionanti secondo il setup di questo repository.
 - Il client GitHub della VM deve avere accesso ai repository configurati. La scheda
   usa quelli del deployment di riferimento; non imposta un account GitHub nuovo.
-- Per variabili private serve l’indirizzo **HTTPS** di Infisical, ID progetto, ambiente
-  e un **access token** abilitato a leggere e creare cartelle e segreti nel progetto.
+- Per variabili private servono ID progetto, ambiente e un **access token** abilitato
+  a leggere e creare cartelle e segreti nel progetto. Le API usano il tunnel locale
+  dell’Agent quando riconosciuto; in sua assenza serve l’indirizzo **HTTPS** corretto.
   Le API richieste sono cartelle v2 e segreti v4. Un vecchio service token non va
   necessariamente bene: usa un access token valido per queste API.
 - L’identità dell’Agent deve già poter leggere la cartella `/<nome-servizio>`.
@@ -53,7 +81,11 @@ richiedono un’estensione e un collaudo separati.
    `/<servizio>/<NOME_VARIABILE>`. Il file privato viene applicato per ultimo.
    I commenti dei file esistenti vengono conservati. L’export del piano contiene
    nomi, percorsi e riferimenti, senza valori.
-5. Se ci sono segreti, compila HTTPS, progetto, ambiente e token Infisical nella scheda.
+5. Se ci sono segreti, compila progetto, ambiente e token Infisical nella scheda.
+   Quando l’Agent usa un tunnel locale riconosciuto, la GUI instrada le API verso
+   quel tunnel tramite la connessione SSH autenticata alla VM stack: puoi lasciare
+   vuoto HTTPS. Questo evita di contattare l’Infisical principale durante la prova.
+   In assenza di un tunnel riconosciuto serve l’indirizzo HTTPS dell’istanza corretta.
    Se l’immagine non ha HEALTHCHECK, indica l’URL di prova nel formato
    `http://127.0.0.1:<porta-pubblicata>/percorso`. Non sono ammessi URL con credenziali,
    host esterni o porte appartenenti ad altri servizi.
@@ -73,9 +105,13 @@ richiedono un’estensione e un collaudo separati.
 ## Password e file
 
 Token, password SSH e valori privati restano nella memoria della sessione Windows.
-I valori dei secret viaggiano verso Infisical attraverso HTTPS; il comando SSH del
-tool non li contiene. Il report non riporta credenziali o risposte del server.
-L’Agent mantiene il file privato a `0640`, nella cartella privata a `0750`.
+I valori dei secret viaggiano verso Infisical attraverso HTTPS oppure dentro la
+connessione SSH autenticata, fino al tunnel loopback dell’Agent. Non compaiono negli
+argomenti dei comandi SSH. Il report non riporta credenziali o risposte del server.
+Con l’Agent di produzione il file privato resta a `0640`, nella cartella privata
+a `0750`. L’Agent installato dal recupero usa invece il proprietario dell’utente SSH,
+file `0600` e cartella `0700` o `0750`: la scheda riconosce entrambi e non ne amplia
+i permessi. Legge il percorso effettivo dalla configurazione del servizio Agent.
 La VM conserva un registro protetto dell’operazione per evitare sovrascritture dopo
 un’interruzione; può contenere copie della configurazione precedente ed è riservato
 all’amministratore.

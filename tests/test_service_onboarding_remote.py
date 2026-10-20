@@ -4,9 +4,11 @@ import base64
 import copy
 import datetime as dt
 import json
+import io
 from pathlib import PurePosixPath
 import threading
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -50,6 +52,11 @@ class MemoryStore(remote.Store):
         self.put(ROOT / 'docker-compose.yml', COMPOSE, 1001, 1001, 0o640)
         self.put(LAYOUT.agent, AGENT)
         self.put('/etc/machine-id', b'0123456789abcdef0123456789abcdef\n')
+        for path in (LAYOUT.home / '.local/share/streams-aio-public-sync/tooling/scripts/sync-public-stack.py',
+                     LAYOUT.home / 'streams-aio-dr/scripts/update-dr.sh',
+                     LAYOUT.home / '.local/state/streams-aio-public-sync/run.lock',
+                     LAYOUT.home / '.local/state/streams-aio-dr/run.lock'):
+            self.put(path, b'# offline installed worker\n', 1001, 1001, 0o640)
 
     def safe(self, path):
         path = PurePosixPath(path)
@@ -115,12 +122,16 @@ class FakeRunner:
         self.time = dt.datetime(2026, 10, 20, 12, 0, tzinfo=dt.timezone.utc)
         self.probe_ok = True
         self.finalize_lock_seen = []
+        self.agent_kind = 'production_yaml'
+        self.agent_config = LAYOUT.agent
+        self.dr_load_state = 'loaded'
 
     def props(self, unit):
         if unit == remote.AGENT_UNIT:
-            return dict(ActiveState='active', User='root', Group='operator', UMask='0027',
-                        KillMode='control-group', ExecStart='/usr/bin/infisical agent --config ' + str(LAYOUT.agent))
-        return dict(ActiveState='inactive', Result='success', ExecMainStatus='0',
+            return dict(ActiveState='active', User='operator' if self.agent_kind == 'recovered_json' else 'root',
+                        Group='operator', UMask='0077' if self.agent_kind == 'recovered_json' else '0027',
+                        KillMode='control-group', ExecStart='/usr/bin/infisical agent --config ' + str(self.agent_config))
+        return dict(LoadState=self.dr_load_state, ActiveState='inactive', Result='success', ExecMainStatus='0',
                     InvocationID='new-invocation' if self.dr_started else 'previous-invocation',
                     User='operator', ExecStart='/home/operator/streams-aio-dr/scripts/update-dr.sh')
 
@@ -143,12 +154,13 @@ class FakeRunner:
         if args[:2] == ['docker', 'inspect']:
             return json.dumps(self.container_state).encode()
         if args[:3] == ['systemctl', 'restart', remote.AGENT_UNIT]:
-            rows = yaml.safe_load(self.store.read(LAYOUT.agent))['templates']
+            rows = yaml.safe_load(self.store.read(self.agent_config))['templates']
             row = rows[-1]
             keys = [line.split('=', 1)[0] for line in row['template-content'].splitlines()]
             value = '' if self.empty_private else 'offline-example-token'
             self.store.put(row['destination-path'], ''.join(key + "='" + value + "'\n" for key in keys).encode(),
-                           0, 1001, 0o640)
+                           1001 if self.agent_kind == 'recovered_json' else 0, 1001,
+                           0o600 if self.agent_kind == 'recovered_json' else 0o640)
             return b''
         if args[:3] == ['systemctl', 'start', '--no-block']:
             self.finalize_lock_seen.append(self.store.operation_active)
@@ -254,6 +266,27 @@ class RemoteOnboardingTests(unittest.TestCase):
     def journal(self):
         return self.store.json(self.engine.journal_path(self.request['job_id']))
 
+    def recovered_profile(self, mode=0o700, address='http://127.0.0.1:18180'):
+        path = LAYOUT.home / '.local/share/streams-aio-recovery/native-agent/agent-config.json'
+        document = yaml.safe_load(AGENT)
+        document['infisical']['address'] = address
+        raw = json.dumps(document, indent=2, ensure_ascii=False).encode() + b'\n'
+        self.store.put(path, raw, 1001, 1001, 0o600)
+        self.store.directories[str(ROOT / '.secrets')] = (1001, 1001, mode, {})
+        self.runner.agent_kind, self.runner.agent_config = 'recovered_json', path
+        return path, raw
+
+    def local_lab(self):
+        self.request['verification_scope'] = 'local_lab'
+        self.store.directory(LAYOUT.state, 0, 0, 0o700, create=True)
+        marker = dict(schema=1, kind='prepared_onboarding_lab', root=str(ROOT), owner='operator',
+                      machine_id=self.store.read('/etc/machine-id').decode().strip(), publications_disabled=True)
+        self.store.put(LAYOUT.state / 'lab.json', json.dumps(marker).encode())
+        for path in list(self.store.files):
+            if '/streams-aio-public-sync/' in path or '/streams-aio-dr/' in path:
+                del self.store.files[path]
+        return marker
+
     def finalize(self):
         self.runner.publish_files(self.request['plan'])
         result = self.engine.finalize(self.request)
@@ -303,6 +336,138 @@ class RemoteOnboardingTests(unittest.TestCase):
         once = remote.extend_agent(AGENT, ROOT, normalized, 'project', 'prod')
         self.refused('ONBOARDING_AGENT_DESTINATION_EXISTS',
                      lambda: remote.extend_agent(once, ROOT, normalized, 'project', 'prod'))
+
+    def test_recovered_json_append_preserves_every_existing_character(self):
+        path, raw = self.recovered_profile()
+        normalized, _ = remote.plan_document(plan())
+        node = remote.mapping_value(yaml.compose(raw.decode()), 'templates')
+        position = node.value[-1].end_mark.index
+        result = remote.extend_agent(raw, ROOT, normalized, 'project', 'prod', 'recovered_json')
+        self.assertTrue(result.startswith(raw[:position]))
+        self.assertTrue(result.endswith(raw[position:]))
+        self.assertEqual(json.loads(result)['infisical'], json.loads(raw)['infisical'])
+        self.assertEqual(json.loads(result)['templates'][:-1], json.loads(raw)['templates'])
+
+    def test_recovered_user_agent_keeps_private_0600_and_selected_config(self):
+        path, raw = self.recovered_profile()
+        preview = self.engine.inspect(self.request)
+        self.assertEqual(preview['agent_kind'], 'recovered_json')
+        self.assertEqual(preview['agent_output'], dict(uid=1001, gid=1001, mode=0o600))
+        self.assertEqual(preview['api_address'], 'http://127.0.0.1:18180')
+        result = self.apply()
+        self.assertEqual(result['status'], 'SERVICE_READY')
+        self.assertEqual(result['agent_output'], preview['agent_output'])
+        self.assertEqual(result['api_address'], preview['api_address'])
+        self.assertEqual(self.store.read(LAYOUT.agent), AGENT)
+        self.assertNotEqual(self.store.read(path), raw)
+        generated = self.store.snapshot(ROOT / '.secrets/demo.env')
+        self.assertEqual((generated.uid, generated.gid, generated.mode), (1001, 1001, 0o600))
+        self.assertEqual(self.journal()['agent_profile']['config'], str(path))
+        self.assertEqual(self.finalize()['status'], 'COMPLETE')
+
+    def test_recovered_existing_0750_directory_is_preserved(self):
+        self.recovered_profile(mode=0o750)
+        self.assertEqual(self.apply()['status'], 'SERVICE_READY')
+        self.assertEqual(self.store.directories[str(ROOT / '.secrets')], (1001, 1001, 0o750, {}))
+
+    def test_recovered_agent_refuses_unproven_api_endpoint_before_writes(self):
+        for address in ('https://production.invalid', 'http://192.0.2.1:8080',
+                        'http://127.0.0.1:18180/?token=private', 'http://u:p@127.0.0.1:18180'):
+            self.recovered_profile(address=address)
+            before = copy.deepcopy(self.store.files)
+            self.refused('ONBOARDING_AGENT_API_ENDPOINT_UNSUPPORTED', lambda: self.engine.inspect(self.request))
+            self.assertEqual(self.store.files, before)
+
+    def test_unknown_agent_config_path_is_not_guessed_or_rewritten(self):
+        self.runner.agent_config = PurePosixPath('/etc/other-agent.json')
+        self.store.put(self.runner.agent_config, b'{}')
+        before = copy.deepcopy(self.store.files)
+        self.refused('ONBOARDING_AGENT_PROFILE_UNSUPPORTED', lambda: self.engine.inspect(self.request))
+        self.assertEqual(self.store.files, before)
+
+    def test_readonly_preflight_refuses_missing_worker_and_unloaded_dr_unit(self):
+        path = str(LAYOUT.home / '.local/share/streams-aio-public-sync/tooling/scripts/sync-public-stack.py')
+        saved = self.store.files.pop(path)
+        before = copy.deepcopy(self.store.files), copy.deepcopy(self.store.directories)
+        self.refused('ONBOARDING_BACKUP_PIPELINE_NOT_READY', lambda: self.engine.inspect(self.request))
+        self.assertEqual((self.store.files, self.store.directories), before)
+        self.store.files[path] = saved
+        self.runner.dr_load_state = 'not-found'
+        self.refused('ONBOARDING_BACKUP_PIPELINE_NOT_READY', lambda: self.engine.inspect(self.request))
+        self.assertFalse(self.runner.started)
+
+    def test_handle_inspect_reports_missing_pipeline_before_opening_lockfiles(self):
+        del self.store.files[str(LAYOUT.home / '.local/state/streams-aio-dr/run.lock')]
+        request = dict(self.request, action='inspect')
+        before = copy.deepcopy(self.store.files), copy.deepcopy(self.store.directories)
+        result = remote.handle(request, self.runner, self.store, LAYOUT)
+        self.assertEqual(result['code'], 'ONBOARDING_BACKUP_PIPELINE_NOT_READY')
+        self.assertEqual((self.store.files, self.store.directories), before)
+
+    def test_guarded_local_lab_runs_service_without_any_github_or_backup_commands(self):
+        self.recovered_profile()
+        self.local_lab()
+        before = copy.deepcopy(self.store.files), copy.deepcopy(self.store.directories)
+        request = dict(self.request, action='inspect')
+        preview = remote.handle(request, self.runner, self.store, LAYOUT)
+        self.assertEqual(preview['status'], 'PREVIEW')
+        self.assertEqual(preview['verification_scope'], 'local_lab')
+        self.assertEqual((self.store.files, self.store.directories), before)
+        result = self.apply()
+        self.assertEqual(result['status'], 'SERVICE_READY')
+        self.assertEqual(result['verification_scope'], 'local_lab')
+        self.assertTrue(result['application_verified'])
+        self.assertFalse(result['backup_integrity_verified'])
+        before_calls = len(self.runner.calls)
+        self.refused('ONBOARDING_LAB_PUBLICATION_REFUSED', lambda: self.engine.finalize(self.request))
+        self.assertEqual(len(self.runner.calls), before_calls)
+        self.assertFalse(self.runner.dr_started)
+        self.assertFalse(any(args[0].endswith('/venv/bin/python') for args, _ in self.runner.calls))
+
+    def test_local_lab_requires_root_protected_machine_bound_marker(self):
+        self.request['verification_scope'] = 'local_lab'
+        self.refused('ONBOARDING_LAB_NOT_PREPARED', lambda: self.engine.inspect(self.request))
+        marker = self.local_lab()
+        for change in ({'machine_id': 'f' * 32}, {'owner': 'somebodyelse'},
+                       {'root': '/home/operator/another-stack'}, {'publications_disabled': False}):
+            self.store.put(LAYOUT.state / 'lab.json', json.dumps(dict(marker, **change)).encode())
+            self.refused('ONBOARDING_LAB_NOT_PREPARED', lambda: self.engine.inspect(self.request))
+        self.store.put(LAYOUT.state / 'lab.json', json.dumps(marker).encode(), 1001, 1001, 0o600)
+        self.refused('ONBOARDING_LAB_NOT_PREPARED', lambda: self.engine.inspect(self.request))
+        self.assertFalse(self.runner.started)
+
+    def test_prepared_lab_target_cannot_be_published_by_unchecking_lab_scope(self):
+        self.local_lab()
+        self.request['verification_scope'] = 'full'
+        self.refused('ONBOARDING_LAB_PUBLICATION_REFUSED', lambda: self.engine.inspect(self.request))
+        self.assertFalse(self.runner.dr_started)
+
+    def test_lab_scope_is_bound_to_job_and_journal_even_if_marker_is_lost(self):
+        self.local_lab()
+        self.assertEqual(self.apply()['status'], 'SERVICE_READY')
+        self.assertEqual(self.journal()['verification_scope'], 'local_lab')
+        self.store.files.pop(str(LAYOUT.state / 'lab.json'))
+        request = dict(self.request, verification_scope='full')
+        self.refused('ONBOARDING_JOB_PLAN_MISMATCH', lambda: self.engine.apply(request))
+        self.refused('ONBOARDING_LAB_PUBLICATION_REFUSED', lambda: self.engine.finalize(request))
+        self.assertFalse(self.runner.dr_started)
+
+    def test_systemctl_structured_command_parsing_requires_exact_config_argument(self):
+        args = remote.unit_arguments('{ path=/usr/bin/infisical ; argv[]=/usr/bin/infisical agent '
+                                     '--config=/etc/infisical/agent-config.yaml ; ignore_errors=no ; pid=1 ; }')
+        self.assertEqual(args, ['/usr/bin/infisical', 'agent', '--config=/etc/infisical/agent-config.yaml'])
+        self.refused('ONBOARDING_SERVICE_COMMAND_INVALID', lambda: remote.unit_arguments(
+            '{ argv[]=first ; } { argv[]=second ; }'))
+
+    def test_public_only_service_has_no_agent_dependency_or_metadata(self):
+        self.request['plan'] = plan(private=False)
+        del self.store.files[str(LAYOUT.agent)]
+        result = self.apply()
+        self.assertEqual(result['status'], 'SERVICE_READY')
+        self.assertEqual(result['agent_kind'], 'not_required')
+        self.assertIsNone(result['agent_output'])
+        self.assertEqual(result['api_address'], '')
+        self.assertFalse(any(args[:3] == ['systemctl', 'restart', remote.AGENT_UNIT] for args, _ in self.runner.calls))
 
     def test_private_payload_override_and_public_private_overlap_are_refused(self):
         value = plan()
@@ -515,6 +680,25 @@ class RemoteOnboardingTests(unittest.TestCase):
                          'registry.example:5000/team/demo')
         self.assertEqual(remote.image_repository_identity('python:3.12@sha256:' + '0' * 64),
                          'docker.io/library/python')
+
+    def test_request_framing_accepts_consumed_or_unused_sudo_line_without_exposing_it(self):
+        request = dict(action='inspect', root=str(ROOT), plan=plan())
+        body = remote.REQUEST_FRAME + json.dumps(request).encode() + b'\n'
+        for prefix in (b'', b'example-unused-sudo-canary\n', remote.REQUEST_FRAME):
+            self.assertEqual(remote.framed_request(prefix + body), request)
+        output = io.StringIO()
+        stdin = io.TextIOWrapper(io.BytesIO(b'example-unused-sudo-canary\n' + body), encoding='utf-8')
+        with patch.object(remote.sys, 'stdin', stdin), patch.object(remote.sys, 'stdout', output), \
+                patch.object(remote, 'handle', return_value=dict(schema=1, status='PREVIEW')) as handle:
+            self.assertEqual(remote.main(), 0)
+        handle.assert_called_once_with(request)
+        self.assertEqual(json.loads(output.getvalue()), dict(schema=1, status='PREVIEW'))
+        self.assertNotIn('sudo-canary', output.getvalue())
+
+    def test_framing_refuses_unframed_or_multiple_prefix_lines(self):
+        for raw in (b'{"action":"inspect"}', b'one\ntwo\n' + remote.REQUEST_FRAME + b'{}',
+                    remote.REQUEST_FRAME + b'[]'):
+            self.refused('ONBOARDING_REQUEST_INVALID', lambda: remote.framed_request(raw))
 
 
 if __name__ == '__main__':
