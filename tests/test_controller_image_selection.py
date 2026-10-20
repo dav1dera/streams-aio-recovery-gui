@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import stat
 import tempfile
 from types import SimpleNamespace as N
 import unittest
@@ -187,13 +188,39 @@ class ControllerImageSelection(unittest.TestCase):
         database.parent.mkdir(parents=True)
         database.write_bytes(b'SQLite format 3\0' + b'0'*64)
         database.chmod(0o600)
-        original_read = Path.read_text
+        original_read, original_stat = Path.read_text, Path.stat
+        original_metadata = headplane._metadata
+        modes = {self.home/'state.json': 0o600, self.root/'config/dr-manifest.yaml': 0o644,
+                 database: 0o600}
+        owners = {path: (0, 0) for path in modes}
+        def metadata(path, *args, **kwargs):
+            info = original_stat(path, *args, **kwargs)
+            if path not in modes:
+                return info
+            # Model only the protected fixture files' POSIX metadata. The CI
+            # account may be uid 1001; Windows cannot express these mode bits.
+            return N(st_mode=stat.S_IFMT(info.st_mode) | modes[path], st_nlink=info.st_nlink,
+                     st_size=info.st_size, st_uid=owners[path][0], st_gid=owners[path][1])
+        def posix_metadata(info, code, **kwargs):
+            return original_metadata(info, code, **dict(kwargs, posix=True))
         def read(path, *args, **kwargs):
             return 'synthetic' if path == Path('/etc/machine-id') else original_read(path, *args, **kwargs)
-        with self.selected_scope(), patch.object(Path, 'read_text', read):
+        with self.selected_scope(), patch.object(Path, 'read_text', read), \
+             patch.object(Path, 'stat', metadata), patch.object(headplane, '_metadata', posix_metadata):
             self.assertEqual(headplane._scope(self.root, self.home, state, self.model), (self.root, self.home))
             with self.assertRaisesRegex(ValueError, '^'+headplane.SCOPE+'$'):
                 headplane._scope(self.root, self.home, dict(state, extra='unsaved'), self.model)
+            for path in modes:
+                for owner in ((1001, 0), (0, 1001), (1001, 1001)):
+                    owners[path] = owner
+                    with self.subTest(path=path.name, owner=owner), \
+                         self.assertRaisesRegex(ValueError, '^'+headplane.SCOPE+'$'):
+                        headplane._scope(self.root, self.home, state, self.model)
+                owners[path] = (0, 0)
+            # Mode, type, size and hard-link checks remain real policy checks.
+            modes[self.home/'state.json'] = 0o640
+            with self.assertRaisesRegex(ValueError, '^'+headplane.SCOPE+'$'):
+                headplane._scope(self.root, self.home, state, self.model)
 
     def test_legacy_loader_keeps_fixed_pins_and_does_not_adopt_a_new_model(self):
         legacy = dict(name='streams-aio', services={name: dict(image=image)
