@@ -1,4 +1,4 @@
-# Aggiungi servizio — anteprima 0.5.0-dev.4
+# Aggiungi servizio — anteprima 0.5.0-dev.5
 
 Questa scheda aggiunge **un servizio nuovo** a uno stack Streams AIO già configurato.
 L’analisi iniziale funziona offline. La connessione diretta alla VM viene aperta solo
@@ -20,7 +20,11 @@ anche l’instradamento dei domini; questo laboratorio prepara soltanto file e A
 1. Crea uno snapshot delle due VM pulite. Devono avere OpenSSH attivo e un utente
    con sudo; non serve installare Docker a mano.
 2. In **Accessi e backup** compila le due VM, il token GitHub con **Contents: Read**
-   sui repository del recupero e il file della chiave age. Carica un backup completo.
+   sui repository del recupero e la chiave privata age PRIMARY o RECOVERY. Nel
+   riquadro della chiave scegli **File** per selezionare il file già custodito sul
+   PC, oppure **Incolla** per inserirne il testo nel campo mascherato, senza creare
+   un file locale. La chiave deve contenere `AGE-SECRET-KEY-1…`; `age1…` è pubblica
+   e non decifra il backup. Carica un backup completo.
    Per esempio: stack `test@192.168.178.30`, Infisical `test2@192.168.178.33`.
 3. Torna in **Aggiungi servizio**. Nel passo **Destinazione** scegli **Collaudo
    locale**, quindi premi **Prepara le VM di collaudo**. Il programma
@@ -118,6 +122,12 @@ richiedono un’estensione e un collaudo separati.
 ## Password e file
 
 Token, password SSH e valori privati restano nella memoria della sessione Windows.
+Anche la chiave age inserita con **Incolla** resta nella memoria della sessione:
+la GUI non scrive un file temporaneo Windows e non la include in esiti o piani.
+Il trasferimento avviene direttamente via SFTP autenticato a un file remoto
+privato con permessi `0600`; la decifratura mantiene gli stessi controlli della
+modalità **File**. Chiudendo l’app il testo va reinserito: conserva a parte una
+copia protetta della chiave.
 I valori dei secret viaggiano verso Infisical attraverso HTTPS oppure dentro la
 connessione SSH autenticata, fino al tunnel loopback dell’Agent. Non compaiono negli
 argomenti dei comandi SSH. Il report non riporta credenziali o risposte del server.

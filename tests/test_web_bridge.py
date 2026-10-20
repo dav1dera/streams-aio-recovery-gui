@@ -5,14 +5,15 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from recovery_gui import backend
-from recovery_gui.onboarding import OnboardingError
+from recovery_gui.onboarding import OnboardingError, ServiceController
 from recovery_gui.web_bridge import WebBridge, KEYS, SENSITIVE, MAX_EVENTS
 
 
 SECRET = 'never-return-this-password-or-token'
+PASTED_IDENTITY = 'AGE-SECRET-KEY-1SYNTHETICNOTAPRIVATEKEY1234'
 TAG = 'dr-20261020T120000Z'
 COMMIT = 'a' * 40
 SETTINGS = dict(host='192.0.2.20', user='test', password=SECRET, port='22',
@@ -114,6 +115,55 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(self.bridge.update_settings({'host': 20})['ok'])
         self.assertEqual(self.bridge.update_settings({'password': SECRET})['ok'], True)
         self.assertNotIn(SECRET, json.dumps(self.bridge.update_settings({'password': SECRET})))
+
+    def test_pasted_identity_is_absent_from_initialize_events_reports_and_plan(self):
+        self.prepare()
+        result = self.bridge.update_settings(dict(age_identity_mode='paste', age_identity_text=PASTED_IDENTITY))
+        self.assertTrue(result['ok'])
+        self.assertEqual(self.bridge._settings['age_identity_text'], PASTED_IDENTITY)
+        initialized = self.bridge.initialize()
+        self.assertNotIn('age_identity_text', initialized['defaults'])
+        self.bridge._progress(dict(stage='HOST', status='RUNNING', message=PASTED_IDENTITY,
+                                   age_identity_text=PASTED_IDENTITY, output=PASTED_IDENTITY))
+        for safe_value in (result, initialized, self.bridge.poll(), self.bridge._report(), self.bridge._public_plan()):
+            self.assertNotIn(PASTED_IDENTITY, json.dumps(safe_value))
+
+    def test_switching_back_to_file_clears_pasted_identity_in_bridge_memory(self):
+        self.assertTrue(self.bridge.update_settings(dict(age_identity_mode='paste',
+                                                        age_identity_text=PASTED_IDENTITY))['ok'])
+        result = self.bridge.update_settings(dict(age_identity_mode='file', age_identity='synthetic.agekey'))
+        self.assertTrue(result['ok'])
+        self.assertEqual(self.bridge._settings['age_identity_mode'], 'file')
+        self.assertEqual(self.bridge._settings['age_identity_text'], '')
+        self.assertEqual(self.bridge._settings['age_identity'], 'synthetic.agekey')
+        for safe_value in (result, self.bridge.initialize(), self.bridge.poll(), self.bridge._report()):
+            self.assertNotIn(PASTED_IDENTITY, json.dumps(safe_value))
+
+    def test_paste_lab_snapshot_passes_through_real_controller_without_public_echo(self):
+        self.bridge._controller = ServiceController(self.bridge._confirm_key,
+            confirm_changed_key=self.bridge._confirm_changed_key, cancelled=self.bridge._cancelled,
+            ssh_factory=Mock())
+        received = []
+        def prepare(snapshot, **kwargs):
+            received.append(snapshot)
+            kwargs['progress_callback'](dict(stage='HOST', status='RUNNING',
+                code='SERVICE_LAB_CHECKING_INPUTS', accidental_identity=PASTED_IDENTITY))
+            return dict(status='PREPARED_LAB', applications_started=False, publications_enabled=False,
+                backup_verified=False, accidental_identity=PASTED_IDENTITY,
+                checks=dict(infisical_restored=True, stack_prepared=True, agent_installed=True,
+                            lab_scope_recorded=True))
+        settings = dict(SETTINGS, age_identity_mode='paste', age_identity_text=PASTED_IDENTITY,
+                        age_identity='inactive-file-must-not-be-opened')
+        with patch('recovery_gui.lab_prepare.prepare_lab', side_effect=prepare):
+            result = self.bridge.prepare_lab(settings)
+            self.assertTrue(result['ok'])
+            events = self.drain()
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]['age_identity_mode'], 'paste')
+        self.assertEqual(received[0]['age_identity_text'], PASTED_IDENTITY)
+        self.assertIn('lab_prepared', [event['kind'] for event in events])
+        for safe_value in (result, events, self.bridge._report(), self.bridge.initialize()):
+            self.assertNotIn(PASTED_IDENTITY, json.dumps(safe_value))
 
     def test_analysis_and_plan_return_metadata_without_any_env_values(self):
         result = self.bridge.analyze_service(SOURCE)
@@ -286,6 +336,52 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual([event['kind'] for event in events], ['choices', 'point', 'done'])
         self.assertEqual(events[1]['tag'], TAG)
         self.assertNotIn('token', events[1])
+
+    def test_pasted_identity_recovery_uses_ram_request_without_a_local_identity_file(self):
+        connections = [Mock(), Mock()]
+        detected = dict(stack=dict(containers=0, volumes=0, existing_recovery=False),
+                        infisical=dict(containers=0, volumes=0, existing_recovery=False))
+        captured = []
+        def restore(stack, server, request, callback, tls):
+            self.assertTrue(tls)
+            self.assertEqual((stack, server), tuple(connections))
+            self.assertEqual(request['age_identity_mode'], 'paste')
+            self.assertEqual(request['age_identity_text'], PASTED_IDENTITY)
+            captured.append(request)
+            callback(dict(stage='OPERATIONAL_READY', status='PASS', accidental_identity=PASTED_IDENTITY))
+        settings = dict(SETTINGS, age_identity_mode='paste', age_identity_text=PASTED_IDENTITY,
+                        age_identity='inactive-file-must-not-be-opened')
+        with patch('recovery_gui.web_bridge.Path', side_effect=AssertionError('No local identity file is needed')), \
+                patch('recovery_gui.web_bridge.backend.SSH', side_effect=connections), \
+                patch('recovery_gui.web_bridge.backend.inspect_recovery', return_value=detected), \
+                patch('recovery_gui.web_bridge.backend.restore_all', side_effect=restore):
+            result = self.bridge.recover(settings, 'fresh')
+            self.assertTrue(result['ok'], result)
+            events = self.drain()
+        self.assertEqual(len(captured), 1)
+        self.assertIn('completed', [event['kind'] for event in events])
+        for connection in connections:
+            connection.close.assert_called_once_with()
+        for safe_value in (result, events, self.bridge.initialize(), self.bridge._report()):
+            self.assertNotIn(PASTED_IDENTITY, json.dumps(safe_value))
+
+    def test_pasted_public_key_recovery_is_refused_before_any_network_access(self):
+        public_key = 'age1SYNTHETICPUBLICRECIPIENTNOTAPRIVATEKEY'
+        settings = dict(SETTINGS, age_identity_mode='paste', age_identity_text=public_key,
+                        age_identity='inactive-file-must-not-be-opened')
+        with patch('recovery_gui.web_bridge.Path', side_effect=AssertionError('No local file read')), \
+                patch('recovery_gui.web_bridge.backend.SSH') as ssh, \
+                patch('recovery_gui.web_bridge.backend.GitHub') as github, \
+                patch('recovery_gui.web_bridge.backend.inspect_recovery') as inspect, \
+                patch('recovery_gui.web_bridge.backend.restore_all') as restore:
+            result = self.bridge.recover(settings, 'fresh')
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['code'], 'AGE_PUBLIC_KEY_NOT_IDENTITY')
+        for network_operation in (ssh, github, inspect, restore):
+            network_operation.assert_not_called()
+        self.assertFalse(self.bridge._is_busy())
+        for safe_value in (result, self.bridge.poll(), self.bridge.initialize(), self.bridge._report()):
+            self.assertNotIn(public_key, json.dumps(safe_value))
 
     def test_recovery_calls_guarded_backend_and_requires_operational_ready(self):
         class SSH:

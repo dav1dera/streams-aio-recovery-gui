@@ -18,6 +18,7 @@ import uuid
 
 from . import __version__, backend
 from .onboarding import ServiceController
+from .age_input import validate_identity_input
 from .service_plan import inspect_inputs, analyze_inputs
 from .ui_onboarding import (ERROR_TEXT, PROGRESS_TEXT, STAGES as SERVICE_STAGES, connection_from_snapshot,
                            infisical_from_fields, verified_completion, verified_local_completion)
@@ -27,12 +28,12 @@ from .ui_state import FINISHED_STAGES, PHASE_STAGES, operational_request, machin
 KEYS = frozenset(('host', 'user', 'port', 'password', 'ssh_key', 'key_password', 'sudo_password',
     'infisical_host', 'infisical_user', 'infisical_port', 'infisical_password', 'infisical_key',
     'infisical_key_password', 'infisical_sudo_password', 'github_token', 'dr_tag', 'public_commit',
-    'age_identity', 'supplemental_inputs', 'infisical_address', 'project_id', 'environment',
+    'age_identity', 'age_identity_mode', 'age_identity_text', 'supplemental_inputs', 'infisical_address', 'project_id', 'environment',
     'client_id_file', 'client_secret_file', 'domain_target_address', 'routing_mode'))
 SENSITIVE = frozenset(('password', 'key_password', 'sudo_password', 'infisical_password',
-    'infisical_key_password', 'infisical_sudo_password', 'github_token', 'client_secret_file'))
+    'infisical_key_password', 'infisical_sudo_password', 'github_token', 'client_secret_file', 'age_identity_text'))
 DEFAULTS = dict.fromkeys(KEYS, '') | dict(user='test', port='22', infisical_user='test2',
-                                       infisical_port='22', routing_mode='parallel_test')
+                                       infisical_port='22', routing_mode='parallel_test', age_identity_mode='file')
 WEB_ERRORS = {
     'WEB_INPUT_INVALID': 'Controlla i campi del modulo e riprova.',
     'WEB_CLOSED': 'La finestra è stata chiusa. Apri di nuovo il programma.',
@@ -40,6 +41,11 @@ WEB_ERRORS = {
     'SERVICE_OPERATION_BUSY': 'È già in corso un’operazione. Attendi il suo esito o interrompila.',
     'SERVICE_TOOL_FAILED': 'Il controllo non è stato completato. Le credenziali non vengono registrate.',
     'RECOVERY_OPERATION_INCOMPLETE': 'Il recupero non ha ancora superato tutti i controlli richiesti.',
+    'AGE_IDENTITY_FILE_REQUIRED': 'In Accessi e backup scegli il file della chiave privata, oppure seleziona Incolla chiave e inserisci la riga AGE-SECRET-KEY-1….',
+    'AGE_IDENTITY_FILE_INVALID': 'La chiave deve essere entro 64 KiB. Se scegli un file, deve essere un file normale e non un collegamento.',
+    'AGE_IDENTITY_ENCODING_INVALID': 'La chiave privata deve essere testo valido. I file sono supportati in UTF-8 o UTF-16.',
+    'AGE_PRIVATE_IDENTITY_REQUIRED': 'Serve la riga originale completa AGE-SECRET-KEY-1…. Inseriscila nel campo mascherato oppure scegli il file della chiave privata.',
+    'AGE_PUBLIC_KEY_NOT_IDENTITY': 'age1… è una chiave pubblica. Per decifrare serve la chiave privata PRIMARY o RECOVERY che inizia con AGE-SECRET-KEY-1….',
 }
 # Closed codes emitted by the bundled planner, controller and remote helper.
 DIAGNOSTIC_CODES = frozenset("""
@@ -294,6 +300,8 @@ class WebBridge:
         need(all(isinstance(value, str) and len(value) <= (65536 if key in SENSITIVE else 4096)
                  and '\x00' not in value for key, value in settings.items()))
         changes = {key: value if key in SENSITIVE else value.strip() for key, value in settings.items()}
+        if changes.get('age_identity_mode') == 'file':
+            changes['age_identity_text'] = ''
         if any(self._settings[key] != value for key, value in changes.items()):
             self._settings.update(changes)
             self._invalidate(clear=False)
@@ -509,9 +517,7 @@ class WebBridge:
             except Exception:
                 raise BridgeFailure('SSH_ADDRESS_REQUIRED') from None
             need(data['host'] != data['infisical_host'], 'SEPARATE_RECOVERY_VMS_REQUIRED')
-            identity = Path(data['age_identity'])
-            need(identity.is_file(), 'AGE_IDENTITY_FILE_REQUIRED')
-            need(not identity.is_symlink() and identity.stat().st_size <= 65536, 'AGE_IDENTITY_FILE_INVALID')
+            validate_identity_input(data)
             if action == 'fresh':
                 need(not data.get('supplemental_inputs') or Path(data['supplemental_inputs']).is_file(), 'RECOVERY_SUPPLEMENT_INVALID')
             def worker():

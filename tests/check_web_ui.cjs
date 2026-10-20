@@ -25,15 +25,20 @@ async function main() {
         return {ok: true, job_id: 'a'.repeat(32)};
       }
       window.__testCalls = calls;
+      window.__testSettingUpdates = 0;
       window.__testEvents = rows => events.push(...rows);
       window.pywebview = {api: {
         initialize: async () => value.initial,
-        update_settings: async () => ({ok: true}),
+        update_settings: async () => {window.__testSettingUpdates += 1; return {ok: true};},
         invalidate_service: async () => ({ok: true}),
         poll: async () => {const rows = events.splice(0); if (rows.some(row => row.kind === 'done')) busy = false; return {ok: true, busy, events: rows};},
         load_backups: async () => job('load_backups', [{kind: 'choices', tags: [value.point.tag]}, {kind: 'point', ...value.point}]),
         load_backup: async () => job('load_backup', [{kind: 'point', ...value.point}]),
-        prepare_lab: async () => {calls.push('prepare_lab'); return job('prepare_lab', [{kind: 'error', code: 'SSH_AUTH_FAILED', description: 'Credenziali SSH da verificare.'}]);},
+        prepare_lab: async input => {
+          calls.push('prepare_lab');
+          window.__testLabPaste = input.age_identity_mode === 'paste' && input.age_identity === '' && input.age_identity_text === 'AGE-SECRET-KEY-1SYNTHETICNOTAPRIVATEKEY1234';
+          return job('prepare_lab', [{kind: 'error', code: 'SSH_AUTH_FAILED', description: 'Credenziali SSH da verificare.'}]);
+        },
         recover: async () => {calls.push('recover'); busy = true; return {ok: true, job_id: 'b'.repeat(32)};},
         analyze_service: async () => ({ok: true, variables: value.variables}),
         prepare_service: async () => ({ok: true, plan: value.plan}),
@@ -53,6 +58,21 @@ async function main() {
     await page.locator('[data-page="connections"]').click();
     await page.locator('[data-setting="host"]').fill('192.0.2.30');
     await page.locator('[data-setting="infisical_host"]').fill('192.0.2.33');
+    const syntheticIdentity = 'AGE-SECRET-KEY-1SYNTHETICNOTAPRIVATEKEY1234';
+    await page.locator('[data-age-mode="paste"]').click();
+    await page.locator('#age-identity-text').fill(syntheticIdentity);
+    assert.equal(await page.locator('#age-identity-text').getAttribute('type'), 'password');
+    assert.equal(await page.locator('#age-identity-text').getAttribute('autocomplete'), 'off');
+    assert(await page.locator('#age-file-panel').isHidden());
+    await page.locator('#age-paste-panel .toggle-password').click();
+    assert.equal(await page.locator('#age-identity-text').getAttribute('type'), 'text');
+    await page.locator('[data-age-mode="file"]').click();
+    assert.equal(await page.locator('#age-identity-text').inputValue(), '', 'Leaving paste mode must clear the pasted identity');
+    assert.equal(await page.locator('#age-identity-text').getAttribute('type'), 'password', 'Returning to paste mode must restore masking');
+    await page.locator('[data-age-mode="paste"]').click();
+    await page.locator('#age-identity-text').fill(syntheticIdentity);
+    assert.equal(await page.evaluate(() => window.__testSettingUpdates), 0, 'Typing and selecting age mode must not call the native bridge');
+    assert(!(await page.locator('body').textContent()).includes(syntheticIdentity), 'The identity must not appear in summaries or messages');
     await page.locator('#load-backups').click();
     await page.waitForFunction(tag => document.querySelector('#backup-tag').value === tag, fixture.point.tag);
     await page.screenshot({path: path.join(output, '02-accessi.png')});
@@ -76,6 +96,7 @@ async function main() {
     await page.locator('input[name="verification-scope"][value="local_lab"]').check();
     await page.locator('#prepare-lab').click();
     await page.waitForFunction(() => !document.querySelector('#lab-feedback').hidden && document.querySelector('#lab-feedback').textContent.includes('SSH_AUTH_FAILED'));
+    assert.equal(await page.evaluate(() => window.__testLabPaste), true, 'The explicit lab action must receive the in-memory identity without a file');
     assert(await page.locator('#global-status-detail').isVisible(), 'Error detail must remain visible without scrolling');
     await page.screenshot({path: path.join(output, '03-esito-laboratorio.png')});
     await page.locator('#service-next').click();
@@ -94,6 +115,7 @@ async function main() {
     assert(await page.locator('#global-status-detail').textContent().then(text => /GitHub|backup/i.test(text)), 'Local completion must disclose publication exclusions');
     await page.screenshot({path: path.join(output, '05-verifica-locale.png')});
     assert.deepEqual(errors, [], 'No browser exception may hide a clicked action');
+    assert(!(await page.locator('body').textContent()).includes(syntheticIdentity), 'The identity must not appear in status or diagnostics');
     assert.deepEqual(await page.evaluate(() => window.__testCalls), ['recover', 'prepare_lab', 'apply_service']);
     await page.setViewportSize({width: 980, height: 740});
     await page.locator('[data-page="connections"]').click();

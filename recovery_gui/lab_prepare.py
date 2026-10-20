@@ -10,6 +10,7 @@ import re
 import threading
 
 from . import backend
+from .age_input import AgeInputFailure, validate_identity_input
 
 
 class LabFailure(ValueError):
@@ -156,11 +157,15 @@ def prepare_lab(snapshot, confirm_key, cancelled, confirm_changed_key=None, prog
         _need(isinstance(tag, str) and backend.TAG.fullmatch(tag)
               and isinstance(commit, str) and backend.SHA.fullmatch(commit), 'SELECT_GITHUB_RECOVERY_POINT')
         identity = snapshot.get('age_identity', '')
-        _need(isinstance(identity, str) and bool(identity), 'AGE_IDENTITY_FILE_REQUIRED')
-        identity_path = Path(identity)
-        _need(identity_path.is_file(), 'AGE_IDENTITY_FILE_REQUIRED')
-        _need(not identity_path.is_symlink() and 0 < identity_path.stat().st_size <= 65536,
-              'AGE_IDENTITY_FILE_INVALID')
+        identity_mode = snapshot.get('age_identity_mode', 'file')
+        if identity_mode == 'file':
+            _need(isinstance(identity, str) and bool(identity), 'AGE_IDENTITY_FILE_REQUIRED')
+            identity_path = Path(identity)
+            _need(identity_path.is_file(), 'AGE_IDENTITY_FILE_REQUIRED')
+            _need(not identity_path.is_symlink() and 0 < identity_path.stat().st_size <= 65536,
+                  'AGE_IDENTITY_FILE_INVALID')
+        else:
+            validate_identity_input(snapshot)
         token = snapshot.get('github_token', '')
         _need(isinstance(token, str) and token.strip() and '\n' not in token and '\r' not in token,
               'GITHUB_TOKEN_REQUIRED')
@@ -192,6 +197,8 @@ def prepare_lab(snapshot, confirm_key, cancelled, confirm_changed_key=None, prog
                        infisical_address='', project_id='', environment='', native_agent=True,
                        aio_mode='snapshot', client_id_file='', client_secret_file='', aio_payload='',
                        supplemental_inputs='', aiostreams_exports=[], aiometadata_exports=[])
+        if identity_mode == 'paste':
+            request.update(age_identity_mode='paste', age_identity_text=snapshot['age_identity_text'])
         server.prepare(dict(request, role='infisical'), emit)
         _check_cancel(cancelled)
         port = server.restored_port()
@@ -225,7 +232,7 @@ def prepare_lab(snapshot, confirm_key, cancelled, confirm_changed_key=None, prog
                     checks=dict(infisical_restored=True, stack_prepared=True, agent_installed=True,
                                 lab_scope_recorded=True), applications_started=False,
                     publications_enabled=False, backup_verified=False)
-    except backend.Failure as error:
+    except (backend.Failure, AgeInputFailure) as error:
         code = str(error)
         raise LabFailure(code if code in backend.ERROR_CODES else 'LAB_PREPARATION_FAILED') from None
     except LabFailure:

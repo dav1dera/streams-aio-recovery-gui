@@ -99,8 +99,30 @@
       if (Object.prototype.hasOwnProperty.call(defaults, input.dataset.setting)) input.value = text(defaults[input.dataset.setting]);
     });
     state.settings = collectSettings();
+    setAgeMode($('#age-identity-mode').value, false);
     state.settingsDirty = false;
     refreshSummaries();
+  }
+  function setAgeMode(mode, markDirty = true) {
+    if (markDirty && busy()) return;
+    const selected = mode === 'paste' ? 'paste' : 'file';
+    $('#age-identity-mode').value = selected;
+    state.settings.age_identity_mode = selected;
+    if (selected === 'file') {
+      const input = $('#age-identity-text');
+      input.value = '';
+      input.type = 'password';
+      state.settings.age_identity_text = '';
+      input.parentElement.querySelector('.toggle-password').setAttribute('aria-pressed', 'false');
+    }
+    $('#age-file-panel').hidden = selected !== 'file';
+    $('#age-paste-panel').hidden = selected !== 'paste';
+    $$('[data-age-mode]').forEach(button => {
+      const active = button.dataset.ageMode === selected;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    if (markDirty) { state.settingsDirty = true; state.service.inspected = false; renderServiceActions(); }
   }
   async function flushSettings(values = collectSettings()) {
     const result = await call('update_settings', [values]);
@@ -162,7 +184,7 @@
 
   function renderBusy() {
     const locked = busy();
-    $$('input,textarea,select,[data-choose],#load-backups,#save-settings,#save-advanced,#recover-fresh,#recover-resume,#prepare-lab,#store-private,.scope-switch button').forEach(node => { node.disabled = locked; });
+    $$('input,textarea,select,[data-choose],[data-age-mode],#load-backups,#save-settings,#save-advanced,#recover-fresh,#recover-resume,#prepare-lab,#store-private,.scope-switch button').forEach(node => { node.disabled = locked; });
     $('#cancel-operation').hidden = !locked;
     if (!locked) $('#cancel-operation').disabled = false;
     const loadingButton = state.operation === 'lab' ? $('#prepare-lab') : state.operation === 'backups' ? $('#load-backups') : null;
@@ -571,6 +593,7 @@
     $$('[data-setting]').forEach(input => input.addEventListener('input', () => { state.settingsDirty = true; state.service.inspected = false; refreshSummaries(); renderServiceActions(); }));
     $$('.toggle-password').forEach(button => button.addEventListener('click', () => { const input = button.parentElement.querySelector('input'); input.type = input.type === 'password' ? 'text' : 'password'; button.setAttribute('aria-pressed', String(input.type === 'text')); }));
     $$('[data-choose]').forEach(button => button.addEventListener('click', () => void chooseFile(button.dataset.choose)));
+    $$('[data-age-mode]').forEach(button => button.addEventListener('click', () => setAgeMode(button.dataset.ageMode)));
     $('#save-settings').addEventListener('click', () => void saveSettings()); $('#save-advanced').addEventListener('click', () => void saveSettings());
     $('#load-backups').addEventListener('click', () => void startJob('backups', 'load_backups', [collectSettings()], 'Caricamento backup da GitHub'));
     $('#backup-tag').addEventListener('change', () => { if ($('#backup-tag').value) void startJob('point', 'load_backup', [$('#backup-tag').value], 'Verifica del punto di recupero'); });
@@ -596,7 +619,7 @@
     $$('.code-field textarea').forEach(input => input.addEventListener('keydown', event => { if (event.key === 'Tab' && !event.shiftKey) { event.preventDefault(); const start = input.selectionStart, end = input.selectionEnd; input.setRangeText('  ', start, end, 'end'); input.dispatchEvent(new Event('input', { bubbles: true })); } }));
   }
   function initializeUI() {
-    bindEvents(); syncSettings({ user: 'test', infisical_user: 'test2', port: '22', infisical_port: '22', routing_mode: 'parallel_test' });
+    bindEvents(); syncSettings({ user: 'test', infisical_user: 'test2', port: '22', infisical_port: '22', routing_mode: 'parallel_test', age_identity_mode: 'file' });
     resetStages(); renderVariables(); renderPlan(); renderServiceActions(); window.recoveryUI.ready = true;
     if (api()) void initializeBridge();
     else { document.body.dataset.bridgeState = 'preview'; $('#preview-banner').hidden = false; }
@@ -608,7 +631,8 @@
       { name: 'four-main-pages', ok: $$('[data-view]').length === 4 },
       { name: 'four-service-steps', ok: $$('[data-step-panel]').length === 4 && $$('.step').length === 4 },
       { name: 'persistent-feedback', ok: !$('#main-content').contains($('#statusbar')) && !!$('#global-status-detail') },
-      { name: 'masked-credentials', ok: $$('[data-setting="password"],[data-setting="infisical_password"],[data-setting="github_token"],#private-value,#service-access-token').every(input => input.type === 'password' && input.autocomplete === 'off') },
+      { name: 'masked-credentials', ok: $$('[data-setting="password"],[data-setting="infisical_password"],[data-setting="github_token"],#age-identity-text,#private-value,#service-access-token').every(input => input.type === 'password' && input.autocomplete === 'off') },
+      { name: 'age-key-input-modes', ok: $$('[data-age-mode]').length === 2 && ['file', 'paste'].includes($('#age-identity-mode').value) && $('#age-file-panel').hidden !== $('#age-paste-panel').hidden },
       { name: 'bounded-file-choices', ok: $$('[data-choose]').every(button => FILE_KINDS.has(button.dataset.choose)) },
       { name: 'no-inline-handlers', ok: $$('*').every(node => Array.from(node.attributes).every(attr => !/^on/i.test(attr.name))) },
       { name: 'desktop-ready', ok: window.recoveryUI.ready === true },

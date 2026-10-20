@@ -165,6 +165,22 @@ class WebAssetsTests(unittest.TestCase):
                     self.assertEqual(tag, 'button')
                     self.assertIn(attrs['data-choose'], FILE_KINDS)
 
+    def test_pasted_age_identity_has_one_masked_ephemeral_field(self):
+        fields = [(tag, attrs) for tag, attrs in self.document.elements
+                  if attrs.get('data-setting') == 'age_identity_text']
+        self.assertEqual(len(fields), 1)
+        tag, attrs = fields[0]
+        self.assertEqual(tag, 'input')
+        self.assertEqual(attrs.get('type'), 'password')
+        self.assertIn(attrs.get('autocomplete'), ('off', 'new-password'))
+        self.assertEqual(attrs.get('spellcheck'), 'false')
+        self.assertFalse(attrs.get('value'))
+        self.assertLessEqual(int(attrs.get('maxlength', '0')), 65536)
+        self.assertGreater(int(attrs.get('maxlength', '0')), 0)
+        modes = {attrs['data-age-mode'] for _, attrs in self.document.elements
+                 if 'data-age-mode' in attrs}
+        self.assertEqual(modes, {'file', 'paste'})
+
 
 class LocalAssetResolverTests(unittest.TestCase):
     def test_remote_absolute_and_encoded_escape_references_are_refused(self):

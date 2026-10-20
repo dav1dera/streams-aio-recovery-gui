@@ -96,6 +96,13 @@ devono essere salvati in localStorage, sessionStorage, cookie o IndexedDB, né
 inviati a servizi di analisi. I report restano privi di credenziali. Il contenuto
 inserito dall'utente si mostra tramite nodi testuali, mai come HTML eseguibile.
 
+Per la chiave age si distinguono **File** e **Incolla**. La seconda modalità usa
+un campo mascherato e conserva il testo soltanto nella sessione; non crea un file
+temporaneo Windows. Il backend trasferisce i byte direttamente via SFTP autenticato
+a un file remoto privato `0600`, conservando i controlli di decifratura esistenti.
+La chiave incollata non fa parte di impostazioni restituite al frontend,
+metadati, report, piani esportati o storage del browser.
+
 Il cambio di frontend non deve modificare conferma dell'impronta SSH,
 classificazione esplicita dei valori privati, confini di autorizzazione, protezione
 dei file, controlli di salute o verifica della pubblicazione. AdGuard, DNS del

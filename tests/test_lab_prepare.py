@@ -9,6 +9,7 @@ from recovery_gui import backend, lab_prepare as lab
 
 
 SECRET = 'synthetic-credential-never-in-report'
+PASTED_IDENTITY = 'AGE-SECRET-KEY-1SYNTHETICNOTAPRIVATEKEY1234'
 COMMIT = 'b' * 40
 TAG = 'dr-20261020T120100Z'
 
@@ -124,9 +125,10 @@ class Harness:
         fake_identity.is_file.return_value = True
         fake_identity.is_symlink.return_value = False
         fake_identity.stat.return_value = SimpleNamespace(st_size=1024)
-        with patch.object(lab, 'Path', return_value=fake_identity), \
+        with patch.object(lab, 'Path', return_value=fake_identity) as identity_path, \
                 patch.object(backend, 'validate_remote_shell_scripts'), \
                 patch.object(backend, 'APIBridge', side_effect=lambda *args: FakeBridge(self, *args)):
+            self.identity_path = identity_path
             return lab.prepare_lab(self.snapshot, lambda *_: False, self.cancelled,
                 progress_callback=callback or self.events.append, ssh_factory=self.ssh, github_factory=self.github)
 
@@ -208,6 +210,48 @@ class LabPreparationTests(unittest.TestCase):
         self.assertTrue(self.harness.requests[-1]['ssh_bridge'])
         self.assertNotIn(SECRET, json.dumps(self.harness.events))
         self.assertNotIn('must-not-copy', json.dumps(self.harness.requests))
+
+    def test_pasted_identity_reaches_both_lab_requests_without_reading_a_local_file(self):
+        self.harness.snapshot.update(age_identity_mode='paste', age_identity_text=PASTED_IDENTITY,
+                                     age_identity='inactive-file-must-not-be-opened')
+        result = self.harness.prepare()
+        self.harness.identity_path.assert_not_called()
+        self.assertEqual([request['role'] for request in self.harness.requests], ['infisical', 'stack'])
+        for request in self.harness.requests:
+            self.assertEqual(request['age_identity_mode'], 'paste')
+            self.assertEqual(request['age_identity_text'], PASTED_IDENTITY)
+            self.assertEqual(request['aio_mode'], 'snapshot')
+            self.assertTrue(request['native_agent'])
+        self.assertEqual(result['status'], 'PREPARED_LAB')
+        self.assertFalse(result['applications_started'])
+        self.assertFalse(result['publications_enabled'])
+        self.assertFalse(result['backup_verified'])
+        for safe_value in (result, self.harness.events, self.harness.native_metadata, self.harness.marker):
+            self.assertNotIn(PASTED_IDENTITY, json.dumps(safe_value))
+        self.assertEqual([connection.closed for connection in self.harness.connections], [1, 1])
+
+    def test_pasted_public_key_is_refused_before_github_or_ssh(self):
+        public_key = 'age1SYNTHETICPUBLICRECIPIENTNOTAPRIVATEKEY'
+        self.harness.snapshot.update(age_identity_mode='paste', age_identity_text=public_key)
+        with patch.object(self.harness, 'github') as github, patch.object(self.harness, 'ssh') as ssh:
+            with self.assertRaisesRegex(lab.LabFailure, '^AGE_PUBLIC_KEY_NOT_IDENTITY$') as failure:
+                self.harness.prepare()
+        github.assert_not_called()
+        ssh.assert_not_called()
+        self.harness.identity_path.assert_not_called()
+        self.assertFalse(self.harness.requests)
+        self.assertFalse(self.harness.native_metadata)
+        self.assertNotIn(public_key, str(failure.exception))
+        self.assertNotIn(public_key, json.dumps(self.harness.events))
+
+    def test_file_mode_does_not_forward_inactive_pasted_identity(self):
+        self.harness.snapshot.update(age_identity_mode='file', age_identity_text=PASTED_IDENTITY)
+        self.harness.prepare()
+        self.harness.identity_path.assert_called_once_with('synthetic.agekey')
+        for request in self.harness.requests:
+            self.assertEqual(request['age_identity'], 'synthetic.agekey')
+            self.assertNotIn('age_identity_text', request)
+            self.assertNotIn(PASTED_IDENTITY, json.dumps(request))
 
     def test_dirty_or_existing_recovery_is_refused_before_all_mutations(self):
         for role, change in (('stack', {'containers': 1}), ('infisical', {'volumes': 1}),

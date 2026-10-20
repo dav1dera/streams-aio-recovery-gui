@@ -2,7 +2,7 @@
 
 **Guida in italiano per organizzare lo stack, conservarne i backup e recuperarlo su due VM.**
 
-**Sviluppo 0.5.0-dev.4:** nuova interfaccia desktop scura ispirata ad AIOStreams,
+**Sviluppo 0.5.0-dev.5:** nuova interfaccia desktop scura ispirata ad AIOStreams,
 con accessi affiancati, procedura per i servizi in quattro passi ed esiti sempre
 visibili. La finestra usa Edge WebView2 e carica soltanto risorse incluse nel
 programma, senza CDN o font da scaricare. I controlli restano nel backend Python.
@@ -279,7 +279,16 @@ Se un addon funziona dal telefono ma non dal PC, controlla **DNS del client**, c
 | **VM Stack / VM Infisical** | IP, utente e password SSH oppure file della chiave SSH autorizzata. Sudo/passphrase separati solo se necessari. |
 | **Token GitHub** | Fine-grained con **Contents: Read** sui due repository del recupero. Per ripristinare non serve scrittura. |
 | **Backup pubblicato** | Premi **Carica backup** e scegli una release completa schema 2. Il commit viene compilato dal manifest. |
-| **Chiave age PRIMARY o RECOVERY** | File privato compatibile contenente `AGE-SECRET-KEY-1…`. Una chiave pubblica `age1…` non decifra. |
+| **Chiave age PRIMARY o RECOVERY** | Chiave privata compatibile contenente `AGE-SECRET-KEY-1…`. La versione stabile usa il file; nell’anteprima puoi scegliere **File** oppure **Incolla**. Una chiave pubblica `age1…` non decifra. |
+
+Nell’anteprima, con **File** scegli il file privato già custodito sul PC. Con
+**Incolla** inserisci la chiave privata nel campo mascherato: non serve creare un
+file Windows. La GUI conserva il testo nella memoria della sessione e lo trasferisce
+direttamente via SFTP autenticato a un file privato sulla VM, con permessi `0600`,
+per gli stessi controlli di decifratura. Non crea un file temporaneo locale con la
+chiave incollata e non la include in esiti, piani esportati o memoria persistente
+del browser. Dopo la chiusura dell’app devi reinserirla. Continua a custodirne una
+copia protetta fuori dalla sessione: il campo **Incolla** non è un archivio delle chiavi.
 
 Nel riquadro **Domini e controller prima dell'avvio** scegli modalità e **indirizzo IP previsto per i domini**. Il campo descrive l'instradamento predisposto: non lo cambia. Usa l'IP LAN per un percorso LAN effettivo, oppure l'IP pubblico atteso per il percorso pubblico; non copiarci automaticamente l'IP SSH.
 

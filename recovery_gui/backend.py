@@ -24,6 +24,7 @@ from .startup_diagnostic import safe as safe_startup_diagnostic
 from .external_dependencies import validate as validate_external_dependencies
 from . import ssh_identity
 from .upload_staging import SETUP as UPLOAD_SETUP
+from .age_input import AgeInputFailure, validate_pasted_identity
 
 PUBLIC = 'dav1dera/streams-aio-sanitized'
 PRIVATE = 'dav1dera/streams-aio-dr'
@@ -432,6 +433,14 @@ class SSH:
 
     def upload(self, request):
         validate_remote_shell_scripts()
+        identity_mode = request.get('age_identity_mode', 'file')
+        require(identity_mode in ('file', 'paste'), 'AGE_IDENTITY_FILE_INVALID')
+        pasted_identity = None
+        if identity_mode == 'paste':
+            try:
+                pasted_identity = validate_pasted_identity(request.get('age_identity_text', ''))
+            except AgeInputFailure as error:
+                raise Failure(str(error)) from None
         role = request.get('role', 'stack')
         home = (self.check(role=role) if role != 'stack' else self.check())['home']
         area = self.area(home, role)
@@ -460,7 +469,13 @@ class SSH:
             mode = request.get('aio_mode', 'import')
             require(mode in ('import', 'manual', 'snapshot'), 'INVALID_AIO_RECOVERY_MODE')
             config['aio_mode'] = mode
+            if pasted_identity is not None:
+                destination = remote + '/age_identity'
+                self._put_private_bytes(sftp, pasted_identity, destination)
+                config['age_identity'] = destination
             for name in ('age_identity', 'client_id_file', 'client_secret_file', 'aio_payload', 'supplemental_inputs'):
+                if name == 'age_identity' and identity_mode == 'paste':
+                    continue
                 if (request.get(name) and not (mode in ('manual', 'snapshot') and name == 'aio_payload')
                         and not (role == 'infisical' and name == 'supplemental_inputs')):
                     destination = remote + '/' + name
@@ -477,6 +492,34 @@ class SSH:
             return remote, json.dumps(config).encode() + b'\n'
         finally:
             sftp.close()
+
+    @staticmethod
+    def _put_private_bytes(sftp, raw, destination):
+        """Create an empty exclusive file, harden it, then write only via SFTP."""
+        require(isinstance(raw, bytes) and 0 < len(raw) <= 65536, 'AGE_IDENTITY_FILE_INVALID')
+        try:
+            # The parent is the fresh authenticated user's 0700 upload area.
+            # 'x' sets SSH_FXF_EXCL; 'w' supplies the writable create handle.
+            with sftp.open(destination, 'wx') as writer:
+                writer.chmod(0o600)
+                info = writer.stat()
+                require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
+                        and info.st_size == 0, 'SSH_UPLOAD_FAILED')
+                writer.write(raw)
+                writer.flush()
+            with sftp.open(destination, 'rb') as reader:
+                info = reader.stat()
+                require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600,
+                        'SSH_UPLOAD_FAILED')
+                require(info.st_size == len(raw), 'SSH_UPLOAD_SHA256_MISMATCH')
+                copied = reader.read(len(raw) + 1)
+            require(isinstance(copied, bytes) and len(copied) == len(raw)
+                    and hashlib.sha256(copied).digest() == hashlib.sha256(raw).digest(),
+                    'SSH_UPLOAD_SHA256_MISMATCH')
+        except Failure:
+            raise
+        except Exception:
+            raise Failure('SSH_UPLOAD_FAILED') from None
 
     @staticmethod
     def _put(sftp, source, destination):
