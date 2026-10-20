@@ -37,7 +37,7 @@ async function main() {
         prepare_lab: async input => {
           calls.push('prepare_lab');
           window.__testLabPaste = input.age_identity_mode === 'paste' && input.age_identity === '' && input.age_identity_text === 'AGE-SECRET-KEY-1SYNTHETICNOTAPRIVATEKEY1234';
-          return job('prepare_lab', [{kind: 'error', code: 'SSH_AUTH_FAILED', description: 'Credenziali SSH da verificare.'}]);
+          return job('prepare_lab', [{kind: 'error', code: 'SSH_AUTH_FAILED', target_role: 'infisical', description: 'Credenziali SSH da verificare.'}]);
         },
         recover: async () => {calls.push('recover'); busy = true; return {ok: true, job_id: 'b'.repeat(32)};},
         analyze_service: async () => ({ok: true, variables: value.variables}),
@@ -98,6 +98,14 @@ async function main() {
     await page.waitForFunction(() => !document.querySelector('#lab-feedback').hidden && document.querySelector('#lab-feedback').textContent.includes('SSH_AUTH_FAILED'));
     assert.equal(await page.evaluate(() => window.__testLabPaste), true, 'The explicit lab action must receive the in-memory identity without a file');
     assert(await page.locator('#global-status-detail').isVisible(), 'Error detail must remain visible without scrolling');
+    assert((await page.locator('#global-status-detail').textContent()).includes('VM Infisical:'), 'The failed VM must be identified in the persistent error');
+    assert((await page.locator('#lab-feedback').textContent()).includes('VM Infisical:'), 'The failed VM must be identified in lab feedback');
+    await page.evaluate(() => window.__testEvents([{kind: 'error', code: 'SSH_AUTH_FAILED', target_role: 'stack', description: 'Credenziali SSH da verificare.'}]));
+    await page.waitForFunction(() => document.querySelector('#global-status-detail').textContent.includes('VM stack:'));
+    assert((await page.locator('#lab-feedback').textContent()).includes('VM stack:'));
+    await page.evaluate(() => window.__testEvents([{kind: 'error', code: 'SSH_AUTH_FAILED', target_role: 'PRIVATE_ROLE_CANARY', description: 'Credenziali SSH da verificare.'}]));
+    await page.waitForFunction(() => document.querySelector('#global-status-detail').textContent === 'Credenziali SSH da verificare.');
+    assert(!(await page.locator('body').textContent()).includes('PRIVATE_ROLE_CANARY'), 'Unknown target-role data must never be rendered');
     await page.screenshot({path: path.join(output, '03-esito-laboratorio.png')});
     await page.locator('#service-next').click();
     await page.locator('#service-compose').fill(fixture.compose);

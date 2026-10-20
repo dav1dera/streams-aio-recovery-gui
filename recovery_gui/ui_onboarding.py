@@ -55,6 +55,18 @@ PROGRESS_TEXT = {
     'SERVICE_LAB_CHECKING_INFISICAL': 'Verifica della VM Infisical: vuota oppure stesso laboratorio riprendibile.',
 }
 ERROR_TEXT = {
+    'SSH_CONNECTION_FAILED': 'La connessione SSH non è stata completata. Conserva gli esiti per identificare il passaggio che si è fermato.',
+    'SSH_CONNECT_TIMEOUT': 'Il collegamento SSH ha superato il tempo di attesa. Verifica indirizzo, porta e raggiungibilità della VM.',
+    'SSH_CONNECTION_REFUSED': 'La destinazione rifiuta la connessione SSH. Verifica la porta e che il servizio SSH sia avviato.',
+    'SSH_NAME_RESOLUTION_FAILED': 'Il nome della VM non si risolve. Controlla il nome oppure usa il suo indirizzo IP.',
+    'SSH_NETWORK_UNREACHABLE': 'La rete della VM non è raggiungibile da questo PC. Controlla indirizzo, rete e instradamento.',
+    'SSH_LOCAL_NETWORK_DENIED': 'Il PC blocca l’accesso di rete per SSH. Verifica le autorizzazioni del programma e il firewall locale.',
+    'SSH_PROTOCOL_FAILED': 'La negoziazione SSH non è stata completata. Verifica il registro SSH della VM; il collegamento può essere stato interrotto prima dell’accesso.',
+    'SSH_KEY_PASSPHRASE_REQUIRED': 'La chiave SSH privata richiede una passphrase. Inseriscila nelle opzioni avanzate della VM corrispondente.',
+    'SSH_KEY_FILE_UNAVAILABLE': 'Il file della chiave SSH non è leggibile dal programma. Controlla il percorso e i permessi sul PC.',
+    'SSH_KEY_FORMAT_INVALID': 'Il file selezionato non è una chiave SSH privata supportata. Se usi una password, svuota il campo della chiave SSH; la chiave age va nel riquadro backup.',
+    'SSH_TRANSPORT_CLOSED': 'Il server ha chiuso la sessione SSH prima che il collegamento fosse pronto. Verifica il registro SSH della VM e riprendi.',
+    'SSH_HOST_KEY_STORE_FAILED': 'Impossibile leggere o salvare il registro locale delle impronte SSH. Controlla l’accesso alla cartella StreamsAIORecovery e al file known_hosts di questo utente Windows.',
     'RUNTIME_PROFILE_IMAGE_CHANGED': 'Un’immagine non supera i controlli del profilo del backup selezionato. Conserva lo stato delle VM e consulta il codice del passaggio.',
     'RUNTIME_PROFILE_IMAGE_LOCK_INVALID': 'Il catalogo delle immagini nel backup è mancante o non valido. Conserva il checkpoint e verifica il backup selezionato.',
     'RUNTIME_PROFILE_IMAGE_LOCK_MISMATCH': 'Compose e catalogo delle immagini non corrispondono al punto selezionato. Nessuna immagine viene sostituita automaticamente.',

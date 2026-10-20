@@ -19,6 +19,7 @@ import uuid
 from . import __version__, backend
 from .onboarding import ServiceController
 from .age_input import validate_identity_input
+from .lab_prepare import LabFailure
 from .service_plan import inspect_inputs, analyze_inputs
 from .ui_onboarding import (ERROR_TEXT, PROGRESS_TEXT, STAGES as SERVICE_STAGES, connection_from_snapshot,
                            infisical_from_fields, verified_completion, verified_local_completion)
@@ -279,8 +280,12 @@ class WebBridge:
             type(error).__module__.startswith('recovery_gui.')) else 'SERVICE_TOOL_FAILED'
         if not CODE.fullmatch(code) or code not in backend.ERROR_CODES | set(self._errors) | DIAGNOSTIC_CODES:
             code = 'SERVICE_TOOL_FAILED'
-        return dict(ok=False, code=code, description=self._errors.get(code,
+        result = dict(ok=False, code=code, description=self._errors.get(code,
             'Il passaggio si è fermato. Controlla i dati indicati; lo stato remoto resta conservato.'))
+        role = getattr(error, 'target_role', None)
+        if isinstance(error, LabFailure) and role in ('stack', 'infisical'):
+            result['target_role'] = role
+        return result
 
     def _guard(self):
         need(not self._closed, 'WEB_CLOSED')

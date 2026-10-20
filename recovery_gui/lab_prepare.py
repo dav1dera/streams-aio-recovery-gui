@@ -16,6 +16,11 @@ from .age_input import AgeInputFailure, validate_identity_input
 class LabFailure(ValueError):
     """A closed diagnostic code; never an input or transport error excerpt."""
 
+    def __init__(self, code, *, target_role=None):
+        super().__init__(code)
+        if target_role in ('stack', 'infisical'):
+            self.target_role = target_role
+
 
 PROGRESS_CODES = frozenset({
     'SERVICE_LAB_CHECKING_INPUTS', 'SERVICE_LAB_READING_BACKUP',
@@ -96,6 +101,16 @@ def _need(value, code):
 
 def _check_cancel(cancelled):
     _need(not cancelled.is_set(), 'SERVICE_OPERATION_STOPPED')
+
+
+def _connect(ssh_factory, host, role, confirm_key, cancelled, confirm_changed_key):
+    """Attach only the closed VM role at the authenticated SSH boundary."""
+    try:
+        return ssh_factory(host, confirm_key, cancelled, confirm_changed_key=confirm_changed_key)
+    except backend.Failure as error:
+        code = str(error)
+        raise LabFailure(code if code in backend.ERROR_CODES else 'LAB_PREPARATION_FAILED',
+                         target_role=role) from None
 
 
 def _host(snapshot, prefix=''):
@@ -180,10 +195,10 @@ def prepare_lab(snapshot, confirm_key, cancelled, confirm_changed_key=None, prog
         _need(point.get('public_commit') == commit, 'DR_STACK_COMMIT_MISMATCH')
         _check_cancel(cancelled)
         emit(dict(stage='HOST', status='RUNNING', code='SERVICE_LAB_CONNECTING_STACK'))
-        stack = ssh_factory(stack_host, confirm_key, cancelled, confirm_changed_key=confirm_changed_key)
+        stack = _connect(ssh_factory, stack_host, 'stack', confirm_key, cancelled, confirm_changed_key)
         _check_cancel(cancelled)
         emit(dict(stage='HOST', status='RUNNING', code='SERVICE_LAB_CONNECTING_INFISICAL'))
-        server = ssh_factory(server_host, confirm_key, cancelled, confirm_changed_key=confirm_changed_key)
+        server = _connect(ssh_factory, server_host, 'infisical', confirm_key, cancelled, confirm_changed_key)
         _check_cancel(cancelled)
         emit(dict(stage='HOST', status='RUNNING', code='SERVICE_LAB_CHECKING_STACK'))
         first = _clean(stack.check(fresh=True, role='stack', lab_point=(tag, commit)), stack_host)

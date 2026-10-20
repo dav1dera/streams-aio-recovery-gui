@@ -1,4 +1,4 @@
-# Aggiungi servizio — anteprima 0.5.0-dev.7
+# Aggiungi servizio — anteprima 0.5.0-dev.8
 
 Questa scheda aggiunge **un servizio nuovo** a uno stack Streams AIO già configurato.
 L’analisi iniziale funziona offline. La connessione diretta alla VM viene aperta solo
@@ -56,6 +56,25 @@ al pulsante **Prepara le VM di collaudo**. Il controllo del backup può richiede
 qualche istante: il programma segnala questa fase prima di contattare GitHub.
 Un errore indica il codice e il passo da correggere; non serve cercarlo in fondo
 alla scheda. Se un’altra operazione è già in corso, attendi il suo esito.
+
+### Errori SSH durante la preparazione
+
+La GUI indica quale collegamento si è fermato: **VM stack** oppure **VM Infisical**.
+I codici distinguono accesso rifiutato, tempo scaduto, porta rifiutata, rete non
+raggiungibile, blocco di rete sul PC, negoziazione interrotta, chiave SSH non leggibile
+o priva della passphrase e registro locale delle impronte non utilizzabile.
+Le descrizioni non riportano il testo delle eccezioni, password o chiavi.
+
+Se la porta 22 risponde, questo conferma soltanto il collegamento di rete:
+l’autenticazione e la verifica dell’impronta sono controlli successivi. Verifica
+IP, utente e porta nel riquadro della VM indicata. Con accesso tramite password,
+lascia vuoto il campo **File della chiave privata SSH**. La chiave age appartiene
+al riquadro backup e non serve ad autenticarsi in Ubuntu.
+
+Un errore SSH non richiede di cancellare le VM o i checkpoint. Salva gli esiti;
+quando il collegamento è risolto, seleziona lo stesso backup e ripremi
+**Prepara le VM di collaudo**. Le approvazioni delle impronte e il controllo
+dei checkpoint restano obbligatori.
 
 ### Immagini del backup
 

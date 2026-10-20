@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 from recovery_gui import backend
 from recovery_gui.onboarding import OnboardingError, ServiceController
+from recovery_gui.lab_prepare import LabFailure
 from recovery_gui.web_bridge import WebBridge, KEYS, SENSITIVE, MAX_EVENTS
 
 
@@ -282,6 +283,50 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(result['applications_started'])
         self.assertFalse(result['backup_verified'])
         self.assertNotIn('completed', [event['kind'] for event in events])
+
+    def test_lab_connection_role_survives_real_controller_and_safe_report(self):
+        from tests.test_lab_prepare import Harness, SECRET as LAB_SECRET
+        for role in ('stack', 'infisical'):
+            with self.subTest(role=role):
+                harness = Harness()
+                def ssh(host, *args, **kwargs):
+                    if host.address == harness.snapshot['infisical_host' if role == 'infisical' else 'host']:
+                        raise backend.Failure('SSH_CONNECTION_FAILED')
+                    return harness.ssh(host, *args, **kwargs)
+                self.bridge._controller = ServiceController(lambda *_: False,
+                    cancelled=self.bridge._cancelled, ssh_factory=ssh)
+                identity = Mock()
+                identity.is_file.return_value, identity.is_symlink.return_value = True, False
+                identity.stat.return_value.st_size = 1024
+                settings = {key: value for key, value in harness.snapshot.items() if key in KEYS}
+                with patch('recovery_gui.lab_prepare.Path', return_value=identity), \
+                     patch.object(backend, 'validate_remote_shell_scripts'), \
+                     patch.object(backend.GitHub, 'point', return_value=harness.point):
+                    self.assertTrue(self.bridge.prepare_lab(settings)['ok'])
+                    events = self.drain()
+                error = next(event for event in events if event['kind'] == 'error')
+                self.assertEqual(error['code'], 'SSH_CONNECTION_FAILED')
+                self.assertEqual(error['target_role'], role)
+                self.assertEqual(set(error), {'kind', 'job_id', 'code', 'description', 'target_role'})
+                report = self.bridge._report()
+                self.assertEqual([event for event in report['events'] if event['kind'] == 'error'][-1], error)
+                for private_value in (SECRET, LAB_SECRET, settings['host'], settings['infisical_host']):
+                    self.assertNotIn(private_value, json.dumps([events, report]))
+                self.assertNotIn('lab_prepared', [event['kind'] for event in events])
+                self.assertFalse(self.bridge._is_busy())
+
+    def test_error_role_allows_only_lab_failure_and_the_two_closed_values(self):
+        for role in ('stack', 'infisical'):
+            error = LabFailure('SSH_CONNECTION_FAILED', target_role=role)
+            self.assertEqual(self.bridge._error(error)['target_role'], role)
+        for role in (SECRET, '192.0.2.99', '', None, 1, True):
+            error = LabFailure('SSH_CONNECTION_FAILED')
+            error.target_role = role
+            self.assertNotIn('target_role', self.bridge._error(error))
+            self.assertNotIn(SECRET, json.dumps(self.bridge._error(error)))
+        foreign = OnboardingError('SERVICE_TOOL_FAILED')
+        foreign.target_role = 'stack'
+        self.assertNotIn('target_role', self.bridge._error(foreign))
 
     def test_host_key_prompt_requires_explicit_answer_and_cancel_unblocks(self):
         answers = []

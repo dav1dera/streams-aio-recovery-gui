@@ -342,6 +342,41 @@ class LabPreparationTests(unittest.TestCase):
                         harness.prepare()
                 self.assertEqual([connection.closed for connection in harness.connections], [1, 1])
 
+    def test_controller_lab_ssh_failure_identifies_each_vm_without_private_attributes(self):
+        from recovery_gui.onboarding import ServiceController
+        for role in ('stack', 'infisical'):
+            with self.subTest(role=role):
+                harness = Harness()
+                def ssh(host, *args, **kwargs):
+                    if host.address == harness.snapshot['infisical_host' if role == 'infisical' else 'host']:
+                        error = backend.Failure('SSH_CONNECTION_FAILED')
+                        error.target_role, error.output = SECRET, SECRET
+                        raise error
+                    return harness.ssh(host, *args, **kwargs)
+                controller = ServiceController(lambda *_: False, cancelled=harness.cancelled, ssh_factory=ssh)
+                identity = Mock()
+                identity.is_file.return_value, identity.is_symlink.return_value = True, False
+                identity.stat.return_value = SimpleNamespace(st_size=1024)
+                with patch.object(lab, 'Path', return_value=identity), \
+                     patch.object(backend, 'validate_remote_shell_scripts'), \
+                     patch.object(backend.GitHub, 'point', return_value=harness.point):
+                    with self.assertRaisesRegex(lab.LabFailure, '^SSH_CONNECTION_FAILED$') as caught:
+                        controller.prepare_lab(harness.snapshot, harness.events.append)
+                self.assertEqual(caught.exception.target_role, role)
+                self.assertEqual(vars(caught.exception), {'target_role': role})
+                self.assertNotIn(SECRET, repr(caught.exception))
+                self.assertEqual(harness.events[-1]['code'], 'SERVICE_LAB_CONNECTING_' + role.upper())
+                self.assertFalse(harness.requests)
+                self.assertEqual([connection.closed for connection in harness.connections], [1] if role == 'infisical' else [])
+
+    def test_unknown_connection_failure_has_only_closed_code_and_real_role(self):
+        harness = Harness()
+        with patch.object(harness, 'ssh', side_effect=backend.Failure(SECRET)):
+            with self.assertRaisesRegex(lab.LabFailure, '^LAB_PREPARATION_FAILED$') as caught:
+                harness.prepare()
+        self.assertEqual(vars(caught.exception), {'target_role': 'stack'})
+        self.assertNotIn(SECRET, repr(caught.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

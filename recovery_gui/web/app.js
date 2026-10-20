@@ -61,7 +61,10 @@
   }
   function showError(result) {
     const code = text(result && result.code, 'DESKTOP_OPERATION_FAILED');
-    const description = text(result && result.description, state.errors[code] || 'Il controllo non è stato completato. Conserva gli esiti prima di riprovare.');
+    const detail = text(result && result.description, state.errors[code] || 'Il controllo non è stato completato. Conserva gli esiti prima di riprovare.');
+    const role = result && result.target_role;
+    const target = role === 'stack' ? 'VM stack' : role === 'infisical' ? 'VM Infisical' : '';
+    const description = target ? target + ': ' + detail : detail;
     setGlobal(code, description, 'failed');
     if (state.operation === 'lab') feedback('lab-feedback', code + '\n' + description, 'error');
     if (state.page === 'service' && state.operation !== 'lab') feedback('service-feedback', code + '\n' + description, 'error');
