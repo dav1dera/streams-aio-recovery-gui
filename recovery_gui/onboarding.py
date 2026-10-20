@@ -21,6 +21,24 @@ from .service_plan import ServiceAnalysis
 ONBOARDING_FRAME = b'STREAMS_ONBOARDING_V1\n'
 PRIVATE_PROOF_FRAME = b'STREAMS_PRIVATE_PROOF_V1\n'
 
+# Recovery installs PyYAML in its virtual environment, not in Ubuntu's system
+# Python. Select only the already installed recovery/worker interpreter and keep
+# stdin untouched, including the framing needed when sudo leaves its input line.
+REMOTE_LAUNCHER = r'''
+import json, os, re, sys
+try:
+    interpreter = sys.argv[1]
+    assert re.fullmatch(r'/home/[A-Za-z_][A-Za-z0-9_-]*/\.local/share/streams-aio-(?:recovery|public-sync)/venv/bin/python', interpreter)
+    if not os.path.isfile(interpreter) or not os.access(interpreter, os.X_OK):
+        code = 'ONBOARDING_LAB_NOT_PREPARED' if '/streams-aio-recovery/' in interpreter else 'ONBOARDING_BACKUP_PIPELINE_NOT_READY'
+        print(json.dumps({'schema': 1, 'status': 'REFUSED', 'code': code}))
+    else:
+        guard = "import json,sys\ntry:\n import yaml\nexcept Exception:\n print(json.dumps({'schema':1,'status':'REFUSED','code':'ONBOARDING_PYTHON_ENVIRONMENT_REQUIRED'}));sys.exit(0)\nexec(compile(sys.argv[1], '<service-onboarding>', 'exec'), globals())"
+        os.execv(interpreter, [interpreter, '-I', '-c', guard, sys.argv[2]])
+except Exception:
+    print('{"schema":1,"status":"REFUSED","code":"ONBOARDING_PYTHON_ENVIRONMENT_REQUIRED"}')
+'''
+
 # Independent, memory-only proof of the exact Agent output. The request carries
 # a fresh challenge and keyed digests, never plaintext secret values. Neither
 # the challenge nor the digests are written to a journal or a public report.
@@ -219,7 +237,9 @@ class ServiceController:
         folder = self._resources if self._resources is not None else resources()
         try:
             source = (folder / 'service_onboarding.py').read_text(encoding='utf-8')
-            raw = ssh.run(['python3', '-B', '-c', source], sudo=True,
+            area = 'streams-aio-recovery' if request.get('verification_scope') == 'local_lab' else 'streams-aio-public-sync'
+            interpreter = request['root'].rsplit('/', 1)[0] + '/.local/share/' + area + '/venv/bin/python'
+            raw = ssh.run(['python3', '-I', '-c', REMOTE_LAUNCHER, interpreter, source], sudo=True,
                           input=ONBOARDING_FRAME + json.dumps(request, ensure_ascii=False).encode('utf-8') + b'\n',
                           timeout=1200)
             need(len(raw) <= 256 * 1024, 'SERVICE_RESPONSE_INVALID')

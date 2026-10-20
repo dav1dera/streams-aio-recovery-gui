@@ -1,10 +1,13 @@
 import json
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 import threading
 import unittest
+from unittest.mock import patch
 
 from recovery_gui.onboarding import (OnboardingError, PRIVATE_PROOF, ServiceController,
-                                     ONBOARDING_FRAME, PRIVATE_PROOF_FRAME)
+                                     ONBOARDING_FRAME, PRIVATE_PROOF_FRAME, REMOTE_LAUNCHER)
 from recovery_gui.onboarding_infisical import InfisicalFailure
 from recovery_gui.service_plan import analyze_inputs
 
@@ -95,6 +98,18 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual([x[0] for x in self.api.calls], ['inspect'])
         self.assertNotIn(SECRET, repr(receipt))
         self.assertEqual(self.ssh.closed, 1)
+
+    def test_existing_worker_python_is_used_instead_of_system_yaml(self):
+        self.inspect()
+        arguments = self.ssh.calls[0][0]
+        self.assertEqual(arguments[:4], ['python3', '-I', '-c', REMOTE_LAUNCHER])
+        self.assertEqual(arguments[4], '/home/pi/.local/share/streams-aio-public-sync/venv/bin/python')
+
+    def test_lab_uses_the_python_environment_installed_by_recovery(self):
+        self.connection['verification_scope'] = 'local_lab'
+        self.inspect()
+        self.assertEqual(self.ssh.calls[0][0][4],
+                         '/home/pi/.local/share/streams-aio-recovery/venv/bin/python')
 
     def test_complete_only_with_service_agent_public_and_backup_proofs(self):
         result = self.apply(self.inspect())
@@ -214,6 +229,43 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.apply(self.inspect())['status'], 'PASS')
         self.assertFalse(self.api.calls)
         self.assertFalse(any(x[0][-1] == PRIVATE_PROOF for x in self.ssh.calls))
+
+
+class RemoteLauncherTests(unittest.TestCase):
+    def invoke(self, interpreter, *, exists=True):
+        output = io.StringIO()
+        with patch('sys.argv', ['-c', interpreter, 'public engine source']), \
+                patch('os.path.isfile', return_value=exists), patch('os.access', return_value=exists), \
+                patch('os.execv') as execute, patch('sys.stdin') as stdin, redirect_stdout(output):
+            exec(compile(REMOTE_LAUNCHER, '<synthetic-launcher>', 'exec'), {})
+            stdin.buffer.read.assert_not_called()
+        return output.getvalue(), execute
+
+    def test_valid_recovery_environment_preserves_stdin_and_uses_isolation(self):
+        interpreter = '/home/test/.local/share/streams-aio-recovery/venv/bin/python'
+        output, execute = self.invoke(interpreter)
+        self.assertEqual(output, '')
+        args = execute.call_args.args
+        self.assertEqual(args[0], interpreter)
+        self.assertEqual(args[1][:3], [interpreter, '-I', '-c'])
+        self.assertIn('import yaml', args[1][3])
+        self.assertEqual(args[1][-1], 'public engine source')
+
+    def test_missing_worker_fails_before_executing_source(self):
+        output, execute = self.invoke('/home/pi/.local/share/streams-aio-public-sync/venv/bin/python', exists=False)
+        self.assertEqual(json.loads(output)['code'], 'ONBOARDING_BACKUP_PIPELINE_NOT_READY')
+        execute.assert_not_called()
+
+    def test_missing_recovery_environment_is_not_an_implicit_system_fallback(self):
+        output, execute = self.invoke('/home/test/.local/share/streams-aio-recovery/venv/bin/python', exists=False)
+        self.assertEqual(json.loads(output)['code'], 'ONBOARDING_LAB_NOT_PREPARED')
+        execute.assert_not_called()
+
+    def test_unrelated_python_paths_are_refused_without_exception_details(self):
+        output, execute = self.invoke('/tmp/synthetic-private-password/python')
+        self.assertEqual(json.loads(output)['code'], 'ONBOARDING_PYTHON_ENVIRONMENT_REQUIRED')
+        self.assertNotIn('synthetic-private-password', output)
+        execute.assert_not_called()
 
 
 if __name__ == '__main__':
