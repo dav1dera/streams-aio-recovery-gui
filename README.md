@@ -2,7 +2,7 @@
 
 **Guida in italiano per organizzare lo stack, conservarne i backup e recuperarlo su due VM.**
 
-**Sviluppo 0.5.0-dev.6:** nuova interfaccia desktop scura ispirata ad AIOStreams,
+**Sviluppo 0.5.0-dev.7:** nuova interfaccia desktop scura ispirata ad AIOStreams,
 con accessi affiancati, procedura per i servizi in quattro passi ed esiti sempre
 visibili. La finestra usa Edge WebView2 e carica soltanto risorse incluse nel
 programma, senza CDN o font da scaricare. I controlli restano nel backend Python.

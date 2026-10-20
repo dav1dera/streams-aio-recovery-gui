@@ -13,6 +13,7 @@ from recovery_gui import backend
 from tests.test_age_upload import SFTP
 from tests.test_lab_prepare import Harness, PASTED_IDENTITY, TAG, COMMIT
 from tests import test_lab_runtime_scope as runtime_fixture
+from tests import test_runtime_image_selection as image_fixture
 
 recover, policy = runtime_fixture.recover, runtime_fixture.policy
 
@@ -68,6 +69,19 @@ class LabRequestContractTests(unittest.TestCase):
         runner.validate_resume = Mock()  # Source/private validation is covered by its transaction tests.
         runner.npm = Mock()
         runner.aio = Mock()
+        model = image_fixture.backup_model(filesystem.root)
+        (filesystem.root/'config').mkdir(exist_ok=True)
+        pins_path = filesystem.root/'config/image-lock.json'
+        override_path = filesystem.root/'config/compose.dr.yaml'
+        pins_path.write_text(json.dumps({name: {'image': image}
+            for name, image in image_fixture.PINS.items()}))
+        override_path.write_text(json.dumps({'services': {name: dict(image=image, platform='linux/amd64')
+            for name, image in image_fixture.PINS.items()}}))
+        original_regular = policy.regular
+        def regular(path):
+            if path in (pins_path, override_path):
+                return N(st_size=path.stat().st_size)
+            return original_regular(path)
         observed = []
         def scoped_apply(root, home, state, model, run):
             # In particular, neither of these functions is patched to accept
@@ -78,11 +92,12 @@ class LabRequestContractTests(unittest.TestCase):
             self.assertNotIn('operational_deployment', state)
         def command(args, *unused, **kwargs):
             self.assertFalse(set(map(str, args)) & {'up', 'start', 'run', 'push', 'restart'})
-            return b'{"services":{}}' if 'config' in args else b''
+            return json.dumps(model).encode() if 'config' in args else b''
         with patch.object(recover, 'load_module', return_value=policy), \
                 patch.object(recover, 'command', side_effect=command), \
                 patch.object(recover, 'first_boot_cached_image', return_value=True), \
                 patch.object(recover, 'event'), patch.object(recover, 'stack_preflight'), \
+                patch.object(policy, 'regular', side_effect=regular), \
                 patch.object(policy, 'apply_fresh', side_effect=scoped_apply):
             runner.prepare()
         self.assertEqual(observed, [('test', filesystem.commit)])

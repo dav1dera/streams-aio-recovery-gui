@@ -55,7 +55,7 @@ class LabScope(unittest.TestCase):
 
     def regular(self, path):
         self.assertTrue(Path(path).is_file())
-        return self.metadata
+        return N(**vars(self.metadata), st_size=Path(path).stat().st_size)
 
     def save(self):
         (self.home/'state.json').write_text(json.dumps(self.state))
@@ -145,6 +145,35 @@ class LabScope(unittest.TestCase):
         with self.assertRaisesRegex(policy.Refused, '^RUNTIME_PROFILE_SCOPE_REFUSED$'):
             policy.identity_scope(self.root, self.home, self.state)
         self.assertIsNone(policy.state_commit(self.root))
+
+    def test_old_registered_profile_keeps_fixed_pins_only_after_source_validation(self):
+        self.state['runtime_profile'] = dict(schema=1, id=policy.COMETNET_TRIAL_PROFILE)
+        self.save()
+        changed = {'name': 'streams-aio', 'services': {
+            'postgres': {'image': 'postgres@sha256:' + 'c' * 64},
+            'dnscrypt-proxy': {'image': policy.DNS_IMAGE}}}
+        before = (self.home/'state.json').read_bytes()
+        with patch.object(policy, 'validate', return_value=True) as validate:
+            self.assertEqual(policy.selected_runtime_images(self.root, changed)['postgres'], policy.PG_IMAGE)
+            validate.assert_called_once_with(self.root, self.home, self.state)
+            with self.assertRaisesRegex(policy.Refused, '^RUNTIME_PROFILE_IMAGE_CHANGED$'):
+                policy.base_model(self.root, changed)
+        with patch.object(policy, 'validate', side_effect=policy.Refused('RUNTIME_PROFILE_SOURCE_CHANGED')):
+            with self.assertRaisesRegex(policy.Refused, '^RUNTIME_PROFILE_SOURCE_CHANGED$'):
+                policy.selected_runtime_images(self.root, changed)
+        self.assertEqual((self.home/'state.json').read_bytes(), before)
+
+    def test_profile_absent_uses_current_lock_instead_of_legacy_pins(self):
+        self.assertNotIn('runtime_profile', self.state)
+        refs = dict(zip(policy.FIRST_BOOT_SERVICES, policy.FIRST_BOOT_IMAGES))
+        refs['pgbouncer'] = 'edoburu/pgbouncer@sha256:' + 'b' * 64
+        model = dict(services={name: dict(image=image, platform='linux/amd64') for name, image in refs.items()})
+        (self.root/'config').mkdir()
+        (self.root/'config/image-lock.json').write_text(json.dumps({name: {'image': image} for name, image in refs.items()}))
+        (self.root/'config/compose.dr.yaml').write_text(json.dumps(model))
+        with patch.object(policy, 'validate', side_effect=AssertionError('new prep treated as old profile')):
+            self.assertEqual(policy.first_boot_images(self.root, model), tuple(refs[name] for name in policy.FIRST_BOOT_SERVICES))
+        self.assertNotEqual(refs['pgbouncer'], policy.PGBOUNCER_IMAGE)
 
     def test_full_start_and_operational_promotion_refuse_before_any_command(self):
         self.state['preparation'] = 'PASS'
@@ -280,12 +309,25 @@ class LabFirstBootSource(unittest.TestCase):
         state = dict(schema=1, runner_version='0.2.0', machine_id=machine, target=str(root),
                      tag='dr-20261021T120000Z', public_commit=commit, tooling_commit=commit,
                      in_progress=None, completed=sorted(policy.FIRST_BOOT_STAGES))
+        # A scoped backup has an explicit pin/platform for every service,
+        # unlike the older four-image-only compatibility fixture above.
+        for name, service in harness.model['services'].items():
+            service.setdefault('image', ('ghcr.io/sonicx161/aiomanager' if name == 'aiomanager'
+                                        else 'g0ldyy/comet') + '@sha256:' + 'c' * 64)
+            service['platform'] = 'linux/amd64'
+        pins = {name: {'image': row['image']} for name, row in harness.model['services'].items()}
+        override = {'services': {name: dict(row, platform='linux/amd64') for name, row in pins.items()}}
+        (root/'config').mkdir(exist_ok=True)
+        (root/'config/image-lock.json').write_text(json.dumps(pins))
+        (root/'config/compose.dr.yaml').write_text(json.dumps(override))
         old_text, old_regular = Path.read_text, policy.regular
         def text(path, *args, **kwargs):
             return machine if path == Path('/etc/machine-id') else old_text(path, *args, **kwargs)
         def regular(path):
             if Path(path) == home/'state.json':
                 return N(st_uid=0, st_mode=stat.S_IFREG | 0o600)
+            if Path(path) in (root/'config/image-lock.json', root/'config/compose.dr.yaml'):
+                return N(st_size=Path(path).stat().st_size)
             return old_regular(path)
         commands = []
         def run(args):

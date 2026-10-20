@@ -65,7 +65,7 @@ FIRST_BOOT_COMMAND_CODES = frozenset(FIRST_BOOT_PULL_CODES) | {
 }
 FIRST_BOOT_CACHE_FORMAT = ('{"Id":{{json .Id}},"Os":{{json .Os}},'
                            '"Architecture":{{json .Architecture}},"RepoDigests":{{json .RepoDigests}}}')
-PINNED_IMAGE = re.compile(r'[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}\Z')
+PINNED_IMAGE = re.compile(r'[a-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}\Z')
 AIO_BINDINGS_REF = '/dr/AIO_PROFILE_BINDINGS'
 OAUTH_ALLOWLIST_REF = '/oauth2-proxy/ALLOWED_EMAILS'
 EVENTS = {'CLONES', 'DOWNLOAD', 'DECRYPT', 'INITIALIZE', 'INPUTS', 'RENDER',
@@ -190,6 +190,8 @@ def first_boot_command_code(args):
 def first_boot_repository(reference):
     """Normalize only Docker Hub spelling aliases, preserving the exact digest."""
     repository, digest_value = reference.split('@', 1)
+    if repository.rfind(':') > repository.rfind('/'):
+        repository = repository.rsplit(':', 1)[0]
     for prefix in ('docker.io/', 'index.docker.io/', 'registry-1.docker.io/'):
         if repository.startswith(prefix):
             repository = repository[len(prefix):]
@@ -1227,8 +1229,9 @@ class Recovery:
             if policy.validate(self.root, self.home, self.state):
                 return
             policy.first_boot_scope(self.root, self.home, self.state, installing=True)
-            images = (policy.PG_IMAGE, policy.DNS_IMAGE, policy.OAUTH_IMAGE, policy.PGBOUNCER_IMAGE)
-            require(tuple(policy.FIRST_BOOT_IMAGES) == images
+            model = json.loads(run(['docker', 'compose', '--profile', 'all', 'config', '--format', 'json']))
+            images = policy.first_boot_images(self.root, model)
+            require(isinstance(images, tuple) and len(images) == 4
                     and len(set(images)) == 4 and all(PINNED_IMAGE.fullmatch(image) for image in images),
                     'RUNTIME_PROFILE_COMMAND_FAILED')
             # An exact cached digest is immutable. The policy still performs
@@ -1236,7 +1239,6 @@ class Recovery:
             for image, code in zip(images, FIRST_BOOT_PULL_CODES):
                 if not first_boot_cached_image(image, self.root):
                     command(['docker', 'pull', image], code, cwd=self.root, timeout=300)
-            model = json.loads(run(['docker', 'compose', '--profile', 'all', 'config', '--format', 'json']))
             policy.apply_fresh(self.root, self.home, self.state, model, run)
         except policy.Refused as error:
             raise Refused(str(error)) from None

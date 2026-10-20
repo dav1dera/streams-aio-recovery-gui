@@ -55,6 +55,12 @@ PROGRESS_TEXT = {
     'SERVICE_LAB_CHECKING_INFISICAL': 'Verifica della VM Infisical: vuota oppure stesso laboratorio riprendibile.',
 }
 ERROR_TEXT = {
+    'RUNTIME_PROFILE_IMAGE_CHANGED': 'Un’immagine non supera i controlli del profilo del backup selezionato. Conserva lo stato delle VM e consulta il codice del passaggio.',
+    'RUNTIME_PROFILE_IMAGE_LOCK_INVALID': 'Il catalogo delle immagini nel backup è mancante o non valido. Conserva il checkpoint e verifica il backup selezionato.',
+    'RUNTIME_PROFILE_IMAGE_LOCK_MISMATCH': 'Compose e catalogo delle immagini non corrispondono al punto selezionato. Nessuna immagine viene sostituita automaticamente.',
+    'RUNTIME_PROFILE_IMAGE_REPOSITORY_REFUSED': 'Un servizio di base usa un repository diverso da quello supportato dal profilo. Il recupero conserva lo stato per verificarne la compatibilità.',
+    'RUNTIME_PROFILE_IMAGE_PLATFORM_REFUSED': 'Un’immagine del backup non è compatibile con Linux amd64. Il recupero è fermo e lo stato resta conservato.',
+    'RUNTIME_PROFILE_IMAGE_METADATA_INVALID': 'Docker non ha restituito metadati validi per un’immagine del backup. Conserva lo stato e riprova dopo aver verificato Docker.',
     'SERVICE_CONTROLLER_REQUIRED': 'Il collegamento di installazione non è disponibile in questa versione.',
     'SERVICE_ANALYSIS_REQUIRED': 'Analizza le variabili e prepara il piano prima di collegarti alla VM.',
     'SERVICE_REVIEW_REQUIRED': 'Verifica la scelta pubblico/privato delle variabili prima di preparare il piano.',

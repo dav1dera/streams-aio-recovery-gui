@@ -50,6 +50,7 @@ TAILSCALE_MIGRATION_BACKUP = 'runtime-profile/tailscale-v1'
 TAILSCALE_IMAGE = 'tailscale/tailscale@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065'
 HEADSCALE_IMAGE = 'headscale/headscale@sha256:8833f828b414c0907b7e5c71da76473216fe17cce0818a166b536ec552c0903f'
 NPM_IMAGE = 'jc21/nginx-proxy-manager@sha256:4393e642e233e5efd5adeb7f10918d4aaea71c9ed875b94190273fc8e87f9594'
+HEADPLANE_IMAGE = 'ghcr.io/tale/headplane@sha256:394483fd2336ce6b15df360c3e118ddfd45eb8140fe21df9f2611077f5d79d22'
 TAG = 'dr-20261006T210601Z'
 COMMIT = '28f6ca7cc6f5fd10418fc0af2926815927ef98c8'
 TARGET = Path('/home/test/streams-aio')
@@ -72,6 +73,9 @@ FIRST_BOOT_STAGES = frozenset({'CLONES', 'DOWNLOAD', 'DECRYPT', 'INITIALIZE',
                                'INPUTS', 'RENDER', 'EMPTY_STATE'})
 DOCKER_VOLUME_ROOT = Path('/var/lib/docker/volumes')
 ERROR_CODES = frozenset({
+    'RUNTIME_PROFILE_IMAGE_LOCK_INVALID', 'RUNTIME_PROFILE_IMAGE_LOCK_MISMATCH',
+    'RUNTIME_PROFILE_IMAGE_REPOSITORY_REFUSED', 'RUNTIME_PROFILE_IMAGE_PLATFORM_REFUSED',
+    'RUNTIME_PROFILE_IMAGE_METADATA_INVALID',
     'LAB_RUNTIME_SCOPE_REFUSED', 'LAB_APPLICATION_START_REFUSED',
     'RUNTIME_PROFILE_SCOPE_REFUSED', 'RUNTIME_PROFILE_CHANGED',
     'RUNTIME_PROFILE_SOURCE_CHANGED', 'RUNTIME_PROFILE_EVIDENCE_REQUIRED',
@@ -275,7 +279,18 @@ def validate_pending_native_aio(root, home, state):
     try:
         model = json.loads(run(['docker','compose','--profile','all','config','--format','json']))
         require(not run(['docker','ps','-aq']).strip(),code)
-        resources = cometnet_runtime_snapshot(root,model,run)
+        # The surrounding scope has already checked this exact root-private
+        # checkpoint. Do not rediscover it from a resource snapshot: that
+        # would recurse back through this pending-journal validator.
+        record = state['runtime_profile']
+        if 'image_lock_sha256' in record:
+            require(isinstance(record['image_lock_sha256'], str)
+                    and re.fullmatch(r'[0-9a-f]{64}', record['image_lock_sha256'])
+                    and digest(root/'config/image-lock.json') == record['image_lock_sha256'], code)
+            references = _locked_runtime_images(root, model)
+        else:
+            references = _legacy_runtime_images()
+        resources = cometnet_runtime_snapshot(root,model,run,references=references)
         require(not resources['containers'],code)
         for name in resources['volumes'].values():
             location = safe(DOCKER_VOLUME_ROOT/name/'_data')
@@ -360,6 +375,141 @@ def source_identity(root):
         return 'test', COMMIT
     import pwd
     return pwd.getpwuid(1000).pw_name, selected
+
+
+RUNTIME_REPOSITORIES = {
+    'postgres': 'docker.io/library/postgres',
+    'dnscrypt-proxy': 'docker.io/klutchell/dnscrypt-proxy',
+    'oauth2-proxy': 'quay.io/oauth2-proxy/oauth2-proxy',
+    'pgbouncer': 'docker.io/edoburu/pgbouncer',
+    'comet': 'docker.io/g0ldyy/comet', 'cometnet': 'docker.io/g0ldyy/comet',
+    'tailscale': 'docker.io/tailscale/tailscale',
+    'headscale': 'docker.io/headscale/headscale',
+    'headplane': 'ghcr.io/tale/headplane',
+    'npm': 'docker.io/jc21/nginx-proxy-manager',
+}
+FIRST_BOOT_SERVICES = ('postgres', 'dnscrypt-proxy', 'oauth2-proxy', 'pgbouncer')
+
+
+def image_identity(reference):
+    """Return a canonical repository and immutable digest, never a mutable tag."""
+    code = 'RUNTIME_PROFILE_IMAGE_LOCK_INVALID'
+    require(isinstance(reference, str) and len(reference) <= 512
+            and reference.count('@') == 1, code)
+    repository, digest_value = reference.split('@')
+    require(re.fullmatch(r'sha256:[0-9a-f]{64}', digest_value) is not None, code)
+    # A tag before @ is descriptive only. A colon before the last slash is
+    # instead a registry port, which must remain part of the repository.
+    if repository.rfind(':') > repository.rfind('/'):
+        repository, tag = repository.rsplit(':', 1)
+        require(re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', tag) is not None, code)
+    require(re.fullmatch(r'[a-z0-9][a-z0-9._:/-]*', repository) is not None
+            and not any(part in ('', '.', '..') for part in repository.split('/')), code)
+    for prefix in ('docker.io/', 'index.docker.io/', 'registry-1.docker.io/'):
+        if repository.startswith(prefix):
+            repository = repository[len(prefix):]
+            break
+    first = repository.split('/')[0]
+    if '/' not in repository:
+        repository = 'docker.io/library/' + repository
+    elif '.' not in first and ':' not in first and first != 'localhost':
+        repository = 'docker.io/' + repository
+    return repository, digest_value
+
+
+def _image_document(path):
+    try:
+        require(regular(path).st_size <= 1024 * 1024, 'RUNTIME_PROFILE_IMAGE_LOCK_INVALID')
+        def unique(rows):
+            output = {}
+            for key, value in rows:
+                require(key not in output, 'RUNTIME_PROFILE_IMAGE_LOCK_INVALID')
+                output[key] = value
+            return output
+        value = json.loads(Path(path).read_bytes(), object_pairs_hook=unique)
+        require(isinstance(value, dict), 'RUNTIME_PROFILE_IMAGE_LOCK_INVALID')
+        return value
+    except Refused:
+        raise
+    except (OSError, ValueError, TypeError, AttributeError):
+        raise Refused('RUNTIME_PROFILE_IMAGE_LOCK_INVALID') from None
+
+
+def _legacy_runtime_images():
+    images = dict(zip(FIRST_BOOT_SERVICES, FIRST_BOOT_IMAGES))
+    images.update(comet=COMETNET_IMAGE, cometnet=COMETNET_IMAGE,
+                  tailscale=TAILSCALE_IMAGE, headscale=HEADSCALE_IMAGE, npm=NPM_IMAGE,
+                  headplane=HEADPLANE_IMAGE)
+    return images
+
+
+def selected_runtime_images(root, model):
+    """Use the selected checkout's image lock for explicitly scoped restores.
+
+    Legacy checkpoints retain their reviewed fixed-image contract. New LAB
+    and operational restores bind the exact Compose references to both public
+    lock files; actual image/layer/layout compatibility is checked separately.
+    """
+    legacy = _legacy_runtime_images()
+    if state_commit(root) is None:
+        return legacy
+    # Existing registered profiles predate the dynamic lock evidence. Verify
+    # their complete original artifact/source contract before retaining their
+    # fixed pins; never migrate or add evidence as a side effect of a read.
+    checkpoint = safe(Path(root).parent/'.local/share/streams-aio-recovery/state.json')
+    if checkpoint.is_file():
+        try:
+            state = json.loads(checkpoint.read_bytes())
+            old = state.get('runtime_profile')
+            if old is not None and 'image_lock_sha256' not in old:
+                require(isinstance(old, dict) and type(old.get('schema')) is int and old['schema'] == 1
+                        and old.get('id') in (PROFILE, FIRST_BOOT_PROFILE, COMETNET_TRIAL_PROFILE, OPERATIONAL_PROFILE),
+                        'RUNTIME_PROFILE_CHANGED')
+                require(validate(root, checkpoint.parent, state) is True, 'RUNTIME_PROFILE_CHANGED')
+                return legacy
+        except Refused:
+            raise
+        except (OSError, ValueError, TypeError, AttributeError):
+            raise Refused('RUNTIME_PROFILE_CHANGED') from None
+    return _locked_runtime_images(root, model)
+
+
+def _locked_runtime_images(root, model):
+    """Pure lock/override/model checks; callers must already prove scope.
+
+    The only scope-internal caller is pending AIO reconciliation, after the
+    root-private checkpoint/archive checks. Public selection goes through
+    selected_runtime_images and its complete checkpoint scope validation.
+    """
+    services = model.get('services') if isinstance(model, dict) else None
+    require(isinstance(services, dict) and services, 'RUNTIME_PROFILE_IMAGE_LOCK_INVALID')
+    locks = _image_document(safe(Path(root)/'config/image-lock.json'))
+    override = _image_document(safe(Path(root)/'config/compose.dr.yaml')).get('services')
+    require(isinstance(override, dict) and set(locks) == set(services) == set(override),
+            'RUNTIME_PROFILE_IMAGE_LOCK_MISMATCH')
+    result = {}
+    for name, service in services.items():
+        locked, row = locks[name], override[name]
+        require(isinstance(service, dict) and isinstance(locked, dict) and isinstance(row, dict)
+                and not service.get('build'), 'RUNTIME_PROFILE_IMAGE_LOCK_INVALID')
+        reference = service.get('image')
+        expected = image_identity(locked.get('image'))
+        require(image_identity(reference) == expected == image_identity(row.get('image')),
+                'RUNTIME_PROFILE_IMAGE_LOCK_MISMATCH')
+        if name in RUNTIME_REPOSITORIES:
+            require(expected[0] == RUNTIME_REPOSITORIES[name],
+                    'RUNTIME_PROFILE_IMAGE_REPOSITORY_REFUSED')
+        require(service.get('platform') == 'linux/amd64' and row.get('platform') == 'linux/amd64'
+                and locked.get('platform', 'linux/amd64') == 'linux/amd64',
+                'RUNTIME_PROFILE_IMAGE_PLATFORM_REFUSED')
+        result[name] = reference
+    return result
+
+
+def first_boot_images(root, model):
+    images = selected_runtime_images(root, model)
+    require(all(name in images for name in FIRST_BOOT_SERVICES), 'RUNTIME_PROFILE_IMAGE_LOCK_INVALID')
+    return tuple(images[name] for name in FIRST_BOOT_SERVICES)
 
 
 def scope(root, home, state):
@@ -492,9 +642,11 @@ def validate(root, home, state):
         'effective_env_sha256', 'env_backup', 'source_hashes', 'preserved_volumes'}
     trial_fields = {'password_artifact', 'password_sha256'}
     tailscale_fields = {'tailscale_artifact', 'tailscale_sha256'}
+    image_fields = {'image_lock_sha256'} if isinstance(record, dict) and 'image_lock_sha256' in record else set()
     require(isinstance(record, dict) and set(record) in (
-        fields, fields | {'origin'}, fields | {'origin'} | trial_fields,
-        fields | {'origin'} | tailscale_fields),
+        fields | image_fields, fields | {'origin'} | image_fields,
+        fields | {'origin'} | trial_fields | image_fields,
+        fields | {'origin'} | tailscale_fields | image_fields),
         'RUNTIME_PROFILE_CHANGED')
     if 'origin' in record:
         require(record['origin'] == 'FIRST_BOOT', 'RUNTIME_PROFILE_CHANGED')
@@ -511,6 +663,7 @@ def validate(root, home, state):
             and record['artifact'] == ARTIFACT and record['env_backup'] == BACKUP,
             'RUNTIME_PROFILE_CHANGED')
     expected_fields = fields | {'origin'} if first_boot else fields
+    expected_fields |= image_fields
     if cometnet_trial:
         expected_fields |= trial_fields
     if tailscale:
@@ -518,6 +671,11 @@ def validate(root, home, state):
                 and record['id'] in (FIRST_BOOT_PROFILE, OPERATIONAL_PROFILE), 'RUNTIME_PROFILE_CHANGED')
         expected_fields |= tailscale_fields
     require(set(record) == expected_fields, 'RUNTIME_PROFILE_CHANGED')
+    if image_fields:
+        require(isinstance(record['image_lock_sha256'], str)
+                and re.fullmatch(r'[0-9a-f]{64}', record['image_lock_sha256'])
+                and digest(root/'config/image-lock.json') == record['image_lock_sha256'],
+                'RUNTIME_PROFILE_IMAGE_LOCK_MISMATCH')
     password = None
     if cometnet_trial:
         require(record.get('password_artifact') == TRIAL_PASSWORD, 'RUNTIME_PROFILE_CHANGED')
@@ -566,8 +724,9 @@ def base_model(root, model):
     require(model.get('name') == 'streams-aio' and isinstance(model.get('services'), dict),
             'RUNTIME_PROFILE_DOCKER_OWNERSHIP_REFUSED')
     services = model['services']
-    require(services.get('postgres', {}).get('image') == PG_IMAGE
-            and services.get('dnscrypt-proxy', {}).get('image') == DNS_IMAGE,
+    images = selected_runtime_images(root, model)
+    require(services.get('postgres', {}).get('image') == images.get('postgres')
+            and services.get('dnscrypt-proxy', {}).get('image') == images.get('dnscrypt-proxy'),
             'RUNTIME_PROFILE_IMAGE_CHANGED')
     pg = services['postgres']
     require(pg.get('environment', {}).get('PGDATA') == '/var/lib/postgresql/data'
@@ -622,7 +781,7 @@ def candidate_model(root, base, effective, first_boot=False, cometnet_trial=Fals
         desired['services']['oauth2-proxy']['group_add'] = ['1000']
         desired['services']['pgbouncer']['group_add'] = ['1000']
     if cometnet_trial:
-        cometnet_trial_model(base)
+        cometnet_trial_model(base, root=root)
         desired['services']['cometnet'].setdefault('environment', {}).update(COMETNET_TRIAL_ENV)
         require(isinstance(password, str) and re.fullmatch(r'[0-9a-f]{64}', password),
                 'COMETNET_TRIAL_SCOPE_REFUSED')
@@ -686,14 +845,15 @@ def tailscale_private_env(root, expected_sha):
     return raw
 
 
-def cometnet_trial_model(model):
+def cometnet_trial_model(model, root=None):
     """The trial may change only reviewed public environment fields."""
     require(bool(COMETNET_TRIAL_ENV), 'COMETNET_TRIAL_SCOPE_REFUSED')
     services = model.get('services', {})
     cometnet = services.get('cometnet', {})
+    images = selected_runtime_images(root, model) if root is not None else {'comet': COMETNET_IMAGE, 'cometnet': COMETNET_IMAGE}
     require(model.get('name') == 'streams-aio'
-            and cometnet.get('image') == COMETNET_IMAGE
-            and services.get('comet', {}).get('image') == COMETNET_IMAGE
+            and cometnet.get('image') == images.get('cometnet')
+            and services.get('comet', {}).get('image') == images.get('comet')
             and cometnet.get('entrypoint') == ['python', '-m', 'comet.cometnet.standalone']
             and cometnet.get('network_mode') == 'service:gluetun'
             and cometnet.get('user') == '1000:1000'
@@ -1149,7 +1309,9 @@ def readonly_checks(root, model, run):
     require(head == commit, 'RUNTIME_PROFILE_SOURCE_CHANGED')
     containers, volumes = owned_runtime(root, model, run)
     pg, dns = containers['postgres'], containers['dnscrypt-proxy']
-    require(pg['Config'].get('Image') == PG_IMAGE and dns['Config'].get('Image') == DNS_IMAGE,
+    images = selected_runtime_images(root, model)
+    require(image_identity(pg['Config'].get('Image')) == image_identity(images['postgres'])
+            and image_identity(dns['Config'].get('Image')) == image_identity(images['dnscrypt-proxy']),
             'RUNTIME_PROFILE_IMAGE_CHANGED')
     require(pg.get('State', {}).get('Running') is False,
             'RUNTIME_PROFILE_POSTGRES_MUST_BE_STOPPED')
@@ -1218,32 +1380,36 @@ def readonly_first_boot_checks(root, model, run):
                 marker = safe(path/relative)
                 require(not marker.exists(), 'RUNTIME_PROFILE_DATABASE_PRESENT')
         require(not any(path.iterdir()), 'RUNTIME_PROFILE_FRESH_HOST_REQUIRED')
+    references = selected_runtime_images(root, model)
+    dynamic = state_commit(root) is not None
     images = {}
-    for reference in FIRST_BOOT_IMAGES:
+    for service in FIRST_BOOT_SERVICES:
+        reference = references[service]
         item = json_run(run, ['docker', 'image', 'inspect', '--format', IMAGE_METADATA_FORMAT, reference])
-        require(isinstance(item, dict) and item.get('Os') == 'linux'
-                and item.get('Architecture') == 'amd64'
-                and isinstance(item.get('User'), str)
+        require(isinstance(item, dict) and isinstance(item.get('Os'), str)
+                and isinstance(item.get('Architecture'), str) and isinstance(item.get('User'), str)
                 and isinstance(item.get('Id'), str)
                 and re.fullmatch(r'sha256:[0-9a-f]{64}', item['Id']),
-                'RUNTIME_PROFILE_IMAGE_CHANGED')
-        images[reference] = item
-    pg = images[PG_IMAGE]
+                'RUNTIME_PROFILE_IMAGE_METADATA_INVALID' if dynamic else 'RUNTIME_PROFILE_IMAGE_CHANGED')
+        require(item['Os'] == 'linux' and item['Architecture'] == 'amd64',
+                'RUNTIME_PROFILE_IMAGE_PLATFORM_REFUSED' if dynamic else 'RUNTIME_PROFILE_IMAGE_CHANGED')
+        images[service] = item
+    pg = images['postgres']
     require(isinstance(pg.get('Env'), list) and 'PG_MAJOR=18' in pg['Env']
             and 'PGDATA=/var/lib/postgresql/18/docker' in pg['Env'],
             'RUNTIME_PROFILE_IMAGE_CHANGED')
-    dns = images[DNS_IMAGE]
+    dns = images['dnscrypt-proxy']
     identity = dns.get('User')
     if isinstance(identity, str) and re.fullmatch(r'\d+:\d+', identity):
         account = tuple(map(int, identity.split(':')))
     else:
-        account = image_account(run(['docker', 'image', 'save', DNS_IMAGE]), dns['Id'], identity)
+        account = image_account(run(['docker', 'image', 'save', references['dnscrypt-proxy']]), dns['Id'], identity)
     require(account == (65532, 65532), 'RUNTIME_PROFILE_DNS_IDENTITY_REFUSED')
     dns_permissions(root)
     sql = regular(root/'data/postgres/init/init.sql')
     require(sql.st_uid == 70 and sql.st_gid == 70 and stat.S_IMODE(sql.st_mode) == 0o640,
             'RUNTIME_PROFILE_SQL_CHANGED')
-    pg_account = image_account(run(['docker', 'image', 'save', PG_IMAGE]), pg['Id'], pg['User'], lookup='postgres')
+    pg_account = image_account(run(['docker', 'image', 'save', references['postgres']]), pg['Id'], pg['User'], lookup='postgres')
     require(pg_account[0] > 0 and bind_readable(root/'data/postgres/init', 'init.sql', *pg_account),
             'RUNTIME_PROFILE_SQL_CHANGED')
     try:
@@ -1255,12 +1421,13 @@ def readonly_first_boot_checks(root, model, run):
     init = safe(root/'data/postgres/init')
     require(init.is_dir() and {row.name for row in init.iterdir()} == {'init.sql'},
             'RUNTIME_PROFILE_SQL_CHANGED')
-    for service, reference, expected_account, specs in (
-            ('oauth2-proxy', OAUTH_IMAGE, (65532, 65532),
+    for service, expected_account, specs in (
+            ('oauth2-proxy', (65532, 65532),
              (('data/oauth2-proxy/allowed-emails.txt', 1000),)),
-            ('pgbouncer', PGBOUNCER_IMAGE, None,
+            ('pgbouncer', None,
              (('data/pgbouncer/data/pgbouncer.ini', 1000), ('.generated/pgbouncer/userlist.txt', 0)))):
-        item = images[reference]
+        reference = references[service]
+        item = images[service]
         account = image_account(run(['docker', 'image', 'save', reference]), item['Id'], item['User'])
         require(account[0] > 0 and (expected_account is None or account == expected_account),
                 'RUNTIME_PROFILE_DNS_IDENTITY_REFUSED')
@@ -1301,10 +1468,11 @@ def verify_pgbouncer_userlist(root, model, run):
 
 
 def first_boot_model(root, model):
+    images = selected_runtime_images(root, model)
     for service, reference, expected in (
-            ('oauth2-proxy', OAUTH_IMAGE,
+            ('oauth2-proxy', images.get('oauth2-proxy'),
              {'/etc/oauth2-proxy/allowed-emails.txt': ('data/oauth2-proxy/allowed-emails.txt', True)}),
-            ('pgbouncer', PGBOUNCER_IMAGE,
+            ('pgbouncer', images.get('pgbouncer'),
              {'/etc/pgbouncer/pgbouncer.ini': ('data/pgbouncer/data/pgbouncer.ini', True),
               '/etc/pgbouncer/userlist.txt': ('.generated/pgbouncer/userlist.txt', False)})):
         row = model['services'].get(service, {})
@@ -1391,7 +1559,8 @@ def apply_fresh(root, home, state, model, run):
     recovery.lock. An older same-scope prepared checkpoint may register this
     profile without replaying NPM/AIO if application startup was never attempted
     and all physical first-boot checks still pass.
-    FIRST_BOOT_IMAGES must already be pulled; this module only inspects them.
+    The four selected first-boot images must already be pulled; this module
+    only inspects them.
     An existing verified FIRST_BOOT record is safe to revisit after preparation.
     """
     root, home = Path(root), Path(home)
@@ -1400,7 +1569,7 @@ def apply_fresh(root, home, state, model, run):
     root, home = first_boot_scope(root, home, state, installing=True)
     base_model(root, model)
     first_boot_model(root, model)
-    cometnet_trial_model(model)
+    cometnet_trial_model(model, root=root)
     return commit_profile(root, home, state, model, run,
                           lambda: readonly_first_boot_checks(root, model, run), origin='FIRST_BOOT',
                           cometnet_trial=state.get('operational_deployment') is None)
@@ -1413,6 +1582,7 @@ def commit_profile(root, home, state, model, run, inspect, origin=None, cometnet
         require(not cometnet_trial, 'OPERATIONAL_DEPLOYMENT_REFUSED')
         identifier = OPERATIONAL_PROFILE
     preserved = inspect()
+    image_lock_hash = digest(root/'config/image-lock.json') if state_commit(root) is not None else None
     before_sources = source_hashes(root, first_boot)
     env_path = root/'.env'
     env_info = env_metadata(env_path)
@@ -1446,6 +1616,9 @@ def commit_profile(root, home, state, model, run, inspect, origin=None, cometnet
                 'RUNTIME_PROFILE_SOURCE_CHANGED')
         require(inspect() == preserved,
                 'RUNTIME_PROFILE_POSTGRES_LAYOUT_REFUSED')
+        if image_lock_hash is not None:
+            require(digest(root/'config/image-lock.json') == image_lock_hash,
+                    'RUNTIME_PROFILE_IMAGE_LOCK_MISMATCH')
         updated_state = copy.deepcopy(state)
         updated_state['runtime_profile'] = dict(
             schema=1, id=identifier, artifact=ARTIFACT, artifact_sha256=sha(candidate),
@@ -1453,6 +1626,8 @@ def commit_profile(root, home, state, model, run, inspect, origin=None, cometnet
             env_backup=BACKUP, source_hashes=before_sources, preserved_volumes=preserved)
         if origin is not None:
             updated_state['runtime_profile']['origin'] = origin
+        if image_lock_hash is not None:
+            updated_state['runtime_profile']['image_lock_sha256'] = image_lock_hash
         if cometnet_trial:
             password_created = True
             atomic(password_path, password_raw, 0o600, 1000, 1000)
@@ -1480,7 +1655,7 @@ def commit_profile(root, home, state, model, run, inspect, origin=None, cometnet
         raise Refused('RUNTIME_PROFILE_TRANSACTION_FAILED') from None
 
 
-def cometnet_runtime_snapshot(root, model, run):
+def cometnet_runtime_snapshot(root, model, run, *, references=None):
     """Check every workload before changing the registered public overlay.
 
     Only identity metadata is retained: restart counters and health may change
@@ -1503,6 +1678,8 @@ def cometnet_runtime_snapshot(root, model, run):
     require(isinstance(rows, list) and len(rows) == len(ids)
             and isinstance(volumes, list) and len(volumes) == len(names),
             'RUNTIME_PROFILE_DOCKER_OWNERSHIP_REFUSED')
+    references = selected_runtime_images(root, model) if references is None else references
+    require(isinstance(references, dict), 'RUNTIME_PROFILE_IMAGE_LOCK_INVALID')
     services = {}
     for row in rows:
         labels = row.get('Config', {}).get('Labels') or {}
@@ -1514,7 +1691,7 @@ def cometnet_runtime_snapshot(root, model, run):
                 and isinstance(identifier, str) and re.fullmatch(r'[0-9a-f]{64}', identifier),
                 'RUNTIME_PROFILE_DOCKER_OWNERSHIP_REFUSED')
         if service in ('comet', 'cometnet'):
-            require(row.get('Config', {}).get('Image') == COMETNET_IMAGE,
+            require(image_identity(row.get('Config', {}).get('Image')) == image_identity(references.get(service)),
                     'RUNTIME_PROFILE_IMAGE_CHANGED')
         services[service] = identifier
     declared = model.get('volumes', {})
@@ -1539,9 +1716,8 @@ def tailscale_runtime_snapshot(root, model, run):
     """Read-only identity and image checks; never inspect volume contents."""
     services = model.get('services')
     require(isinstance(services, dict), 'RUNTIME_PROFILE_DOCKER_OWNERSHIP_REFUSED')
-    pins = dict(postgres=PG_IMAGE, **{'dnscrypt-proxy': DNS_IMAGE, 'oauth2-proxy': OAUTH_IMAGE},
-                pgbouncer=PGBOUNCER_IMAGE, tailscale=TAILSCALE_IMAGE,
-                headscale=HEADSCALE_IMAGE, npm=NPM_IMAGE)
+    references = selected_runtime_images(root, model)
+    pins = {name: references.get(name) for name in (*FIRST_BOOT_SERVICES, 'tailscale', 'headscale', 'npm')}
     require(all(services.get(name, {}).get('image') == image for name, image in pins.items())
             and all(isinstance(row, dict) and isinstance(row.get('image'), str)
                     and re.fullmatch(r'[^\s]+@sha256:[0-9a-f]{64}', row['image'])
@@ -1563,7 +1739,8 @@ def tailscale_runtime_snapshot(root, model, run):
                 and labels.get('com.docker.compose.project') == 'streams-aio'
                 and labels.get('com.docker.compose.project.working_dir') == str(root),
                 'RUNTIME_PROFILE_DOCKER_OWNERSHIP_REFUSED')
-        require(config.get('Image') == services[name]['image'], 'RUNTIME_PROFILE_IMAGE_CHANGED')
+        require(image_identity(config.get('Image')) == image_identity(services[name]['image']),
+                'RUNTIME_PROFILE_IMAGE_CHANGED')
     return snapshot
 
 
@@ -1701,7 +1878,7 @@ def migrate_cometnet_trial(root, home, state, model, run, tls=False):
             and (state.get('application_wave') == ['cometnet'] if attempted
                  else state.get('application_wave') is None),
             'COMETNET_TRIAL_SCOPE_REFUSED')
-    cometnet_trial_model(model)
+    cometnet_trial_model(model, root=root)
     require(json_run(run, ['docker', 'compose', '--profile', 'all', 'config', '--format', 'json']) == model,
             'RUNTIME_PROFILE_CANDIDATE_REFUSED')
     preserved = cometnet_runtime_snapshot(root, model, run)

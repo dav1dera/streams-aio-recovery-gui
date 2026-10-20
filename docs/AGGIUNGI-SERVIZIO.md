@@ -1,4 +1,4 @@
-# Aggiungi servizio — anteprima 0.5.0-dev.6
+# Aggiungi servizio — anteprima 0.5.0-dev.7
 
 Questa scheda aggiunge **un servizio nuovo** a uno stack Streams AIO già configurato.
 L’analisi iniziale funziona offline. La connessione diretta alla VM viene aperta solo
@@ -56,6 +56,20 @@ al pulsante **Prepara le VM di collaudo**. Il controllo del backup può richiede
 qualche istante: il programma segnala questa fase prima di contattare GitHub.
 Un errore indica il codice e il passo da correggere; non serve cercarlo in fondo
 alla scheda. Se un’altra operazione è già in corso, attendi il suo esito.
+
+### Immagini del backup
+
+Il primo avvio usa i riferimenti immutabili del **backup selezionato**, incrociando
+`config/image-lock.json`, `config/compose.dr.yaml` e il Compose effettivo del commit
+verificato. Un aggiornamento del digest di PgBouncer o degli altri servizi non
+richiede di riportare le immagini alle versioni del vecchio collaudo. I prefissi
+equivalenti di Docker Hub vengono riconosciuti conservando lo stesso digest.
+
+Restano i controlli di piattaforma Linux amd64, repository dei servizi di base,
+layout PostgreSQL 18, account, permessi e configurazioni private. Questo percorso
+ripristina le versioni salvate e non migra automaticamente un database a una nuova
+versione principale. Anche la VM Infisical mantiene un proprio profilo compatibile;
+non è una garanzia per cambi arbitrari di versione o struttura dei database.
 
 ## Stato della versione
 
