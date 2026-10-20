@@ -616,6 +616,6 @@
     ];
     return { ok: checks.every(check => check.ok), checks };
   };
-  document.addEventListener('pywebviewready', () => void initializeBridge());
+  window.addEventListener('pywebviewready', () => void initializeBridge());
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initializeUI); else initializeUI();
 })();

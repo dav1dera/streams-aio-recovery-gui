@@ -48,7 +48,7 @@ async function main() {
       }};
     }, fixture);
     await page.goto(pathToFileURL(path.resolve(html)).href);
-    await page.waitForFunction(() => window.recoveryUI && window.recoveryUI.ready);
+    await page.waitForFunction(() => window.recoveryUI && window.recoveryUI.ready && document.body.dataset.bridgeState === 'connected');
     await page.screenshot({path: path.join(output, '01-panoramica.png')});
     await page.locator('[data-page="connections"]').click();
     await page.locator('[data-setting="host"]').fill('192.0.2.30');
@@ -99,6 +99,24 @@ async function main() {
     await page.locator('[data-page="connections"]').click();
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'No horizontal document overflow at minimum window size');
     await page.screenshot({path: path.join(output, '06-finestra-compatta.png')});
+    const lateContext = await browser.newContext({viewport: {width: 980, height: 740}});
+    const latePage = await lateContext.newPage();
+    await latePage.route(/^https?:/, route => route.abort());
+    await latePage.goto(pathToFileURL(path.resolve(html)).href);
+    await latePage.waitForFunction(() => window.recoveryUI && window.recoveryUI.ready);
+    assert.equal(await latePage.locator('body').getAttribute('data-bridge-state'), 'preview');
+    await latePage.evaluate(initial => {
+      window.pywebview = {api: {
+        initialize: async () => {window.__lateInitialized = true; return initial;},
+        poll: async () => ({ok: true, busy: false, events: []})
+      }};
+      // The native host emits this event on window after document loading.
+      // It does not bubble to document; file previews cannot exercise this.
+      window.dispatchEvent(new CustomEvent('pywebviewready'));
+    }, fixture.initial);
+    await latePage.waitForFunction(() => document.body.dataset.bridgeState === 'connected');
+    assert.equal(await latePage.evaluate(() => window.__lateInitialized), true);
+    await lateContext.close();
     process.stdout.write('WEB_UI_BROWSER PASS\n');
   } finally {
     await browser.close();
