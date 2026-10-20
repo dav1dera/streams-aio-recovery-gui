@@ -72,6 +72,7 @@ FIRST_BOOT_STAGES = frozenset({'CLONES', 'DOWNLOAD', 'DECRYPT', 'INITIALIZE',
                                'INPUTS', 'RENDER', 'EMPTY_STATE'})
 DOCKER_VOLUME_ROOT = Path('/var/lib/docker/volumes')
 ERROR_CODES = frozenset({
+    'LAB_RUNTIME_SCOPE_REFUSED', 'LAB_APPLICATION_START_REFUSED',
     'RUNTIME_PROFILE_SCOPE_REFUSED', 'RUNTIME_PROFILE_CHANGED',
     'RUNTIME_PROFILE_SOURCE_CHANGED', 'RUNTIME_PROFILE_EVIDENCE_REQUIRED',
     'RUNTIME_PROFILE_DOCKER_OWNERSHIP_REFUSED', 'RUNTIME_PROFILE_IMAGE_CHANGED',
@@ -132,6 +133,8 @@ def env_metadata(path):
 
 
 def identity_scope(root, home, state):
+    if state.get('lab_deployment') is not None:
+        return lab_scope(root, home, state)
     if state.get('operational_deployment') is not None:
         return deployment_scope(root, home, state)
     import pwd
@@ -157,8 +160,67 @@ def identity_scope(root, home, state):
     return root, home
 
 
+def lab_record(root, state):
+    """Bind local preparation to the actual account and verified recovery point.
+
+    This record grants no startup, DNS, NPM relocation or publication intent.
+    Only the trusted preparation runner creates it, under recovery.lock, after
+    validating the selected source and private artifacts through EMPTY_STATE.
+    """
+    import pwd
+    user = pwd.getpwuid(1000)
+    return dict(schema=1, kind='onboarding_lab', uid=1000, gid=1000,
+                user=user.pw_name, home=user.pw_dir, target=str(root),
+                machine_id=state.get('machine_id'), tag=state.get('tag'),
+                public_commit=state.get('public_commit'), tooling_commit=state.get('tooling_commit'),
+                publications_disabled=True)
+
+
+def lab_scope(root, home, state):
+    """Validate the root-private checkpoint before any lab runtime mutation."""
+    import pwd
+    code = 'LAB_RUNTIME_SCOPE_REFUSED'
+    root, home = safe(root), safe(home)
+    user = pwd.getpwuid(1000)
+    record = state.get('lab_deployment')
+    require(isinstance(record, dict) and record == lab_record(root, state)
+            and type(record.get('schema')) is int and record['schema'] == 1
+            and record.get('publications_disabled') is True
+            and state.get('operational_deployment') is None
+            and user.pw_gid == 1000 and re.fullmatch(r'[a-z_][a-z0-9_-]*', user.pw_name)
+            and root == Path(user.pw_dir)/'streams-aio'
+            and home == Path(user.pw_dir)/'.local/share/streams-aio-recovery'
+            and os.geteuid() == 0 and not home.is_relative_to(root)
+            and not root.is_relative_to(home), code)
+    checkpoint = home/'state.json'
+    info = regular(checkpoint)
+    disk = json.loads(checkpoint.read_bytes())
+    reconciled = dict(disk, in_progress=None) if isinstance(disk, dict) and disk.get('in_progress') == 'AIO' else disk
+    require(info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o600
+            and (disk == state or state.get('in_progress') is None and reconciled == state)
+            and type(state.get('schema')) is int and state['schema'] == 1
+            and state.get('runner_version') == '0.2.0'
+            and isinstance(state.get('tag'), str) and re.fullmatch(r'dr-[0-9]{8}T[0-9]{6}Z', state['tag'])
+            and isinstance(state.get('public_commit'), str) and re.fullmatch(r'[0-9a-f]{40}', state['public_commit'])
+            and state.get('tooling_commit') == state['public_commit']
+            and state.get('machine_id') == Path('/etc/machine-id').read_text().strip()
+            and state.get('target') == str(root)
+            and state.get('in_progress') in (None, 'AIO')
+            and state.get('application_start_attempted', False) is False
+            and state.get('application_recovery') in (None, 'NOT_VERIFIED')
+            and state.get('timers_installed', False) is False
+            and all(state.get(key) is None for key in
+                    ('public_domain_recovery', 'operational_recovery', 'public_controllers_enabled')), code)
+    if disk.get('in_progress') == 'AIO':
+        validate_pending_native_aio(root, home, disk)
+    else:
+        require(state.get('in_progress') is None, code)
+    return root, home
+
+
 def deployment_record(root, state, routing_mode, domain_target_address):
     """Record explicit replacement intent; never infer a DNS cutover from IPs."""
+    require(state.get('lab_deployment') is None, 'LAB_APPLICATION_START_REFUSED')
     import ipaddress
     import pwd
     user = pwd.getpwuid(1000)
@@ -193,7 +255,9 @@ def validate_pending_native_aio(root, home, state):
             and all(state.get(key) is None for key in ('native_agent','public_domain_recovery','operational_recovery'))
             and isinstance(state.get('runtime_profile'),dict)
             and state['runtime_profile'].get('origin') == 'FIRST_BOOT'
-            and state['runtime_profile'].get('id') in (FIRST_BOOT_PROFILE,OPERATIONAL_PROFILE), code)
+            and state['runtime_profile'].get('id') in
+                ((COMETNET_TRIAL_PROFILE,) if state.get('lab_deployment') is not None
+                 else (FIRST_BOOT_PROFILE, OPERATIONAL_PROFILE)), code)
     archive = safe(home/'private/aio-state.tar.gz')
     info = regular(archive)
     expected = (state.get('private_hashes') or {}).get('aio-state.tar.gz')
@@ -240,6 +304,7 @@ def deployment_scope(root, home, state):
     .29/tag/commit guard. A root-owned checkpoint is required in either path.
     """
     import pwd
+    require(state.get('lab_deployment') is None, 'LAB_APPLICATION_START_REFUSED')
     root, home = safe(root), safe(home)
     user = pwd.getpwuid(1000)
     record = state.get('operational_deployment')
@@ -280,6 +345,9 @@ def state_commit(root):
     if not checkpoint.is_file():
         return None
     state = json.loads(checkpoint.read_bytes())
+    if state.get('lab_deployment') is not None:
+        lab_scope(root, home, state)
+        return state['public_commit']
     if state.get('operational_deployment') is None:
         return None
     deployment_scope(root, home, state)
@@ -1724,6 +1792,7 @@ def promote_operational(root, home, state, model, run, routing_mode, domain_targ
     caller's recovery lock. This only changes the registered overlay; DNS,
     containers and NPM are handled by the subsequent checked startup phases.
     """
+    require(state.get('lab_deployment') is None, 'LAB_APPLICATION_START_REFUSED')
     root, home = identity_scope(root, home, state)
     require(validate(root, home, state) is True and state.get('preparation') == 'PASS'
             and state['runtime_profile'].get('origin') == 'FIRST_BOOT',

@@ -1,4 +1,4 @@
-# Aggiungi servizio — anteprima 0.5.0-dev.5
+# Aggiungi servizio — anteprima 0.5.0-dev.6
 
 Questa scheda aggiunge **un servizio nuovo** a uno stack Streams AIO già configurato.
 L’analisi iniziale funziona offline. La connessione diretta alla VM viene aperta solo
@@ -13,7 +13,7 @@ I dettagli del progetto visivo sono in [UI-DESIGN.md](UI-DESIGN.md).
 
 ## Collaudo su due VM Ubuntu vuote
 
-Usa il riquadro **Collaudo su due VM vuote** della nuova scheda, senza premere
+Usa il riquadro **Collaudo locale** della nuova scheda, senza premere
 «Crea da zero» in Panoramica. Il normale recupero avvia lo stack completo e richiede
 anche l’instradamento dei domini; questo laboratorio prepara soltanto file e Agent.
 
@@ -28,7 +28,8 @@ anche l’instradamento dei domini; questo laboratorio prepara soltanto file e A
    Per esempio: stack `test@192.168.178.30`, Infisical `test2@192.168.178.33`.
 3. Torna in **Aggiungi servizio**. Nel passo **Destinazione** scegli **Collaudo
    locale**, quindi premi **Prepara le VM di collaudo**. Il programma
-   controlla che entrambe siano vuote prima dei trasferimenti, ripristina Infisical,
+   controlla che entrambe siano vuote o contengano lo stesso tentativo di laboratorio
+   verificabile prima dei trasferimenti, ripristina Infisical,
    prepara lo stack e collega il suo Agent alla VM Infisical di prova tramite SSH.
    Non avvia l’intero stack e non installa i processi di pubblicazione automatica.
 4. Mantieni selezionato **Solo collaudo locale** e prepara il nuovo servizio secondo
@@ -39,9 +40,16 @@ anche l’instradamento dei domini; questo laboratorio prepara soltanto file e A
    richiede successivamente repository e processi di backup dedicati alla prova.
 
 Puoi lasciare accese le VM principali. Non cambiare AdGuard, DNS di Ubuntu o porte
-del router per questa preparazione. Se la preparazione viene interrotta dopo aver
-iniziato a ripristinare dati, questa anteprima richiede di tornare agli snapshot
-puliti per ripetere il pulsante di laboratorio; non cancella automaticamente le VM.
+del router per questa preparazione. IP, nome dell’utente e backup vengono letti
+dai dati attuali e dai checkpoint verificati: il laboratorio non dipende da un
+vecchio utente o da una data di backup fissata nel programma.
+
+Per riprendere una preparazione interrotta, seleziona **lo stesso backup** e premi
+di nuovo **Prepara le VM di collaudo**. Prima di modificare qualsiasi file la GUI
+verifica entrambe le macchine, i checkpoint, il punto selezionato e la proprietà
+dei container e volumi esistenti. Può riprendere anche il tentativo fermato dalla
+0.5.0-dev.5 prima del profilo runtime. Dati estranei, avvii dello stack o transazioni
+non riconciliate vengono conservati e fermano la ripresa; non viene eseguito un reset.
 
 Dopo il clic, l’avanzamento e gli eventuali errori compaiono nel riquadro accanto
 al pulsante **Prepara le VM di collaudo**. Il controllo del backup può richiedere
@@ -51,9 +59,10 @@ alla scheda. Se un’altra operazione è già in corso, attendi il suo esito.
 
 ## Stato della versione
 
-Il codice è in sviluppo e viene verificato con test simulati. Il collaudo su VM dedicate
-e la verifica grafica dell’eseguibile restano da eseguire: non è una nuova versione
-stabile da sostituire alla GUI di recupero già funzionante.
+Il codice è in sviluppo. Test offline e controlli GitHub verificano il percorso,
+la compilazione e la finestra Windows. Il collaudo completo sulle VM dedicate resta
+da completare: non è una nuova versione stabile da sostituire alla GUI di recupero
+già funzionante.
 
 La prima versione gestisce servizi **senza dati persistenti propri** e impostazioni
 espresse in Compose e file `.env`. Rifiuta mount `volumes`, inclusi quelli readonly,

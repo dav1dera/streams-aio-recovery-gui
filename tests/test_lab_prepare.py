@@ -33,8 +33,9 @@ class FakeSSH:
         key.get_name.return_value, key.get_base64.return_value = 'ssh-ed25519', 'AAAAsyntheticPublicKey'
         self.harness.timeline.append(('connect', host.address))
 
-    def check(self, fresh=True, role='stack'):
+    def check(self, fresh=True, role='stack', lab_point=None):
         assert fresh is True
+        assert lab_point == (TAG, COMMIT)
         self.harness.timeline.append(('check', role))
         return self.harness.infos[role]
 
@@ -158,9 +159,9 @@ class LabPreparationTests(unittest.TestCase):
         def point(client, tag):
             observed.append(self.harness.events[-1])
             return original_point(client, tag)
-        def check(connection, fresh=True, role='stack'):
+        def check(connection, fresh=True, role='stack', lab_point=None):
             observed.append(self.harness.events[-1])
-            return original_check(connection, fresh, role)
+            return original_check(connection, fresh, role, lab_point)
         with patch.object(FakeGitHub, 'point', point), patch.object(FakeSSH, 'check', check):
             self.harness.prepare()
         self.assertEqual(self.harness.events[0], dict(stage='HOST', status='RUNNING',
@@ -197,7 +198,7 @@ class LabPreparationTests(unittest.TestCase):
         allowed = {'github_token', 'public_commit', 'dr_tag', 'age_identity', 'infisical_address',
                    'project_id', 'environment', 'native_agent', 'aio_mode', 'client_id_file',
                    'client_secret_file', 'aio_payload', 'supplemental_inputs', 'aiostreams_exports',
-                   'aiometadata_exports', 'role', 'ssh_bridge'}
+                   'aiometadata_exports', 'role', 'ssh_bridge', 'lab_preparation', 'onboarding_lab'}
         for request in self.harness.requests:
             self.assertLessEqual(set(request), allowed)
             self.assertEqual(request['project_id'], '')
@@ -206,6 +207,8 @@ class LabPreparationTests(unittest.TestCase):
             self.assertEqual(request['supplemental_inputs'], '')
             self.assertEqual(request['aio_mode'], 'snapshot')
             self.assertTrue(request['native_agent'])
+            self.assertTrue(request['lab_preparation'])
+            self.assertEqual(request.get('onboarding_lab', False), request['role'] == 'stack')
         self.assertEqual(self.harness.requests[-1]['infisical_address'], 'http://127.0.0.1:33123')
         self.assertTrue(self.harness.requests[-1]['ssh_bridge'])
         self.assertNotIn(SECRET, json.dumps(self.harness.events))
@@ -264,6 +267,26 @@ class LabPreparationTests(unittest.TestCase):
                 self.assertFalse(harness.requests)
                 self.assertFalse(harness.native_metadata)
                 self.assertEqual([connection.closed for connection in harness.connections], [1, 1])
+
+    def test_verified_same_point_lab_can_resume_without_resetting_either_vm(self):
+        self.harness.infos['stack'].update(existing_recovery=True, volumes=2,
+            lab_preparation_resume=True)
+        self.harness.infos['infisical'].update(existing_recovery=True, containers=3, volumes=2,
+            lab_preparation_resume=True)
+        result = self.harness.prepare()
+        self.assertEqual(result['status'], 'PREPARED_LAB')
+        self.assertEqual([request['role'] for request in self.harness.requests], ['infisical', 'stack'])
+        self.assertFalse(result['applications_started'])
+        self.assertFalse(result['publications_enabled'])
+
+    def test_resume_claim_must_be_a_boolean_and_counts_must_still_be_valid(self):
+        for change in ({'lab_preparation_resume': 'true'}, {'lab_preparation_resume': 1},
+                       {'lab_preparation_resume': True, 'containers': -1}):
+            harness = Harness()
+            harness.infos['stack'].update(existing_recovery=True, **change)
+            with self.assertRaisesRegex(lab.LabFailure, '^LAB_EMPTY_VMS_REQUIRED$'):
+                harness.prepare()
+            self.assertFalse(harness.requests)
 
     def test_same_machine_and_wrong_home_are_refused_before_upload(self):
         self.harness.infos['infisical']['machine_id'] = '1' * 32

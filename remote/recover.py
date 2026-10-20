@@ -743,6 +743,14 @@ class Recovery:
     def __init__(self, args):
         self.args = args
         self.config = args.config_data
+        if 'onboarding_lab' in self.config:
+            require(type(self.config['onboarding_lab']) is bool, 'LAB_RUNTIME_SCOPE_REFUSED')
+        if self.config.get('onboarding_lab') is True:
+            require(self.config.get('role', 'stack') == 'stack'
+                    and self.config.get('aio_mode') == 'snapshot'
+                    and self.config.get('native_agent', True) is True
+                    and self.config.get('operational_profile') is not True,
+                    'LAB_RUNTIME_SCOPE_REFUSED')
         if self.config.get('operational_profile') is True:
             import ipaddress
             require(self.config.get('aio_mode') == 'snapshot'
@@ -774,6 +782,10 @@ class Recovery:
             require(self.state.get('machine_id') == machine and self.state.get('target') == str(self.root)
                     and self.state.get('tooling_commit') == tooling_sha
                     and self.state.get('runner_version') == RUNNER_VERSION, 'FOREIGN_RECOVERY_STATE')
+            if self.state.get('lab_deployment') is not None:
+                require(self.config.get('onboarding_lab') is True
+                        and self.config.get('operational_profile') is not True,
+                        'LAB_RUNTIME_SCOPE_REFUSED')
             pending = self.state.get('in_progress')
             # These stages have no installed outputs until they succeed. Keep
             # failed staging directories, but allow corrected credentials/files.
@@ -1097,6 +1109,29 @@ class Recovery:
         self.run_script('aio-dr.py', 'import', '--payload', path, root=True)
 
     def validate_resume(self):
+        if self.state.get('lab_deployment') is not None:
+            require(self.config.get('onboarding_lab') is True
+                    and self.config.get('operational_profile') is not True,
+                    'LAB_RUNTIME_SCOPE_REFUSED')
+            policy = load_module(self.tooling / 'runtime_profile.py', 'resume_lab_scope')
+            try:
+                policy.lab_scope(self.root, self.home, self.state)
+            except policy.Refused as error:
+                raise Refused(str(error)) from None
+        elif self.config.get('onboarding_lab') is True:
+            # An interrupted pre-profile preparation may be adopted only after
+            # the normal source/private/render checks below. Operational or
+            # already-profiled deployments are never reclassified as a lab.
+            require(self.state.get('operational_deployment') is None
+                    and self.state.get('runtime_profile') is None
+                    and self.state.get('application_start_attempted', False) is False
+                    and self.state.get('preparation') is None
+                    and self.state.get('application_recovery') in (None, 'NOT_VERIFIED')
+                    and self.state.get('native_agent') is None
+                    and self.state.get('timers_installed', False) is False
+                    and all(self.state.get(key) is None for key in
+                            ('public_domain_recovery', 'operational_recovery', 'public_controllers_enabled')),
+                    'LAB_RUNTIME_SCOPE_REFUSED')
         if 'RENDER' in self.state.get('completed',[]):
             self.verify_seeded_envs()
         elif self.state.get('render_base') is not None:
@@ -1241,7 +1276,11 @@ class Recovery:
         if existing:
             probe = load_module(self.tooling / 'probe.py', 'resume_runtime_guard')
             try:
-                probe.checked_stack_runtime(self.root, self.home, self.state)
+                if self.config.get('onboarding_lab') is True:
+                    probe.checked_stack_runtime(self.root, self.home, self.state,
+                        lab_point=(self.config['dr_tag'], self.config['public_commit']))
+                else:
+                    probe.checked_stack_runtime(self.root, self.home, self.state)
             except ValueError as error:
                 raise Refused(str(error)) from None
         self.auth()
@@ -1253,6 +1292,19 @@ class Recovery:
         self.step('INPUTS', self.inputs)
         self.step('RENDER', lambda: self.run_script('dr.py', 'render', '--mode', 'fresh', root=True))
         self.step('EMPTY_STATE', lambda: self.run_script('dr.py', 'prepare-state', root=True))
+        if self.config.get('onboarding_lab') is True:
+            policy = load_module(self.tooling / 'runtime_profile.py', 'onboarding_lab_scope')
+            record = policy.lab_record(self.root, self.state)
+            if self.state.get('lab_deployment') is not None:
+                require(self.state['lab_deployment'] == record, 'LAB_RUNTIME_SCOPE_REFUSED')
+            else:
+                # validate_resume has already checked the selected source,
+                # encrypted bundle, private hashes and exact renderer outputs.
+                require(not self.state.get('runtime_profile')
+                        and self.state.get('application_start_attempted', False) is False
+                        and self.state.get('in_progress') is None, 'LAB_RUNTIME_SCOPE_REFUSED')
+                self.state['lab_deployment'] = record
+                save(self.state_path, self.state)
         if self.config.get('operational_profile') is True:
             policy = load_module(self.tooling / 'runtime_profile.py', 'operational_deployment_scope')
             record = policy.deployment_record(self.root, self.state, self.config.get('routing_mode'),

@@ -180,7 +180,8 @@ class MainThreadFlowTests(unittest.TestCase):
         message = view.lab_hint.set.call_args.args[0]
         self.assertEqual(message, view.status.set.call_args.args[0])
         self.assertIn('LAB_EMPTY_VMS_REQUIRED', message)
-        self.assertIn('snapshot puliti', message)
+        self.assertIn('VM vuote', message)
+        self.assertIn('punto originale', message)
         self.assertEqual(view.lab_feedback.configure.call_args.kwargs['foreground'], '#a6413c')
 
     def test_lab_errors_can_reuse_fixed_backend_age_messages(self):

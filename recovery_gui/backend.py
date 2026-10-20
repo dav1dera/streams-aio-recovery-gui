@@ -413,8 +413,13 @@ class SSH:
             raise Failure(code)
         return bytes(collected)
 
-    def check(self, fresh=True, role='stack'):
+    def check(self, fresh=True, role='stack', lab_point=None):
         require(role in ('stack', 'infisical'), 'INVALID_RECOVERY_ROLE')
+        if lab_point is not None:
+            require(isinstance(lab_point, tuple) and len(lab_point) == 2
+                    and isinstance(lab_point[0], str) and TAG.fullmatch(lab_point[0])
+                    and isinstance(lab_point[1], str) and SHA.fullmatch(lab_point[1]),
+                    'LAB_RUNTIME_SCOPE_REFUSED')
         home = self.run(['sh', '-c', 'printf %s "$HOME"']).decode()
         require(bool(re.fullmatch(r'/[A-Za-z0-9/_-]+', home)), 'UNSUPPORTED_REMOTE_HOME')
         source = (resources() / 'probe.py').read_text(encoding='utf-8')
@@ -423,6 +428,8 @@ class SSH:
         args = ['python3', '-c', source, '--target', target, '--runner', area, '--role', role]
         if fresh:
             args.append('--fresh')
+        if lab_point is not None:
+            args.extend(['--lab-tag', lab_point[0], '--lab-commit', lab_point[1]])
         info = json.loads(self.run(args, sudo=True, timeout=40))
         require(info.get('user') == self.host.user and info.get('home') == home, 'DEPLOYMENT_USER_MISMATCH')
         return info
@@ -433,6 +440,16 @@ class SSH:
 
     def upload(self, request):
         validate_remote_shell_scripts()
+        laboratory = request.get('lab_preparation', False)
+        require(type(laboratory) is bool, 'LAB_RUNTIME_SCOPE_REFUSED')
+        if laboratory:
+            require(request.get('aio_mode') == 'snapshot' and request.get('native_agent') is True
+                    and request.get('operational_profile') is not True,
+                    'LAB_RUNTIME_SCOPE_REFUSED')
+            require(request.get('onboarding_lab', False) is (request.get('role', 'stack') == 'stack'),
+                    'LAB_RUNTIME_SCOPE_REFUSED')
+        else:
+            require(request.get('onboarding_lab', False) is False, 'LAB_RUNTIME_SCOPE_REFUSED')
         identity_mode = request.get('age_identity_mode', 'file')
         require(identity_mode in ('file', 'paste'), 'AGE_IDENTITY_FILE_INVALID')
         pasted_identity = None
@@ -442,7 +459,10 @@ class SSH:
             except AgeInputFailure as error:
                 raise Failure(str(error)) from None
         role = request.get('role', 'stack')
-        home = (self.check(role=role) if role != 'stack' else self.check())['home']
+        if laboratory:
+            home = self.check(role=role, lab_point=(request.get('dr_tag'), request.get('public_commit')))['home']
+        else:
+            home = (self.check(role=role) if role != 'stack' else self.check())['home']
         area = self.area(home, role)
         remote = area + '/upload-' + uuid.uuid4().hex
         # The installer already requires sudo. Create only this new staging
@@ -460,6 +480,8 @@ class SSH:
             config = {key: request[key] for key in ('github_token', 'public_commit', 'dr_tag',
                       'infisical_address', 'project_id', 'environment')}
             config.update(role=role, ssh_bridge=request.get('ssh_bridge') is True)
+            if laboratory and role == 'stack':
+                config['onboarding_lab'] = True
             require(type(request.get('native_agent',True)) is bool, 'INVALID_RECOVERY_REQUEST')
             config['native_agent'] = request.get('native_agent',True)
             if request.get('operational_profile') is True:

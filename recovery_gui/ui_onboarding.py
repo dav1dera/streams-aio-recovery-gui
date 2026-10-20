@@ -51,8 +51,8 @@ PROGRESS_TEXT = {
     'SERVICE_LAB_READING_BACKUP': 'Verifica del backup pubblicato su GitHub in corso.',
     'SERVICE_LAB_CONNECTING_STACK': 'Collegamento SSH alla VM stack di collaudo in corso.',
     'SERVICE_LAB_CONNECTING_INFISICAL': 'Collegamento SSH alla VM Infisical di collaudo in corso.',
-    'SERVICE_LAB_CHECKING_STACK': 'Verifica che la VM stack di collaudo sia vuota.',
-    'SERVICE_LAB_CHECKING_INFISICAL': 'Verifica che la VM Infisical di collaudo sia vuota.',
+    'SERVICE_LAB_CHECKING_STACK': 'Verifica della VM stack: vuota oppure stesso laboratorio riprendibile.',
+    'SERVICE_LAB_CHECKING_INFISICAL': 'Verifica della VM Infisical: vuota oppure stesso laboratorio riprendibile.',
 }
 ERROR_TEXT = {
     'SERVICE_CONTROLLER_REQUIRED': 'Il collegamento di installazione non è disponibile in questa versione.',
@@ -65,7 +65,9 @@ ERROR_TEXT = {
     'SERVICE_OPERATION_BUSY': 'È già in corso un’operazione. Attendi il suo esito oppure interrompila prima di preparare le VM.',
     'SERVICE_LAB_PREPARATION_INCOMPLETE': 'La preparazione delle VM di collaudo non è stata verificata. Controlla l’esito prima di aggiungere un servizio.',
     'LAB_INPUTS_REQUIRED': 'Apri Accessi e backup e configura entrambe le VM di collaudo, il token GitHub, la chiave age e il backup da usare.',
-    'LAB_EMPTY_VMS_REQUIRED': 'Una delle due VM contiene già container, volumi o un recupero. Ripristina gli snapshot puliti delle sole VM di prova prima di riprovare. I dati presenti vengono conservati.',
+    'LAB_EMPTY_VMS_REQUIRED': 'Una delle VM contiene dati che non risultano un tentativo di laboratorio riprendibile. Usa VM vuote o verifica il punto originale del tentativo. I dati presenti vengono conservati.',
+    'LAB_RUNTIME_SCOPE_REFUSED': 'Il checkpoint del laboratorio non corrisponde a macchina, utente o backup selezionato, oppure contiene un avvio dello stack. Seleziona il backup originale del tentativo. I dati restano conservati.',
+    'LAB_APPLICATION_START_REFUSED': 'Questa VM è un laboratorio per aggiungere singoli servizi. Prosegui da Aggiungi servizio in Collaudo locale; il recupero completo dello stack richiede altre VM vuote.',
     'LAB_HOST_IDENTITY_INVALID': 'Utente, cartella home o identità della VM non corrispondono al collaudo. Verifica gli accessi delle VM di prova in Accessi e backup.',
     'LAB_MARKER_REFUSED': 'La registrazione del laboratorio non è stata verificata. Conserva lo stato delle VM e controlla gli esiti prima di riprendere.',
     'LAB_PREPARATION_FAILED': 'La preparazione del laboratorio si è fermata. Controlla il passaggio indicato e conserva lo stato delle VM prima di riprovare.',

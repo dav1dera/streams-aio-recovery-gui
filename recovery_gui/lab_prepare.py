@@ -1,4 +1,4 @@
-"""Prepare two empty VMs for local service tests, without an application start.
+"""Prepare or resume dedicated VMs for local tests, without an application start.
 
 This deliberately does not call restore_all: that function starts the complete
 stack. Backup downloads are read-only; DNS, router, publication workers and
@@ -117,9 +117,11 @@ def _host(snapshot, prefix=''):
 
 
 def _clean(info, host):
-    _need(isinstance(info, dict) and info.get('existing_recovery') is False
-          and type(info.get('containers')) is int and info['containers'] == 0
-          and type(info.get('volumes')) is int and info['volumes'] == 0,
+    _need(isinstance(info, dict) and type(info.get('existing_recovery')) is bool
+          and type(info.get('containers')) is int and info['containers'] >= 0
+          and type(info.get('volumes')) is int and info['volumes'] >= 0
+          and (info['existing_recovery'] is False and info['containers'] == info['volumes'] == 0
+               or info['existing_recovery'] is True and info.get('lab_preparation_resume') is True),
           'LAB_EMPTY_VMS_REQUIRED')
     _need(info.get('user') == host.user and info.get('home') == '/home/' + host.user
           and isinstance(info.get('machine_id'), str)
@@ -142,7 +144,7 @@ def _progress(callback, event):
 
 def prepare_lab(snapshot, confirm_key, cancelled, confirm_changed_key=None, progress_callback=None,
                 *, ssh_factory=backend.SSH, github_factory=backend.GitHub):
-    """Prepare infrastructure only. Both hosts must be empty before any upload."""
+    """Prepare infrastructure, or resume proven same-point lab checkpoints."""
     stack = server = None
     cancelled = cancelled or threading.Event()
     emit = lambda event: _progress(progress_callback, event)
@@ -184,10 +186,10 @@ def prepare_lab(snapshot, confirm_key, cancelled, confirm_changed_key=None, prog
         server = ssh_factory(server_host, confirm_key, cancelled, confirm_changed_key=confirm_changed_key)
         _check_cancel(cancelled)
         emit(dict(stage='HOST', status='RUNNING', code='SERVICE_LAB_CHECKING_STACK'))
-        first = _clean(stack.check(fresh=True, role='stack'), stack_host)
+        first = _clean(stack.check(fresh=True, role='stack', lab_point=(tag, commit)), stack_host)
         _check_cancel(cancelled)
         emit(dict(stage='HOST', status='RUNNING', code='SERVICE_LAB_CHECKING_INFISICAL'))
-        second = _clean(server.check(fresh=True, role='infisical'), server_host)
+        second = _clean(server.check(fresh=True, role='infisical', lab_point=(tag, commit)), server_host)
         _need(first['machine_id'] != second['machine_id'], 'SEPARATE_RECOVERY_VMS_REQUIRED')
         emit(dict(stage='HOST', status='PASS'))
         _check_cancel(cancelled)
@@ -196,7 +198,8 @@ def prepare_lab(snapshot, confirm_key, cancelled, confirm_changed_key=None, prog
         request = dict(github_token=token, public_commit=commit, dr_tag=tag, age_identity=identity,
                        infisical_address='', project_id='', environment='', native_agent=True,
                        aio_mode='snapshot', client_id_file='', client_secret_file='', aio_payload='',
-                       supplemental_inputs='', aiostreams_exports=[], aiometadata_exports=[])
+                       supplemental_inputs='', aiostreams_exports=[], aiometadata_exports=[],
+                       lab_preparation=True)
         if identity_mode == 'paste':
             request.update(age_identity_mode='paste', age_identity_text=snapshot['age_identity_text'])
         server.prepare(dict(request, role='infisical'), emit)
@@ -205,7 +208,8 @@ def prepare_lab(snapshot, confirm_key, cancelled, confirm_changed_key=None, prog
         _need(type(port) is int and 1 <= port <= 65535, 'INFISICAL_API_PORT_REQUIRES_REVIEW')
         with backend.APIBridge(stack, server, port) as address:
             _check_cancel(cancelled)
-            stack.prepare(dict(request, role='stack', infisical_address=address, ssh_bridge=True), emit)
+            stack.prepare(dict(request, role='stack', infisical_address=address, ssh_bridge=True,
+                               onboarding_lab=True), emit)
         _check_cancel(cancelled)
         emit(dict(stage='NATIVE_AGENT', status='RUNNING'))
         target = first['home'] + '/streams-aio'
