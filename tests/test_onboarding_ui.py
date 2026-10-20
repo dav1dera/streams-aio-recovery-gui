@@ -4,6 +4,7 @@ from pathlib import Path
 import queue
 import tempfile
 import threading
+import tkinter as tk
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -172,6 +173,100 @@ class PrivatePresentationTests(unittest.TestCase):
 
 
 class MainThreadFlowTests(unittest.TestCase):
+    def test_lab_error_is_visible_next_to_button_with_actionable_fixed_text(self):
+        view = poll_view()
+        view._active_action = 'prepare_lab'
+        ServiceOnboardingPanel._show_error(view, InputFailure('LAB_EMPTY_VMS_REQUIRED'))
+        message = view.lab_hint.set.call_args.args[0]
+        self.assertEqual(message, view.status.set.call_args.args[0])
+        self.assertIn('LAB_EMPTY_VMS_REQUIRED', message)
+        self.assertIn('snapshot puliti', message)
+        self.assertEqual(view.lab_feedback.configure.call_args.kwargs['foreground'], '#a6413c')
+
+    def test_lab_errors_can_reuse_fixed_backend_age_messages(self):
+        view = poll_view()
+        view._active_action = 'prepare_lab'
+        view.app.errors = {'AGE_PUBLIC_KEY_NOT_IDENTITY': 'Seleziona il file della chiave privata PRIMARY o RECOVERY.'}
+        ServiceOnboardingPanel._show_error(view, InputFailure('AGE_PUBLIC_KEY_NOT_IDENTITY'))
+        message = view.lab_hint.set.call_args.args[0]
+        self.assertIn('AGE_PUBLIC_KEY_NOT_IDENTITY', message)
+        self.assertIn('chiave privata', message)
+
+    def test_snapshot_failure_is_visible_before_freeze_or_thread_starts(self):
+        view = Mock()
+        view._operation_running.return_value = False
+        view._busy = False
+        view.app.snapshot.side_effect = InputFailure('SELECT_GITHUB_RECOVERY_POINT')
+        view._show_error = lambda error: ServiceOnboardingPanel._show_error(view, error)
+        ServiceOnboardingPanel._start_job(view, 'prepare_lab')
+        self.assertIn('SELECT_GITHUB_RECOVERY_POINT', view.lab_hint.set.call_args.args[0])
+        view._freeze.assert_not_called()
+        view.controller.prepare_lab.assert_not_called()
+
+    def test_freeze_failure_is_visible_and_releases_busy_without_exposing_exception(self):
+        view = Mock()
+        view._operation_running.return_value = False
+        view._busy = False
+        view.app.snapshot.return_value = {}
+        view.app.cancelled = threading.Event()
+        view.state = OnboardingState()
+        view._freeze.side_effect = tk.TclError(SECRET)
+        view._show_error = lambda error: ServiceOnboardingPanel._show_error(view, error)
+        ServiceOnboardingPanel._start_job(view, 'prepare_lab')
+        self.assertFalse(view._busy)
+        self.assertFalse(view.app.busy)
+        self.assertIn('SERVICE_TOOL_FAILED', view.lab_hint.set.call_args.args[0])
+        self.assertNotIn(SECRET, view.lab_hint.set.call_args.args[0])
+        view.controller.prepare_lab.assert_not_called()
+
+    def test_busy_lab_click_explains_why_it_did_not_start_another_job(self):
+        view = Mock()
+        view._operation_running.return_value = True
+        view._active_action = 'apply'
+        ServiceOnboardingPanel._start_job(view, 'prepare_lab')
+        self.assertIn('SERVICE_OPERATION_BUSY', view.lab_hint.set.call_args.args[0])
+        self.assertIn('già in corso', view.lab_hint.set.call_args.args[0])
+        self.assertEqual(view._active_action, 'apply')
+        view.app.snapshot.assert_not_called()
+
+    def test_cancel_and_early_backup_progress_remain_visible_in_lab_card(self):
+        view = poll_view()
+        view._active_action = 'prepare_lab'
+        view._busy = True
+        view.app.cancelled = threading.Event()
+        view.events.put(('stage', dict(stage='HOST', status='RUNNING', code='SERVICE_LAB_READING_BACKUP')))
+        ServiceOnboardingPanel.poll(view)
+        self.assertIn('GitHub', view.lab_hint.set.call_args.args[0])
+        self.assertIn('SERVICE_LAB_READING_BACKUP', view.lab_hint.set.call_args.args[0])
+        ServiceOnboardingPanel.cancel(view)
+        self.assertTrue(view.app.cancelled.is_set())
+        self.assertIn('Interruzione richiesta', view.lab_hint.set.call_args.args[0])
+
+    def test_worker_lab_refusal_is_displayed_at_top_and_busy_is_cleared(self):
+        view = Mock()
+        view._alive, view._busy = True, False
+        view._operation_running.return_value = False
+        view.app.snapshot.return_value = {'user': 'pi'}
+        view.state = OnboardingState()
+        view.events = queue.Queue()
+        view.safe_events = []
+        view.app.cancelled = threading.Event()
+        view.stage_labels = {stage: Mock() for stage in STAGES}
+        view.local_lab.get.return_value = False
+        view.controller.prepare_lab.side_effect = InputFailure('GITHUB_TOKEN_REQUIRED')
+        view._show_error = lambda error: ServiceOnboardingPanel._show_error(view, error)
+        class InlineThread:
+            def __init__(self, target, daemon): self.target = target
+            def start(self): self.target()
+        with patch('recovery_gui.ui_onboarding.threading.Thread', InlineThread):
+            ServiceOnboardingPanel._start_job(view, 'prepare_lab')
+        ServiceOnboardingPanel.poll(view)
+        self.assertIn('GITHUB_TOKEN_REQUIRED', view.lab_hint.set.call_args.args[0])
+        self.assertIn('Accessi e backup', view.lab_hint.set.call_args.args[0])
+        self.assertFalse(view.app.busy)
+        self.assertFalse(view._busy)
+        view._unfreeze.assert_called_once()
+
     def test_capture_carries_local_scope_and_can_use_agent_tunnel_without_https_field(self):
         view = Mock()
         view.state = OnboardingState(analysis=object())
@@ -381,6 +476,39 @@ class MainThreadFlowTests(unittest.TestCase):
         self.assertNotIn('tk.Tk', names)
         self.assertNotIn('SSH', names)
         self.assertNotIn('subprocess.run', names)
+
+
+class WidgetFreezeTests(unittest.TestCase):
+    def test_real_freeze_collection_skips_unsupported_widgets_deduplicates_and_restores_states(self):
+        class Widget:
+            def __init__(self, state='normal', *, unsupported_get=False, unsupported_set=False):
+                self.current, self.calls, self.reads = state, [], 0
+                self.unsupported_get, self.unsupported_set = unsupported_get, unsupported_set
+            def cget(self, key):
+                self.reads += 1
+                if self.unsupported_get:
+                    raise tk.TclError('unknown option -state')
+                return self.current
+            def configure(self, **options):
+                if self.unsupported_set:
+                    raise tk.TclError('unsupported state')
+                self.calls.append(options)
+                self.current = options['state']
+        button, combo, text = Widget(), Widget('readonly'), Widget()
+        unsupported_get, unsupported_set = Widget(unsupported_get=True), Widget(unsupported_set=True)
+        cancel = Widget('disabled')
+        view = SimpleNamespace(app=SimpleNamespace(buttons=[button], controls=[combo, unsupported_get, unsupported_set, button]),
+                               _controls=[text, combo], _restore_states=[], cancel_button=cancel, _refresh_buttons=lambda: None)
+        ServiceOnboardingPanel._freeze(view)
+        self.assertEqual((button.current, combo.current, text.current), ('disabled', 'disabled', 'disabled'))
+        self.assertEqual(button.reads, 1)
+        self.assertEqual(combo.reads, 1)
+        self.assertEqual(len(view._restore_states), 3)
+        self.assertEqual(cancel.current, 'normal')
+        ServiceOnboardingPanel._unfreeze(view)
+        self.assertEqual((button.current, combo.current, text.current), ('normal', 'readonly', 'normal'))
+        self.assertEqual(cancel.current, 'disabled')
+        self.assertEqual(view._restore_states, [])
 
 
 if __name__ == '__main__':

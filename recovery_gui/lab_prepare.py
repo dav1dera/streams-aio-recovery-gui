@@ -16,6 +16,13 @@ class LabFailure(ValueError):
     """A closed diagnostic code; never an input or transport error excerpt."""
 
 
+PROGRESS_CODES = frozenset({
+    'SERVICE_LAB_CHECKING_INPUTS', 'SERVICE_LAB_READING_BACKUP',
+    'SERVICE_LAB_CONNECTING_STACK', 'SERVICE_LAB_CONNECTING_INFISICAL',
+    'SERVICE_LAB_CHECKING_STACK', 'SERVICE_LAB_CHECKING_INFISICAL',
+})
+
+
 LAB_MARKER = r'''
 import json, os, pathlib, pwd, re, stat, sys
 try:
@@ -127,7 +134,7 @@ def _progress(callback, event):
     if event.get('status') not in ('RUNNING', 'PASS', 'REFUSED'):
         return
     safe = dict(stage=event['stage'], status=event['status'])
-    if isinstance(event.get('code'), str) and event['code'] in backend.ERROR_CODES:
+    if isinstance(event.get('code'), str) and event['code'] in backend.ERROR_CODES | PROGRESS_CODES:
         safe['code'] = event['code']
     callback(safe)
 
@@ -141,6 +148,7 @@ def prepare_lab(snapshot, confirm_key, cancelled, confirm_changed_key=None, prog
     try:
         _need(isinstance(snapshot, dict), 'LAB_INPUTS_REQUIRED')
         _check_cancel(cancelled)
+        emit(dict(stage='HOST', status='RUNNING', code='SERVICE_LAB_CHECKING_INPUTS'))
         stack_host, server_host = _host(snapshot), _host(snapshot, 'infisical_')
         _need((stack_host.address, stack_host.port) != (server_host.address, server_host.port),
               'SEPARATE_RECOVERY_VMS_REQUIRED')
@@ -156,16 +164,24 @@ def prepare_lab(snapshot, confirm_key, cancelled, confirm_changed_key=None, prog
         token = snapshot.get('github_token', '')
         _need(isinstance(token, str) and token.strip() and '\n' not in token and '\r' not in token,
               'GITHUB_TOKEN_REQUIRED')
+        backend.validate_remote_shell_scripts()
+        _check_cancel(cancelled)
+        emit(dict(stage='HOST', status='RUNNING', code='SERVICE_LAB_READING_BACKUP'))
         point = github_factory(token).point(tag)
         _need(isinstance(point, dict) and point.get('tag') == tag and point.get('aio_snapshot') is True,
               'AIO_SNAPSHOT_BACKUP_REQUIRED')
         _need(point.get('public_commit') == commit, 'DR_STACK_COMMIT_MISMATCH')
-        backend.validate_remote_shell_scripts()
         _check_cancel(cancelled)
+        emit(dict(stage='HOST', status='RUNNING', code='SERVICE_LAB_CONNECTING_STACK'))
         stack = ssh_factory(stack_host, confirm_key, cancelled, confirm_changed_key=confirm_changed_key)
+        _check_cancel(cancelled)
+        emit(dict(stage='HOST', status='RUNNING', code='SERVICE_LAB_CONNECTING_INFISICAL'))
         server = ssh_factory(server_host, confirm_key, cancelled, confirm_changed_key=confirm_changed_key)
-        emit(dict(stage='HOST', status='RUNNING'))
+        _check_cancel(cancelled)
+        emit(dict(stage='HOST', status='RUNNING', code='SERVICE_LAB_CHECKING_STACK'))
         first = _clean(stack.check(fresh=True, role='stack'), stack_host)
+        _check_cancel(cancelled)
+        emit(dict(stage='HOST', status='RUNNING', code='SERVICE_LAB_CHECKING_INFISICAL'))
         second = _clean(server.check(fresh=True, role='infisical'), server_host)
         _need(first['machine_id'] != second['machine_id'], 'SEPARATE_RECOVERY_VMS_REQUIRED')
         emit(dict(stage='HOST', status='PASS'))

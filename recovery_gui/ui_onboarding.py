@@ -46,6 +46,14 @@ STATUS_LABELS = {
     'FAILED': 'Da risolvere', 'ERROR': 'Da risolvere',
     'PENDING': 'In attesa', 'SKIPPED': 'Non necessario',
 }
+PROGRESS_TEXT = {
+    'SERVICE_LAB_CHECKING_INPUTS': 'Controllo degli accessi, della chiave age e del backup selezionato.',
+    'SERVICE_LAB_READING_BACKUP': 'Verifica del backup pubblicato su GitHub in corso.',
+    'SERVICE_LAB_CONNECTING_STACK': 'Collegamento SSH alla VM stack di collaudo in corso.',
+    'SERVICE_LAB_CONNECTING_INFISICAL': 'Collegamento SSH alla VM Infisical di collaudo in corso.',
+    'SERVICE_LAB_CHECKING_STACK': 'Verifica che la VM stack di collaudo sia vuota.',
+    'SERVICE_LAB_CHECKING_INFISICAL': 'Verifica che la VM Infisical di collaudo sia vuota.',
+}
 ERROR_TEXT = {
     'SERVICE_CONTROLLER_REQUIRED': 'Il collegamento di installazione non è disponibile in questa versione.',
     'SERVICE_ANALYSIS_REQUIRED': 'Analizza le variabili e prepara il piano prima di collegarti alla VM.',
@@ -54,7 +62,18 @@ ERROR_TEXT = {
     'SERVICE_INPUTS_CHANGED': 'I dati sono cambiati: prepara e verifica di nuovo il piano.',
     'SERVICE_OPERATION_INCOMPLETE': 'Il servizio non ha ancora superato tutti i controlli. Consulta il passaggio indicato.',
     'SERVICE_OPERATION_STOPPED': 'Operazione fermata. Verifica lo stato registrato prima di riprendere.',
+    'SERVICE_OPERATION_BUSY': 'È già in corso un’operazione. Attendi il suo esito oppure interrompila prima di preparare le VM.',
     'SERVICE_LAB_PREPARATION_INCOMPLETE': 'La preparazione delle VM di collaudo non è stata verificata. Controlla l’esito prima di aggiungere un servizio.',
+    'LAB_INPUTS_REQUIRED': 'Apri Accessi e backup e configura entrambe le VM di collaudo, il token GitHub, la chiave age e il backup da usare.',
+    'LAB_EMPTY_VMS_REQUIRED': 'Una delle due VM contiene già container, volumi o un recupero. Ripristina gli snapshot puliti delle sole VM di prova prima di riprovare. I dati presenti vengono conservati.',
+    'LAB_HOST_IDENTITY_INVALID': 'Utente, cartella home o identità della VM non corrispondono al collaudo. Verifica gli accessi delle VM di prova in Accessi e backup.',
+    'LAB_MARKER_REFUSED': 'La registrazione del laboratorio non è stata verificata. Conserva lo stato delle VM e controlla gli esiti prima di riprendere.',
+    'LAB_PREPARATION_FAILED': 'La preparazione del laboratorio si è fermata. Controlla il passaggio indicato e conserva lo stato delle VM prima di riprovare.',
+    'SEPARATE_RECOVERY_VMS_REQUIRED': 'Stack e Infisical devono usare due VM diverse. Correggi gli indirizzi in Accessi e backup.',
+    'INFISICAL_API_PORT_REQUIRES_REVIEW': 'La porta API Infisical del backup richiede una verifica. Usa un backup completo compatibile prima di riprovare.',
+    'GITHUB_TOKEN_REQUIRED': 'Apri Accessi e backup e inserisci il token GitHub con permesso Contents: Read sui due repository del recupero.',
+    'SELECT_GITHUB_RECOVERY_POINT': 'Apri Accessi e backup, carica i backup e seleziona il punto da usare per il collaudo.',
+    'AGE_IDENTITY_FILE_REQUIRED': 'Apri Accessi e backup e scegli il file della chiave privata age PRIMARY o RECOVERY con Sfoglia.',
     'SERVICE_INFISICAL_ADDRESS_REQUIRED': 'Per l’accesso alternativo inserisci un indirizzo HTTPS diretto di Infisical, senza credenziali nel collegamento. Il tunnel Agent viene preferito quando disponibile.',
     'SERVICE_INFISICAL_ACCESS_REQUIRED': 'Per creare i segreti servono progetto, ambiente e un token Infisical con permessi di scrittura.',
     'SERVICE_STACK_ROOT_REQUIRED': 'Questa anteprima richiede lo stack in /home/utente-SSH/streams-aio, per esempio /home/pi/streams-aio.',
@@ -234,6 +253,7 @@ class ServiceOnboardingPanel(ttk.Frame):
         self.state = OnboardingState()
         self.inventory, self.private_names = (), set()
         self.events, self._busy, self._alive = queue.Queue(), False, True
+        self._active_action = ''
         self._controls, self._restore_states, self._traces = [], [], []
         self._scan_sources = None
         self.safe_events = []
@@ -318,7 +338,8 @@ class ServiceOnboardingPanel(ttk.Frame):
 
     def _build(self):
         lab = self._card('Collaudo su due VM vuote', 'Solo VM di prova: non usare le VM operative. La preparazione recupera file e Agent senza avviare lo stack completo.')
-        ttk.Label(lab, textvariable=self.lab_hint, style='CardHint.TLabel', wraplength=820).pack(anchor='w', pady=(0, 9))
+        self.lab_feedback = ttk.Label(lab, textvariable=self.lab_hint, style='CardHint.TLabel', wraplength=820)
+        self.lab_feedback.pack(anchor='w', pady=(0, 9))
         self.lab_button = self._control(ttk.Button(lab, text='Prepara le VM di collaudo', command=self.prepare_lab))
         self.lab_button.pack(anchor='w', pady=(0, 9))
         self.lab_check = self._control(ttk.Checkbutton(lab,
@@ -435,7 +456,22 @@ class ServiceOnboardingPanel(ttk.Frame):
     def _show_error(self, error):
         code = safe_code(error)
         self.safe_events.append({'stage': 'REFUSED', 'status': 'REFUSED', 'code': code})
-        self.status.set(code + ' · ' + ERROR_TEXT.get(code, 'Controlla il piano e il passaggio indicato; le credenziali non vengono registrate.'))
+        description = ERROR_TEXT.get(code)
+        app_errors = getattr(self.app, 'errors', None)
+        if description is None and isinstance(app_errors, dict):
+            description = app_errors.get(code)
+        if not isinstance(description, str):
+            description = 'Controlla il piano e il passaggio indicato; le credenziali non vengono registrate.'
+        message = code + ' · ' + description
+        self.status.set(message)
+        if getattr(self, '_active_action', '') == 'prepare_lab':
+            # The action starts in the first card; its failure must remain
+            # visible there, even when the final status card is off screen.
+            self.lab_hint.set(message)
+            try:
+                self.lab_feedback.configure(foreground='#a6413c')
+            except tk.TclError:
+                pass
 
     def _fill_inventory(self):
         self.variables.delete(*self.variables.get_children())
@@ -553,8 +589,9 @@ class ServiceOnboardingPanel(ttk.Frame):
                 continue
             seen.add(id(widget))
             try:
-                self._restore_states.append((widget, widget.cget('state')))
+                previous = widget.cget('state')
                 widget.configure(state='disabled')
+                self._restore_states.append((widget, previous))
             except (tk.TclError, TypeError):
                 continue
         self.cancel_button.configure(state='normal')
@@ -563,7 +600,7 @@ class ServiceOnboardingPanel(ttk.Frame):
         for widget, previous in self._restore_states:
             try:
                 widget.configure(state=previous)
-            except tk.TclError:
+            except (tk.TclError, TypeError):
                 pass
         self._restore_states.clear()
         self.cancel_button.configure(state='disabled')
@@ -580,7 +617,14 @@ class ServiceOnboardingPanel(ttk.Frame):
 
     def _start_job(self, action):
         if self._operation_running():
+            if action == 'prepare_lab':
+                message = 'SERVICE_OPERATION_BUSY · ' + ERROR_TEXT['SERVICE_OPERATION_BUSY']
+                self.lab_hint.set(message)
+                self.status.set(message)
             return
+        # Set before snapshot/freeze: synchronous startup failures need the
+        # same first-card feedback as failures returned by the worker.
+        self._active_action = action
         try:
             if self.controller is None:
                 raise InputFailure('SERVICE_CONTROLLER_REQUIRED')
@@ -599,10 +643,10 @@ class ServiceOnboardingPanel(ttk.Frame):
             self._busy = self.app.busy = True
             self.app.cancelled.clear()
             self._freeze()
-            self._active_action = action
             if action == 'prepare_lab':
                 self.status.set('Preparazione delle sole VM di collaudo in corso. Lo stack completo non viene avviato.')
                 self.lab_hint.set('Preparazione delle sole VM di collaudo in corso. Attendi l’esito verificato.')
+                self.lab_feedback.configure(foreground='#5563df')
             elif action == 'inspect':
                 self.status.set('Controllo della VM in corso.')
             else:
@@ -633,8 +677,12 @@ class ServiceOnboardingPanel(ttk.Frame):
         except Exception as error:
             if self._busy:
                 self._busy = self.app.busy = False
-                self._unfreeze()
+                try:
+                    self._unfreeze()
+                except (tk.TclError, TypeError):
+                    pass
             self._show_error(error)
+            self._active_action = ''
 
     def _refresh_buttons(self):
         if not hasattr(self, 'inspect_button'):
@@ -658,6 +706,8 @@ class ServiceOnboardingPanel(ttk.Frame):
         if self._busy:
             self.app.cancelled.set()
             self.status.set('Interruzione richiesta. Attendi l’esito del passaggio in corso.')
+            if getattr(self, '_active_action', '') == 'prepare_lab':
+                self.lab_hint.set('Interruzione richiesta: attendo la chiusura del passaggio sulle VM di collaudo.')
             self.cancel_button.configure(state='disabled')
 
     def poll(self):
@@ -676,9 +726,11 @@ class ServiceOnboardingPanel(ttk.Frame):
                 self.safe_events.append(value)
                 tone = '#1e8069' if status in ('PASS', 'VERIFIED') else '#a6413c' if status in ('REFUSED', 'FAILED', 'ERROR') else '#5563df'
                 self.stage_labels[stage].configure(text=STATUS_LABELS[status], foreground=tone)
-                self.status.set(STAGES[stage] + ' · ' + STATUS_LABELS[status] + (' · ' + value['code'] if value.get('code') else ''))
+                description = PROGRESS_TEXT.get(value.get('code'))
+                message = (description or STAGES[stage] + ' · ' + STATUS_LABELS[status]) + (' · ' + value['code'] if value.get('code') else '')
+                self.status.set(message)
                 if getattr(self, '_active_action', '') == 'prepare_lab':
-                    self.lab_hint.set('Preparazione VM di collaudo · ' + STAGES[stage] + ' · ' + STATUS_LABELS[status])
+                    self.lab_hint.set(message if description else 'Preparazione VM di collaudo · ' + message)
             elif kind == 'prepare_lab':
                 revision, result = value
                 try:
@@ -693,6 +745,7 @@ class ServiceOnboardingPanel(ttk.Frame):
                     self.local_lab.set(True)
                     self.stack_root.set('/home/' + user + '/streams-aio')
                     self.lab_hint.set('File e Agent preparati. Stack completo non avviato; puoi aggiungere un servizio di prova.')
+                    self.lab_feedback.configure(foreground='#1e8069')
                     self.status.set('VM di collaudo preparate. Aggiungi un servizio di prova: GitHub e backup restano esclusi.')
                 except InputFailure as error:
                     self._show_error(error)

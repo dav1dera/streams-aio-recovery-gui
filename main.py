@@ -98,6 +98,32 @@ if __name__ == '__main__':
                 request = operational_request({}, action)
                 assert request['aio_mode'] == 'snapshot' and request['native_agent'] is True
                 assert request['operational_profile'] is True and request['restart_test'] is False
+            # Exercise the real button, widget freeze and Tk event delivery on
+            # the Windows CI runner. The controller is synthetic: this never
+            # connects to any VM or GitHub, or reads credentials from disk.
+            from recovery_gui.ui_onboarding import InputFailure
+            import time
+            class RefusedLabController:
+                calls = 0
+                def prepare_lab(self, snapshot, progress):
+                    self.calls += 1
+                    progress({'stage': 'HOST', 'status': 'RUNNING'})
+                    raise InputFailure('LAB_EMPTY_VMS_REQUIRED')
+            original_controller = app.onboarding.controller
+            fixture_controller = RefusedLabController()
+            try:
+                app.onboarding.set_controller(fixture_controller)
+                app.onboarding.lab_button.invoke()
+                deadline = time.monotonic() + 5
+                while app.onboarding._busy and time.monotonic() < deadline:
+                    app.update()
+                    time.sleep(0.01)
+                assert fixture_controller.calls == 1
+                assert not app.busy and not app.onboarding._busy
+                assert 'LAB_EMPTY_VMS_REQUIRED' in app.onboarding.lab_hint.get()
+                assert str(app.onboarding.lab_button.cget('state')) == 'normal'
+            finally:
+                app.onboarding.set_controller(original_controller)
             for width, height in ((1220, 860), (980, 740)):
                 app.geometry(f'{width}x{height}')
                 app.update()

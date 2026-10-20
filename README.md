@@ -2,7 +2,7 @@
 
 **Guida in italiano per organizzare lo stack, conservarne i backup e recuperarlo su due VM.**
 
-**Sviluppo 0.5.0-dev.2:** è presente una nuova scheda **Aggiungi servizio**, con analisi offline,
+**Sviluppo 0.5.0-dev.3:** è presente una nuova scheda **Aggiungi servizio**, con analisi offline,
 separazione pubblico/privato e procedura per Agent, avvio, pubblicazione e backup verificato.
 È un’anteprima in collaudo, separata dalla versione stabile 0.4.19. Non è stata ancora
 provata sulle VM reali e non supporta l’aggiunta di nuovi volumi o database persistenti.

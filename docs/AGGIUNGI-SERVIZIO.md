@@ -1,4 +1,4 @@
-# Aggiungi servizio — anteprima 0.5.0-dev.2
+# Aggiungi servizio — anteprima 0.5.0-dev.3
 
 Questa scheda aggiunge **un servizio nuovo** a uno stack Streams AIO già configurato.
 L’analisi iniziale funziona offline. La connessione diretta alla VM viene aperta solo
@@ -31,6 +31,12 @@ Puoi lasciare accese le VM principali. Non cambiare AdGuard, DNS di Ubuntu o por
 del router per questa preparazione. Se la preparazione viene interrotta dopo aver
 iniziato a ripristinare dati, questa anteprima richiede di tornare agli snapshot
 puliti per ripetere il pulsante di laboratorio; non cancella automaticamente le VM.
+
+Dopo il clic, l’avanzamento e gli eventuali errori compaiono nel riquadro accanto
+al pulsante **Prepara le VM di collaudo**. Il controllo del backup può richiedere
+qualche istante: il programma segnala questa fase prima di contattare GitHub.
+Un errore indica il codice e il passo da correggere; non serve cercarlo in fondo
+alla scheda. Se un’altra operazione è già in corso, attendi il suo esito.
 
 ## Stato della versione
 

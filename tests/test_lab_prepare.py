@@ -150,6 +150,35 @@ class LabPreparationTests(unittest.TestCase):
         self.assertTrue(all(result['checks'].values()))
         self.assertEqual([connection.closed for connection in self.harness.connections], [1, 1])
 
+    def test_progress_precedes_backup_network_read_and_each_ssh_preflight(self):
+        observed = []
+        original_point, original_check = FakeGitHub.point, FakeSSH.check
+        def point(client, tag):
+            observed.append(self.harness.events[-1])
+            return original_point(client, tag)
+        def check(connection, fresh=True, role='stack'):
+            observed.append(self.harness.events[-1])
+            return original_check(connection, fresh, role)
+        with patch.object(FakeGitHub, 'point', point), patch.object(FakeSSH, 'check', check):
+            self.harness.prepare()
+        self.assertEqual(self.harness.events[0], dict(stage='HOST', status='RUNNING',
+                                                    code='SERVICE_LAB_CHECKING_INPUTS'))
+        self.assertEqual([event['code'] for event in observed],
+                         ['SERVICE_LAB_READING_BACKUP', 'SERVICE_LAB_CHECKING_STACK',
+                          'SERVICE_LAB_CHECKING_INFISICAL'])
+        self.assertTrue(all(event['status'] == 'RUNNING' for event in observed))
+        self.assertNotIn(SECRET, json.dumps(self.harness.events))
+
+    def test_failed_backup_read_still_emits_visible_progress_before_failure(self):
+        with patch.object(FakeGitHub, 'point', side_effect=RuntimeError(SECRET)):
+            with self.assertRaisesRegex(lab.LabFailure, '^LAB_PREPARATION_FAILED$'):
+                self.harness.prepare()
+        self.assertEqual(self.harness.events[-1], dict(stage='HOST', status='RUNNING',
+                                                     code='SERVICE_LAB_READING_BACKUP'))
+        self.assertFalse(self.harness.connections)
+        self.assertFalse(self.harness.requests)
+        self.assertNotIn(SECRET, json.dumps(self.harness.events))
+
     def test_native_agent_install_uses_only_recovered_scope_and_then_protected_marker(self):
         self.harness.prepare()
         self.assertEqual([entry[1] for entry in self.harness.timeline if entry[0] == 'native'],
