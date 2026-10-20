@@ -25,9 +25,12 @@ def check_package():
     from recovery_gui.onboarding_ssh_api import SSHInfisicalOpener
     from recovery_gui.service_plan import analyze_inputs
     from recovery_gui.ui_onboarding import ServiceOnboardingPanel
+    from recovery_gui.web_host import document
     assert paramiko.__version__ and yaml.__version__
     assert ServiceController is not None and ServiceOnboardingPanel is not None
     assert prepare_lab is not None and SSHInfisicalOpener is not None
+    import webview
+    assert webview.create_window is not None and '<style>' in document()
     validate_remote_shell_scripts()
     for path in resources().glob('*.py'):
         compile(path.read_bytes(), path.name, 'exec')
@@ -44,6 +47,9 @@ if __name__ == '__main__':
             # A packaging failure must not open a native error dialog during
             # unattended checks on a computer the user is actively using.
             raise SystemExit(1) from None
+    elif sys.argv[1:] == ['--web-ui-self-test']:
+        from recovery_gui.web_host import run
+        run(self_test=True)
     elif sys.argv[1:] == ['--self-test']:
         import paramiko
         from recovery_gui.backend import resources, validate_remote_shell_scripts
@@ -137,5 +143,8 @@ if __name__ == '__main__':
                     assert page.canvas.bbox('all') is not None
         finally:
             app.destroy()
-    else:
+    elif sys.argv[1:] == ['--classic']:
         main()
+    else:
+        from recovery_gui.web_host import run
+        run()

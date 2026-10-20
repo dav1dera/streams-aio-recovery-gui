@@ -100,13 +100,16 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r requirements-build.txt
-      - run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name StreamsAIO-Recovery --add-data 'remote;remote' main.py
+      - run: python -m PyInstaller --noconfirm --clean StreamsAIO-Recovery.spec
       - name: Check executable and bundled GUI dependencies
         shell: pwsh
         run: |
           $app = Start-Process -FilePath ./dist/StreamsAIO-Recovery.exe -ArgumentList '--self-test' -WindowStyle Hidden -PassThru
           if (-not $app.WaitForExit(60000)) { $app.Kill(); throw 'Executable startup timed out' }
           if ($app.ExitCode -ne 0) { throw 'Executable startup failed' }
+          $webApp = Start-Process -FilePath ./dist/StreamsAIO-Recovery.exe -ArgumentList '--web-ui-self-test' -WindowStyle Hidden -PassThru
+          if (-not $webApp.WaitForExit(60000)) { $webApp.Kill(); throw 'Web interface self-test timed out' }
+          if ($webApp.ExitCode -ne 0) { throw 'Web interface self-test failed' }
           $hash = (Get-FileHash -Algorithm SHA256 dist/StreamsAIO-Recovery.exe).Hash.ToLower()
           "$hash  StreamsAIO-Recovery.exe" | Set-Content -Encoding ascii dist/SHA256SUMS
       - uses: actions/upload-artifact@v4

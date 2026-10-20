@@ -1,9 +1,15 @@
-# Aggiungi servizio — anteprima 0.5.0-dev.3
+# Aggiungi servizio — anteprima 0.5.0-dev.4
 
 Questa scheda aggiunge **un servizio nuovo** a uno stack Streams AIO già configurato.
 L’analisi iniziale funziona offline. La connessione diretta alla VM viene aperta solo
 premendo **Verifica VM**; le modifiche richiedono **Aggiungi e verifica**.
 Non occorre tenere aperto VS Code o permettere il controllo del desktop Windows.
+
+La nuova interfaccia scura organizza il lavoro in **Destinazione → Servizio →
+Segreti → Verifica**. La barra inferiore conserva l’esito corrente mentre cambi
+pagina; i dettagli dei controlli si aprono senza cercare in fondo a una schermata
+lunga. In Windows usa Edge WebView2, normalmente presente con Microsoft Edge.
+I dettagli del progetto visivo sono in [UI-DESIGN.md](UI-DESIGN.md).
 
 ## Collaudo su due VM Ubuntu vuote
 

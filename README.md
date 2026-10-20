@@ -2,7 +2,11 @@
 
 **Guida in italiano per organizzare lo stack, conservarne i backup e recuperarlo su due VM.**
 
-**Sviluppo 0.5.0-dev.3:** è presente una nuova scheda **Aggiungi servizio**, con analisi offline,
+**Sviluppo 0.5.0-dev.4:** nuova interfaccia desktop scura ispirata ad AIOStreams,
+con accessi affiancati, procedura per i servizi in quattro passi ed esiti sempre
+visibili. La finestra usa Edge WebView2 e carica soltanto risorse incluse nel
+programma, senza CDN o font da scaricare. I controlli restano nel backend Python.
+La scheda **Aggiungi servizio** comprende analisi offline,
 separazione pubblico/privato e procedura per Agent, avvio, pubblicazione e backup verificato.
 È un’anteprima in collaudo, separata dalla versione stabile 0.4.19. Non è stata ancora
 provata sulle VM reali e non supporta l’aggiunta di nuovi volumi o database persistenti.
