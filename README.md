@@ -2,6 +2,12 @@
 
 **Guida in italiano per organizzare lo stack, conservarne i backup e recuperarlo su due VM.**
 
+**Sviluppo 0.5.0-dev:** è presente una nuova scheda **Aggiungi servizio**, con analisi offline,
+separazione pubblico/privato e procedura per Agent, avvio, pubblicazione e backup verificato.
+È un’anteprima in collaudo, separata dalla versione stabile 0.4.19. Non è stata ancora
+provata sulle VM reali e non supporta l’aggiunta di nuovi volumi o database persistenti.
+Leggi [uso e limiti dell’anteprima](docs/AGGIUNGI-SERVIZIO.md) prima di applicare modifiche.
+
 **Versione 0.4.19** · [Scarica programma e checksum](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.19) · [Setup iniziale](docs/SETUP-DA-ZERO.md) · [Uso della GUI](docs/USAGE.md) · [Note della versione](docs/RELEASE-NOTES-v0.4.19.md)
 
 La GUI Windows recupera **Infisical su una VM separata** e **Streams AIO sull'altra** partendo da un backup completo. Ripristina configurazioni, segreti, database AIO e NPM; prepara Agent, tunnel SSH, servizi e HTTPS.

@@ -14,6 +14,8 @@ from .codes import ERROR_CODES
 from .startup_diagnostic import lines as startup_diagnostic_lines
 from .external_dependencies import lines as external_dependency_lines
 from .ui_state import PHASES, phase_for, phase_status, machine_status, error_destination, operational_request
+from .onboarding import ServiceController
+from .ui_onboarding import ServiceOnboardingPanel
 
 
 class ScrollPage(ttk.Frame):
@@ -55,6 +57,10 @@ class App(tk.Tk):
         self._dashboard(self.pages[0].content)
         self._setup(self.pages[1].content)
         self._advanced(self.pages[2].content)
+        self.onboarding = ServiceOnboardingPanel(self.pages[3].content, self,
+            ServiceController(self.key_dialog, confirm_changed_key=self.changed_key_dialog,
+                              cancelled=self.cancelled))
+        self.onboarding.pack(fill='both', expand=True)
         self.book.bind('<<NotebookTabChanged>>', self._page_changed)
         self.bind_all('<MouseWheel>', self._wheel, add='+')
         self._page_changed()
@@ -127,10 +133,11 @@ class App(tk.Tk):
         mark.create_line(22, 18, 22, 32, fill='white', width=3)
         tk.Label(side, text='STREAMS AIO', bg='#111f35', fg='#ffffff', font=('Segoe UI', 11, 'bold')).pack(anchor='w', padx=23)
         tk.Label(side, text='Recovery', bg='#111f35', fg='#879bb8', font=('Segoe UI', 10)).pack(anchor='w', padx=23, pady=(4, 32))
-        self.titles = ['Panoramica', 'Accessi e backup', 'Opzioni avanzate']
+        self.titles = ['Panoramica', 'Accessi e backup', 'Opzioni avanzate', 'Aggiungi servizio']
         self.descriptions = ['Scegli il percorso. Ogni passaggio viene verificato e conservato.',
                              'Inserisci le destinazioni e scegli un backup. Password e token restano in memoria.',
-                             'Porte SSH e password sudo, soltanto se diverse dagli accessi principali.']
+                             'Porte SSH e password sudo, soltanto se diverse dagli accessi principali.',
+                             'Prepara un servizio, collega i segreti e verifica avvio, GitHub e backup. Anteprima 0.5.']
         self.nav = []
         for index, text in enumerate(self.titles):
             button = tk.Button(side, text=text, anchor='w', padx=16, pady=12, relief='flat', bd=0,
@@ -683,6 +690,7 @@ class App(tk.Tk):
         if self.busy and not messagebox.askokcancel('Recupero in corso', 'Chiudere interrompe la connessione. Lo stato resta sulla VM per la ripresa successiva. Chiudere ora?', parent=self):
             return
         self.cancelled.set()
+        self.onboarding.clear_sensitive()
         for key in ('password', 'github_token', 'sudo_password', 'key_password', 'infisical_password', 'infisical_key_password', 'infisical_sudo_password'):
             self.var(key).set('')
         self.destroy()
