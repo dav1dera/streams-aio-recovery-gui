@@ -1,214 +1,260 @@
-# Aggiungi servizio — anteprima 0.5.0-dev.8
+# Aggiungi servizio — guida illustrata 0.5.0-dev.8
 
-Questa scheda aggiunge **un servizio nuovo** a uno stack Streams AIO già configurato.
-L’analisi iniziale funziona offline. La connessione diretta alla VM viene aperta solo
-premendo **Verifica VM**; le modifiche richiedono **Aggiungi e verifica**.
-Non occorre tenere aperto VS Code o permettere il controllo del desktop Windows.
+Questa scheda aggiunge **un servizio nuovo alla VM già operativa**, senza ripristinare
+backup o database. I servizi esistenti sono conservati. Per ripristinare invece le
+due VM o riprendere un recupero, consulta il [README](../README.md).
 
-La nuova interfaccia scura organizza il lavoro in **Destinazione → Servizio →
-Segreti → Verifica**. La barra inferiore conserva l’esito corrente mentre cambi
-pagina; i dettagli dei controlli si aprono senza cercare in fondo a una schermata
-lunga. In Windows usa Edge WebView2, normalmente presente con Microsoft Edge.
-I dettagli del progetto visivo sono in [UI-DESIGN.md](UI-DESIGN.md).
+Il percorso è **Destinazione → Servizio → Segreti → Verifica**. Analisi e piano
+sono locali; **Verifica VM** legge la VM e **Aggiungi e verifica** applica il piano.
+Non occorre tenere aperto VS Code o consentire il controllo del desktop.
 
-## Collaudo su due VM Ubuntu vuote
+Le figure mostrano la UI attuale con dati e risposte dimostrative. Puntatori e stati
+verdi spiegano i passaggi: non certificano operazioni sulle VM del lettore.
+[Origine e indice delle immagini](screenshots/README.md).
 
-Usa il riquadro **Collaudo locale** della nuova scheda, senza premere
-«Crea da zero» in Panoramica. Il normale recupero avvia lo stack completo e richiede
-anche l’instradamento dei domini; questo laboratorio prepara soltanto file e Agent.
+## 1. Destinazione: stack operativo o laboratorio
 
-1. Crea uno snapshot delle due VM pulite. Devono avere OpenSSH attivo e un utente
-   con sudo; non serve installare Docker a mano.
-2. In **Accessi e backup** compila le due VM, il token GitHub con **Contents: Read**
-   sui repository del recupero e la chiave privata age PRIMARY o RECOVERY. Nel
-   riquadro della chiave scegli **File** per selezionare il file già custodito sul
-   PC, oppure **Incolla** per inserirne il testo nel campo mascherato, senza creare
-   un file locale. La chiave deve contenere `AGE-SECRET-KEY-1…`; `age1…` è pubblica
-   e non decifra il backup. Carica un backup completo.
-   Per esempio: stack `test@192.168.178.30`, Infisical `test2@192.168.178.33`.
-3. Torna in **Aggiungi servizio**. Nel passo **Destinazione** scegli **Collaudo
-   locale**, quindi premi **Prepara le VM di collaudo**. Il programma
-   controlla che entrambe siano vuote o contengano lo stesso tentativo di laboratorio
-   verificabile prima dei trasferimenti, ripristina Infisical,
-   prepara lo stack e collega il suo Agent alla VM Infisical di prova tramite SSH.
-   Non avvia l’intero stack e non installa i processi di pubblicazione automatica.
-4. Mantieni selezionato **Solo collaudo locale** e prepara il nuovo servizio secondo
-   i passaggi sotto. Un controllo protetto sulla VM impedisce di pubblicare dal
-   laboratorio nei repository principali, anche se viene tolta la selezione.
-5. L’esito locale verifica il servizio e il collegamento Agent. **GitHub e backup
-   risultano esclusi**, non verificati. Il collaudo completo della pubblicazione
-   richiede successivamente repository e processi di backup dedicati alla prova.
+![Stack esistente oppure Collaudo locale](screenshots/v050-dev8/09-destinazione.png)
 
-Puoi lasciare accese le VM principali. Non cambiare AdGuard, DNS di Ubuntu o porte
-del router per questa preparazione. IP, nome dell’utente e backup vengono letti
-dai dati attuali e dai checkpoint verificati: il laboratorio non dipende da un
-vecchio utente o da una data di backup fissata nel programma.
+| Modalità | Quando usarla | Controlli richiesti |
+| --- | --- | --- |
+| **Stack esistente** | Aggiungi un container alla VM operativa. | Servizio, Agent, GitHub e nuovo backup. |
+| **Collaudo locale** | Prova il servizio su VM dedicate. | Servizio e Agent. GitHub e backup esclusi. |
 
-Per riprendere una preparazione interrotta, seleziona **lo stesso backup** e premi
-di nuovo **Prepara le VM di collaudo**. Prima di modificare qualsiasi file la GUI
-verifica entrambe le macchine, i checkpoint, il punto selezionato e la proprietà
-dei container e volumi esistenti. Può riprendere anche il tentativo fermato dalla
-0.5.0-dev.5 prima del profilo runtime. Dati estranei, avvii dello stack o transazioni
-non riconciliate vengono conservati e fermano la ripresa; non viene eseguito un reset.
+Per lo **stack operativo**, in **Accessi e backup** bastano gli accessi SSH della VM
+stack. Non servono backup selezionato, chiave age o accessi SSH della seconda VM.
+Infisical deve essere raggiungibile dal tunnel Agent o dall’HTTPS alternativo.
 
-Dopo il clic, l’avanzamento e gli eventuali errori compaiono nel riquadro accanto
-al pulsante **Prepara le VM di collaudo**. Il controllo del backup può richiedere
-qualche istante: il programma segnala questa fase prima di contattare GitHub.
-Un errore indica il codice e il passo da correggere; non serve cercarlo in fondo
-alla scheda. Se un’altra operazione è già in corso, attendi il suo esito.
+Apri **Percorso dello stack e controllo di salute**. In **Cartella dello stack**
+inserisci il percorso reale, per esempio `/home/pi/streams-aio`, appartenente all’utente
+SSH. Se l’immagine non ha HEALTHCHECK, compila **Controllo HTTP locale**: il controllo
+sarà eseguito **sulla VM stack**, non sul PC Windows.
 
-### Errori SSH durante la preparazione
+Per **Stack esistente** devono già funzionare Agent, worker pubblico con modalità
+`--seamless`, coordinatore DR e accessi GitHub della VM. La scheda li usa:
+**non installa da zero i worker di pubblicazione e backup**, né configura un nuovo
+account GitHub.
 
-La GUI indica quale collegamento si è fermato: **VM stack** oppure **VM Infisical**.
-I codici distinguono accesso rifiutato, tempo scaduto, porta rifiutata, rete non
-raggiungibile, blocco di rete sul PC, negoziazione interrotta, chiave SSH non leggibile
-o priva della passphrase e registro locale delle impronte non utilizzabile.
-Le descrizioni non riportano il testo delle eccezioni, password o chiavi.
+### Laboratorio: preparare le due VM
 
-Se la porta 22 risponde, questo conferma soltanto il collegamento di rete:
-l’autenticazione e la verifica dell’impronta sono controlli successivi. Verifica
-IP, utente e porta nel riquadro della VM indicata. Con accesso tramite password,
-lascia vuoto il campo **File della chiave privata SSH**. La chiave age appartiene
-al riquadro backup e non serve ad autenticarsi in Ubuntu.
+![Accessi, backup e chiave age per il laboratorio](screenshots/v050-dev8/01-accessi.png)
 
-Un errore SSH non richiede di cancellare le VM o i checkpoint. Salva gli esiti;
-quando il collegamento è risolto, seleziona lo stesso backup e ripremi
-**Prepara le VM di collaudo**. Le approvazioni delle impronte e il controllo
-dei checkpoint restano obbligatori.
+1. Prepara due VM Ubuntu dedicate, con OpenSSH e un utente con sudo. Conserva uno
+   snapshot pulito. Non serve installare Docker a mano.
+2. In **Accessi e backup** compila entrambe le VM, un token GitHub con **Contents:
+   Read** sui repository del recupero e la chiave age privata. Scegli **File della
+   chiave** oppure **Incolla chiave**. Serve `AGE-SECRET-KEY-1…`; la chiave pubblica
+   `age1…` e l’etichetta «PRIMARY» non sono la chiave da incollare.
+3. Premi **Carica backup** e scegli un backup completo: il commit è associato
+   automaticamente. Nel test di riferimento: stack `test@192.168.178.30`,
+   Infisical `test2@192.168.178.33`. Sostituiscili con le tue VM.
+4. In **Aggiungi servizio → Destinazione → Collaudo locale**, premi **Prepara le VM
+   di collaudo** e attendi l’esito nel riquadro del pulsante.
+5. Dopo «File e Agent preparati», prosegui con il servizio qui sotto. Non premere
+   **Crea da zero** per completare il laboratorio.
 
-### Immagini del backup
+La preparazione ripristina e avvia **Infisical e i suoi container** sulla seconda VM.
+Sulla VM stack prepara file e servizio di sistema Agent: **non avvia lo stack
+applicativo completo**. Per questa prova le principali possono restare accese;
+AdGuard, DNS di Ubuntu e inoltri router non devono essere modificati.
 
-Il primo avvio usa i riferimenti immutabili del **backup selezionato**, incrociando
-`config/image-lock.json`, `config/compose.dr.yaml` e il Compose effettivo del commit
-verificato. Un aggiornamento del digest di PgBouncer o degli altri servizi non
-richiede di riportare le immagini alle versioni del vecchio collaudo. I prefissi
-equivalenti di Docker Hub vengono riconosciuti conservando lo stesso digest.
+Per riprendere una preparazione interrotta, conserva lo stato, scegli **lo stesso
+backup** e ripremi **Prepara le VM di collaudo**. La GUI controlla entrambe le VM,
+identità, proprietà e checkpoint. Non adotta automaticamente un altro punto di
+recupero, un’altra macchina o dati estranei.
 
-Restano i controlli di piattaforma Linux amd64, repository dei servizi di base,
-layout PostgreSQL 18, account, permessi e configurazioni private. Questo percorso
-ripristina le versioni salvate e non migra automaticamente un database a una nuova
-versione principale. Anche la VM Infisical mantiene un proprio profilo compatibile;
-non è una garanzia per cambi arbitrari di versione o struttura dei database.
+Un contrassegno impedisce al laboratorio di pubblicare nei repository principali
+e di avviare tutto lo stack. Per un successivo **recupero completo da zero**, usa altre
+VM vuote o ripristina gli snapshot puliti delle sole VM di prova, poi segui il
+[README](../README.md).
 
-## Stato della versione
+## 2. Servizio: Compose e variabili
 
-Il codice è in sviluppo. Test offline e controlli GitHub verificano il percorso,
-la compilazione e la finestra Windows. Il collaudo completo sulle VM dedicate resta
-da completare: non è una nuova versione stabile da sostituire alla GUI di recupero
-già funzionante.
+![Nome, Compose e variabili del servizio](screenshots/v050-dev8/05-servizio.png)
 
-La prima versione gestisce servizi **senza dati persistenti propri** e impostazioni
-espresse in Compose e file `.env`. Rifiuta mount `volumes`, inclusi quelli readonly,
-e immagini che dichiarano volumi anonimi. Non aggiunge database al sistema di snapshot:
-un nuovo backup con checksum corretti non dimostrerebbe di averne salvato i dati.
-File di configurazione aggiuntivi, policy Infisical, socket Docker e proxy NPM automatici
-richiedono un’estensione e un collaudo separati.
+In **Nome del servizio** scrivi `prova-agent`. In **Compose** incolla:
 
-## Prima di iniziare
+```yaml
+services:
+  prova-agent:
+    image: traefik/whoami:v1.11.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18089:80"
+```
 
-- La VM stack deve avere lo stack già funzionante in `/home/<utente>/streams-aio`.
-- Per il percorso completo, Agent Infisical, worker pubblico con modalità `--seamless` e coordinatore DR devono
-  essere installati e funzionanti secondo il setup di questo repository.
-- Il client GitHub della VM deve avere accesso ai repository configurati. La scheda
-  usa quelli del deployment di riferimento; non imposta un account GitHub nuovo.
-- Per variabili private servono ID progetto, ambiente e un **access token** abilitato
-  a leggere e creare cartelle e segreti nel progetto. Le API usano il tunnel locale
-  dell’Agent quando riconosciuto; in sua assenza serve l’indirizzo **HTTPS** corretto.
-  Le API richieste sono cartelle v2 e segreti v4. Un vecchio service token non va
-  necessariamente bene: usa un access token valido per queste API.
-- L’identità dell’Agent deve già poter leggere la cartella `/<nome-servizio>`.
-  La scheda non amplia ruoli o permessi delle identità.
-- Scegli un servizio con un controllo Docker HEALTHCHECK oppure predisponi un endpoint
-  HTTP locale di salute su una porta pubblicata dal nuovo servizio.
+In **Variabili del servizio** incolla:
 
-## Procedura completa
+```dotenv
+WHOAMI_PORT_NUMBER=80
+TEST_API_TOKEN=solo-collaudo-infisical
+```
 
-1. In **Accessi e backup** inserisci IP, utente e accesso SSH della VM stack.
-   La nuova scheda usa solo questi accessi: per aggiungere un servizio non richiede
-   un backup selezionato né gli accessi SSH dell’altra VM.
-2. Apri **Aggiungi servizio**, indica il percorso dello stack e incolla il blocco Compose
-   di **un solo servizio** e il suo `.env`. Puoi usare un blocco `services:` completo
-   oppure il singolo servizio. Usa un nome nuovo e l’immagine che vuoi eseguire.
-   Non inserire `build`, `include`, `extends`, anchor YAML o volumi.
-3. Premi **Analizza variabili**. Seleziona ciascuna variabile e conferma **Pubblica**
-   oppure **Privata**. I nomi sospetti sono solo suggerimenti. Porte, IP interni,
-   timezone e opzioni ordinarie restano pubblici; password, token e URL con credenziali
-   vanno privati. Puoi inserire il valore privato nel campo mascherato e conservarlo
-   in memoria con il pulsante dedicato.
-4. Conferma di aver verificato le scelte e prepara il piano. La parte pubblica finisce
-   in `data/<servizio>/.env`; l’Agent genera `.secrets/<servizio>.env` dai segreti
-   `/<servizio>/<NOME_VARIABILE>`. Il file privato viene applicato per ultimo.
-   I commenti dei file esistenti vengono conservati. L’export del piano contiene
-   nomi, percorsi e riferimenti, senza valori.
-5. Se ci sono segreti, compila progetto, ambiente e token Infisical nella scheda.
-   Quando l’Agent usa un tunnel locale riconosciuto, la GUI instrada le API verso
-   quel tunnel tramite la connessione SSH autenticata alla VM stack: puoi lasciare
-   vuoto HTTPS. Questo evita di contattare l’Infisical principale durante la prova.
-   In assenza di un tunnel riconosciuto serve l’indirizzo HTTPS dell’istanza corretta.
-   Se l’immagine non ha HEALTHCHECK, indica l’URL di prova nel formato
-   `http://127.0.0.1:<porta-pubblicata>/percorso`. Non sono ammessi URL con credenziali,
-   host esterni o porte appartenenti ad altri servizi.
-6. Premi **Verifica VM**. Il controllo legge lo stato e verifica eventuali conflitti
-   con file, nomi o segreti già presenti. Un segreto esistente è riutilizzato solo
-   quando il suo valore coincide; non viene sovrascritto. Controlla l’impronta SSH
-   quando il programma te la presenta.
-7. Premi **Aggiungi e verifica** e attendi. La procedura crea i segreti mancanti,
-   aggiunge il nuovo servizio senza riscrivere quelli esistenti, collega l’Agent,
-   verifica il valore generato e avvia soltanto il nuovo servizio. Poi richiede la
-   sincronizzazione pubblica e un nuovo backup, ne rilegge gli allegati cifrati e
-   verifica checksum, manifest e commit associato.
-8. Considera conclusa l’operazione solo quando compaiono tutti i controlli verificati
-   e il tag del nuovo backup. Apri anche l’applicazione e provane la funzione reale:
-   un endpoint di salute non verifica ogni sua funzione.
+Il token è fittizio. Il container non ha dati persistenti ed espone la porta solo
+sul loopback della VM. Nel passo **Destinazione**, dentro **Percorso dello stack
+e controllo di salute**, inserisci in **Controllo HTTP locale**:
 
-## Password e file
+```text
+http://127.0.0.1:18089/health
+```
 
-Token, password SSH e valori privati restano nella memoria della sessione Windows.
-Anche la chiave age inserita con **Incolla** resta nella memoria della sessione:
-la GUI non scrive un file temporaneo Windows e non la include in esiti o piani.
-Il trasferimento avviene direttamente via SFTP autenticato a un file remoto
-privato con permessi `0600`; la decifratura mantiene gli stessi controlli della
-modalità **File**. Chiudendo l’app il testo va reinserito: conserva a parte una
-copia protetta della chiave.
-I valori dei secret viaggiano verso Infisical attraverso HTTPS oppure dentro la
-connessione SSH autenticata, fino al tunnel loopback dell’Agent. Non compaiono negli
-argomenti dei comandi SSH. Il report non riporta credenziali o risposte del server.
-Con l’Agent di produzione il file privato resta a `0640`, nella cartella privata
-a `0750`. L’Agent installato dal recupero usa invece il proprietario dell’utente SSH,
-file `0600` e cartella `0700` o `0750`: la scheda riconosce entrambi e non ne amplia
-i permessi. Legge il percorso effettivo dalla configurazione del servizio Agent.
-La VM conserva un registro protetto dell’operazione per evitare sovrascritture dopo
-un’interruzione; può contenere copie della configurazione precedente ed è riservato
-all’amministratore.
+È la porta **del servizio sulla VM stack**, dopo l’avvio. Non è il pannello Infisical
+e non va aperta nel browser Windows: lì `127.0.0.1` indica il PC Windows.
+L’esempio [whoami v1.11.0](https://github.com/traefik/whoami/tree/v1.11.0) offre `/health`.
 
-Per compatibilità con il formato Agent e il verificatore DR esistenti, questa
-anteprima rifiuta valori privati con apostrofo, caratteri di controllo, righe multiple
-o backslash finale. Il simbolo `$` è supportato. Il rifiuto avviene prima di creare
-segreti: non alterare una password valida solo per aggirarlo; serve estendere e
-collaudare insieme il formato Agent e il ripristino.
+Premi **Analizza variabili** per passare a **Segreti**. Per altri servizi usa un nome,
+una porta liberi e il loro vero endpoint di salute.
 
-## Se si interrompe
+## 3. Segreti: classificazione e collegamento Infisical
 
-- Una modifica ai campi annulla l’anteprima: prepara e verifica nuovamente il piano.
-- Prima dell’avvio, il tool tenta di ripristinare solo i file che ha modificato e che
-  non sono cambiati nel frattempo. Non elimina segreti già creati in Infisical.
-- Dopo un tentativo di avvio conserva lo stato per la verifica, invece di cancellare
-  container o dati. Un errore non viene convertito in un successo.
-- Se manca soltanto la pubblicazione o il backup, nella **stessa sessione** puoi
-  verificare e riprendere lo stesso piano senza aggiungere di nuovo il servizio.
-  La ripresa automatica dopo la chiusura della GUI non è ancora disponibile.
+![Scelta pubblico o privato e accesso Infisical](screenshots/v050-dev8/06-segreti.png)
 
-## DNS, domini e altre dipendenze
+| Variabile | Scelta | Destinazione |
+| --- | --- | --- |
+| `WHOAMI_PORT_NUMBER` | **Pubblica** | `data/prova-agent/.env` |
+| `TEST_API_TOKEN` | **Infisical** (privata) | Infisical `prod`, cartella `/prova-agent`; Agent → `.secrets/prova-agent.env` |
 
-AdGuard, DNS di Ubuntu, router e inoltri porte restano fuori dal tool. Per un nuovo
-dominio configura tu DNS/rewrite, proxy NPM, certificato e accesso dall’esterno.
-Se cambi VM durante un disaster recovery, ricorda di aggiornare rewrite locali e
-inoltri verso gli IP nuovi prima di collaudare i domini. Non basta cambiare il campo
-IP della GUI per modificare un apparato esterno.
+Verifica ogni proposta. Porte, IP locali, timezone e opzioni ordinarie sono pubblici;
+password, token e URL con credenziali sono privati. Il nome da solo non dimostra la
+natura del valore. Se un valore privato manca, seleziona la variabile, inseriscilo
+nel campo mascherato e premi **Imposta valore**.
 
-## Riferimenti delle API
+In **Collega Infisical** inserisci **ID del progetto**, **Ambiente** (per esempio
+`prod`) e **Token Infisical con permessi di scrittura**. Serve un access token:
+**non il token GitHub né il Client Secret**. Se il tunnel Agent è riconosciuto,
+lascia vuoto **Accesso HTTPS alternativo → Indirizzo HTTPS**: la GUI segue l’istanza
+collegata alla VM stack. Altrimenti serve l’HTTPS diretto con certificato valido.
 
-Il client usa i contratti ufficiali Infisical per [cartelle](https://infisical.com/docs/api-reference/endpoints/folders/create)
-e [segreti](https://infisical.com/docs/api-reference/endpoints/secrets/create).
-Non segue redirect con il token e non ripete automaticamente una creazione dopo
-una risposta ambigua.
+### Ottenere progetto e token senza modificare l’Agent
+
+Apri il pannello dell’istanza Infisical che stai usando. Per trovare la porta,
+sulla VM Infisical leggi:
+
+```bash
+sudo docker ps --format 'table {{.Names}}\t{{.Ports}}'
+```
+
+Nel test riportato, `infisical-backend` pubblicava `0.0.0.0:80->8080/tcp` e il
+pannello era `http://192.168.178.33/`. È solo l’esempio del laboratorio: non una porta
+garantita per tutte le installazioni. L’istanza ripristinata conserva gli account
+presenti nel backup; accedi con quell’account verificando l’indirizzo del pannello.
+
+1. Nel progetto **streams-aio → Settings**, copia il **Project ID** nella GUI.
+2. Nell’organizzazione apri **Access Control → Machine Identities → Create**. Crea
+   una nuova identità, per esempio `recovery-gui-lab`, con ruolo organizzazione
+   **No Access**, se disponibile. Non modificare l’identità dell’Agent.
+3. Sulla nuova identità configura **Authentication → Token Auth**. Se presenta
+   Universal Auth predefinito, sostituiscilo soltanto su questa nuova identità.
+4. Premi **Add Token** e copia il token nella Recovery GUI. Il Client Secret di
+   Universal Auth non è il valore richiesto.
+5. Nel progetto apri **Access Control → Machine Identities → Add Machine Identity
+   to Project → Assign Existing**, scegli l’identità e assegna **Member**. Con ruoli
+   personalizzati servono lettura e creazione di cartelle e segreti nell’ambiente scelto.
+
+Riferimento: [guida ufficiale Token Auth](https://infisical.com/docs/documentation/platform/identities/token-auth).
+Se scade, genera un token nuovo. Non incollarlo in chat o file pubblici.
+
+Le API richieste sono cartelle v2 e segreti v4; un vecchio service token potrebbe
+non funzionare. L’identità **dell’Agent** deve già poter leggere la cartella
+`/<nome-servizio>`: la funzione aggiunge il template e non amplia ruoli o permessi.
+
+Conferma **Ho verificato la scelta pubblico/privato delle variabili** e premi
+**Prepara il piano**.
+
+## 4. Verifica: controllare e aggiungere
+
+![Piano, controlli e pulsanti di esecuzione](screenshots/v050-dev8/07-verifica.png)
+
+1. Controlla nome, immagine, VM e modalità nella parte alta.
+2. Premi **Verifica VM**: controlla percorso, Agent, immagine, porta, file e conflitti.
+   Verifica l’impronta SSH se viene richiesta.
+3. Con verifica riuscita, premi **Aggiungi e verifica** e attendi. Non occorre aprire
+   il link `/health` nel browser.
+
+La procedura crea i segreti mancanti, aggiunge il servizio, collega il template
+Agent, rilegge il file privato e avvia **soltanto il nuovo container**. Non riscrive
+l’intero Compose e non ripristina database esistenti. Un segreto presente è riusato
+solo se il valore coincide; un valore diverso è conservato e segnala un conflitto.
+
+Il file pubblico è `data/<servizio>/.env`; l’Agent genera `.secrets/<servizio>.env`,
+applicato per ultimo. I commenti dei file esistenti sono conservati. Il piano
+esportabile contiene nomi e riferimenti senza valori.
+
+## 5. Esito: cosa è stato verificato
+
+![Esito locale: servizio e Agent verificati, GitHub e backup esclusi](screenshots/v050-dev8/08-esito-locale.png)
+
+**Collaudo locale completato** verifica servizio e Agent. Gli altri container
+dello stack non sono avviati dalla preparazione; Infisical sulla seconda VM è attivo.
+**GitHub e backup restano esclusi**: il verde locale non ne prova la pubblicazione.
+
+In **Stack esistente**, dopo servizio e Agent il tool richiede pubblicazione
+sanitizzata e nuovo backup ai worker già installati. Rilegge allegati, manifest,
+checksum e commit. Il percorso è completo solo con **Servizio aggiunto e verificato**,
+tutti i controlli richiesti e il tag del backup. Prova anche la funzione reale dell’app.
+
+**Stato della 0.5.0-dev.8:** l’utente ha completato preparazione del laboratorio
+`.30/.33` e aggiunta di `prova-agent`, con servizio e Agent verificati. Pubblicazione
+GitHub, nuovo backup e recupero completo dello stack con questa anteprima restano da
+collaudare. La 0.5 è un’anteprima, non una nuova release stabile dichiarata equivalente
+alla GUI già usata per il recupero precedente.
+
+## 6. Interruzioni e limiti
+
+- Cambiare campi annulla il piano: preparalo e verificalo di nuovo.
+- Prima dell’avvio sono ripristinati soltanto i propri file non modificati nel
+  frattempo, quando possibile. I segreti già creati non vengono eliminati.
+- Dopo un tentativo di avvio, stato e registro sono conservati. Non cancellare
+  checkpoint per eliminare un errore.
+- Se manca solo GitHub o backup, nella **stessa sessione** puoi verificare e riprendere
+  lo stesso piano. La ripresa dopo la chiusura della GUI non è ancora disponibile.
+- Solo servizi **senza nuovi dati persistenti**: sono rifiutati mount `volumes`,
+  anche readonly e socket Docker, e immagini con volumi anonimi. Nuovi database
+  richiedono prima una copertura di backup e recupero collaudata.
+- File aggiuntivi `.conf`/`.toml`/`.json`, proxy NPM e nuovi permessi Infisical non
+  sono creati automaticamente. Nel Compose non usare `build`, `include`, `extends`
+  o anchor YAML.
+- Valori privati con apostrofo, caratteri di controllo, righe multiple o backslash
+  finale sono rifiutati prima di creare segreti. `$` è supportato. Non cambiare una
+  password valida per aggirare il limite: serve estendere il formato.
+
+### SSH e immagini del backup
+
+Gli errori SSH indicano **VM stack** oppure **VM Infisical**. Controlla IP, utente
+e porta. Con password lascia vuoto il campo chiave SSH: la chiave age serve al backup.
+La porta 22 aperta non dimostra autenticazione e impronta corrette. Salva gli esiti,
+conserva checkpoint e VM e riprendi dopo aver risolto.
+
+Il laboratorio usa immagini immutabili del backup scelto, incrociando
+`config/image-lock.json`, `config/compose.dr.yaml` e Compose del commit verificato.
+Un digest aggiornato non richiede di tornare alle vecchie immagini. Restano i
+controlli Linux amd64, repository, PostgreSQL 18, account, permessi e valori privati.
+Non migra automaticamente database tra versioni principali; Infisical ha un proprio
+profilo compatibile.
+
+## 7. Credenziali e apparati esterni
+
+Password, token e valori privati restano nella memoria della sessione Windows.
+**Incolla chiave** non crea file temporanei Windows: trasferisce direttamente via
+SFTP in un file remoto a `0600`. Piano ed esiti non contengono la chiave. Chiudendo
+la GUI va reinserita: conserva separatamente una copia protetta.
+
+Le API transitano via HTTPS o dentro SSH fino al tunnel loopback Agent. I valori
+non entrano negli argomenti SSH. Sono riconosciuti file privati di produzione a
+`0640` e del recupero a `0600`, senza ampliare i permessi. Il registro remoto
+protetto può conservare copie precedenti delle configurazioni.
+
+AdGuard, DNS di Ubuntu, router e inoltri restano fuori dal progetto. Per nuovi
+domini configura DNS/rewrite, NPM e certificati. In un recupero su nuovi IP aggiorna
+rewrite e inoltri verso la VM corretta, incluso il dominio del controller Headscale.
+Il campo IP nella GUI non modifica gli apparati. Per il servizio loopback non serve
+cambiare nulla.
+
+## Riferimenti tecnici
+
+- [Aspetto dell’interfaccia](UI-DESIGN.md)
+- [API Infisical: cartelle](https://infisical.com/docs/api-reference/endpoints/folders/create)
+- [API Infisical: segreti](https://infisical.com/docs/api-reference/endpoints/secrets/create)
+
+Il client non segue redirect con il token e non ripete automaticamente una creazione
+dopo una risposta ambigua.
