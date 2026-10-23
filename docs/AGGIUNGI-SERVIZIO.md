@@ -1,5 +1,7 @@
 # Aggiungi servizio — guida illustrata 0.5.0-dev.8
 
+Scarica il programma dalla [release di anteprima 0.5.0-dev.8](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.5.0-dev.8). La stabile resta 0.4.19. [Prima di iniziare](PRIMA-DI-INIZIARE.md) · [Note e verifiche dell'anteprima](RELEASE-NOTES-v0.5.0-dev.8.md).
+
 Questa scheda aggiunge **un servizio nuovo alla VM già operativa**, senza ripristinare
 backup o database. I servizi esistenti sono conservati. Per ripristinare invece le
 due VM o riprendere un recupero, consulta il [README](../README.md).

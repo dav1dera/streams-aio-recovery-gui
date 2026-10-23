@@ -5,7 +5,7 @@
 | Versione | Stato e uso |
 | --- | --- |
 | **0.4.19 stabile** | [Programma e checksum della release](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.19). |
-| **0.5.0-dev.8 in anteprima** | Interfaccia scura e scheda **Aggiungi servizio**. Sorgenti nella [PR di sviluppo #15](https://github.com/dav1dera/streams-aio-recovery-gui/pull/15); non è ancora una release stabile. |
+| **0.5.0-dev.8 in anteprima** | [Programma, sorgenti e checksum](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.5.0-dev.8). Interfaccia scura e scheda **Aggiungi servizio**; [sorgenti su main](https://github.com/dav1dera/streams-aio-recovery-gui/tree/main). Non è una release stabile. |
 
 Le immagini di questa guida mostrano la **0.5.0-dev.8**, con dati dimostrativi e richiami numerati. Sono schermate della vera interfaccia, preparate per spiegare i comandi; non attestano un'esecuzione sulle VM per ciascuna immagine. La versione stabile ha un aspetto diverso.
 
@@ -63,6 +63,8 @@ flowchart LR
 | **Rete** | Internet, spazio per immagini e ripristino, DNS e inoltri predisposti per il recupero completo. |
 
 Dimensiona le risorse per il tuo carico. La GUI installa Docker se manca; **non crea le VM e non installa Ubuntu**. [Preparare le VM in Proxmox](docs/PROXMOX.md).
+
+Per l'anteprima scarica dalla [release 0.5.0-dev.8](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.5.0-dev.8) **StreamsAIO-Recovery.exe**, **SHA256SUMS** e **PRIMA-DI-INIZIARE.md**. Lo ZIP **streams-aio-recovery-gui-source.zip** serve a chi vuole i sorgenti: non occorre per avviare il programma. Leggi le [istruzioni iniziali](docs/PRIMA-DI-INIZIARE.md) e le [note dell'anteprima](docs/RELEASE-NOTES-v0.5.0-dev.8.md). Il collegamento GitHub «Latest» può continuare a indicare la stabile 0.4.19: scegli il tag dell'anteprima per ottenere l'interfaccia illustrata qui.
 
 Verifica il checksum della stessa release prima di eseguire il programma:
 
@@ -342,6 +344,6 @@ docker compose --profile all ps nuovo-servizio
 
 L'anteprima rifiuta valori privati con apostrofo, righe multiple, caratteri di controllo o backslash finale; `$` è supportato. Non alterare una credenziale valida per aggirare un limite: occorre estendere e collaudare insieme Agent e ripristino. Le identità, le immagini, i permessi e il punto di recupero restano verificati; non sono garantiti cambi arbitrari di versione o struttura dei database.
 
-**Guide:** [Setup da zero](docs/SETUP-DA-ZERO.md) · [Uso dettagliato](docs/USAGE.md) · [Aggiungi servizio](docs/AGGIUNGI-SERVIZIO.md) · [Proxmox](docs/PROXMOX.md) · [Note 0.4.19](docs/RELEASE-NOTES-v0.4.19.md).
+**Guide:** [Prima di iniziare](docs/PRIMA-DI-INIZIARE.md) · [Setup da zero](docs/SETUP-DA-ZERO.md) · [Uso dettagliato](docs/USAGE.md) · [Aggiungi servizio](docs/AGGIUNGI-SERVIZIO.md) · [Proxmox](docs/PROXMOX.md) · [Note 0.5.0-dev.8](docs/RELEASE-NOTES-v0.5.0-dev.8.md) · [Note 0.4.19](docs/RELEASE-NOTES-v0.4.19.md).
 
 **Sviluppo:** backend Python e SSH, interfaccia WebView2 nell'anteprima e Tk nella versione classica. `build.ps1` crea l'eseguibile; `tests/` e GitHub Actions controllano codice, compatibilità Ubuntu e build Windows. Le immagini documentali usano dati dimostrativi, senza credenziali. I test automatici non sostituiscono il collaudo del proprio ambiente.
