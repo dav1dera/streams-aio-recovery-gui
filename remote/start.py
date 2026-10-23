@@ -16,6 +16,7 @@ TLS_CODES = frozenset('TLS_NPM_' + phase + '_FAILED' for phase in (
     'NGINX_TEST', 'NGINX_RELOAD', 'TLS_LOOPBACK', 'HTTPS_UPSTREAM'))
 PINNED_IMAGE = re.compile(r'[^@\s]+@sha256:[0-9a-f]{64}\Z')
 STARTUP_CODES = {
+    'LAB_APPLICATION_START_REFUSED', 'LAB_RUNTIME_SCOPE_REFUSED',
     'LOCAL_ENDPOINTS_RELOCATION_REFUSED', 'LOCAL_ENDPOINTS_SOURCE_DRIFT',
     'HEADPLANE_CONTROLLER_CONFIGURATION_REQUIRED', 'HEADPLANE_BOOTSTRAP_SCOPE_REFUSED',
     'HEADPLANE_BOOTSTRAP_STATE_CHANGED', 'HEADPLANE_CONTROLLER_API_PROBE_FAILED',
@@ -533,6 +534,8 @@ def start(root, home, tls=False, operational=False, cutover=False,
     if not state_path.is_file() or state_path.stat().st_mode & 0o077:
         raise ValueError('PRIVATE_CHECKPOINT_REQUIRED')
     state = json.loads(state_path.read_bytes())
+    if state.get('lab_deployment') is not None:
+        raise ValueError('LAB_APPLICATION_START_REFUSED')
     if state.get('target') != str(root) or state.get('machine_id') != Path('/etc/machine-id').read_text().strip() or state.get('preparation') != 'PASS':
         raise ValueError('PREPARED_REPLACEMENT_REQUIRED')
     # Do not let Compose adopt other workloads, same-name containers or old volumes.

@@ -6,6 +6,7 @@ temporary NPM nonce uses ordinary DNS and certificate verification from the
 host namespace used by the pinned Tailscale service.
 """
 import copy
+import importlib.util
 import ipaddress
 import json
 import os
@@ -152,7 +153,9 @@ def checked_container(root, model, service, run, *, optional=False, healthy=True
     image_error = 'TAILSCALE_CONTROLLER_IMAGE_REFUSED'
     try:
         require(model.get('name') == 'streams-aio', ownership)
-        require(model['services'][service].get('image') == PINS[service], image_error)
+        require(service in PINS, image_error)
+        reference, same_image = _image_selection(root, model, service)
+        require(model['services'][service].get('image') == reference, image_error)
         ids = run(['docker', 'compose', '--profile', 'all', 'ps', '-aq', service]).decode().split()
         if optional and not ids:
             return None
@@ -167,10 +170,10 @@ def checked_container(root, model, service, run, *, optional=False, healthy=True
                 and labels.get('com.docker.compose.project.working_dir') == str(root)
                 and labels.get('com.docker.compose.project') == model['name']
                 and labels.get('com.docker.compose.service') == service, ownership)
-        require(row.get('Config', {}).get('Image') == PINS[service], image_error)
+        require(same_image(row.get('Config', {}).get('Image')), image_error)
         # Inspect only the always-present JSON Id. The metadata formatter's
         # typed .ID workaround is needed when also reading omitted fields.
-        actual_image = json.loads(run(['docker', 'image', 'inspect', '--format', '{{json .Id}}', PINS[service]]))
+        actual_image = json.loads(run(['docker', 'image', 'inspect', '--format', '{{json .Id}}', reference]))
         require(isinstance(actual_image, str) and re.fullmatch(r'sha256:[0-9a-f]{64}', actual_image)
                 and row.get('Image') == actual_image, image_error)
         if healthy:
@@ -195,6 +198,28 @@ def checked_container(root, model, service, run, *, optional=False, healthy=True
     except Exception as error:
         code = str(error)
         raise ValueError(code if code in ERROR_CODES else ownership) from None
+
+
+def _image_selection(root, model, service):
+    """Use only the sibling runner's verified backup/image-lock policy."""
+    code = 'TAILSCALE_CONTROLLER_IMAGE_REFUSED'
+    try:
+        spec = importlib.util.spec_from_file_location('tailscale_runtime_image_policy',
+                    Path(__file__).with_name('runtime_profile.py'))
+        policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(policy)
+        reference = policy.selected_runtime_images(root, model)[service]
+        require(isinstance(reference, str) and re.fullmatch(
+            r'[^@\s]+@sha256:[0-9a-f]{64}', reference), code)
+        expected = policy.image_identity(reference)
+        def same_image(value):
+            try:
+                return policy.image_identity(value) == expected
+            except Exception:
+                return False
+        return reference, same_image
+    except Exception:
+        raise ValueError(code) from None
 
 
 def private_run(args, root, payload):

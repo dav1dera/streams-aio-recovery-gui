@@ -1,6 +1,7 @@
 """Desktop transport. Credentials stay in memory; reports contain fixed codes only."""
 import base64
 from dataclasses import dataclass, field
+import errno
 import hashlib
 import io
 import ipaddress
@@ -24,6 +25,7 @@ from .startup_diagnostic import safe as safe_startup_diagnostic
 from .external_dependencies import validate as validate_external_dependencies
 from . import ssh_identity
 from .upload_staging import SETUP as UPLOAD_SETUP
+from .age_input import AgeInputFailure, validate_pasted_identity
 
 PUBLIC = 'dav1dera/streams-aio-sanitized'
 PRIVATE = 'dav1dera/streams-aio-dr'
@@ -255,15 +257,66 @@ class GitHub:
         return dict(tag=tag, public_commit=manifest['stack_commit'], aio_snapshot=True)
 
 
+def _ssh_connection_code(error, host, paramiko):
+    """Classify local exception types/numbers, never exception text or replies."""
+    if isinstance(error, paramiko.PasswordRequiredException):
+        return 'SSH_KEY_PASSPHRASE_REQUIRED'
+    if isinstance(error, paramiko.ssh_exception.NoValidConnectionsError):
+        failures = getattr(error, 'errors', None)
+        if isinstance(failures, dict) and 0 < len(failures) <= 32:
+            codes = {_ssh_connection_code(value, host, paramiko) for value in failures.values()}
+            if len(codes) == 1:
+                return codes.pop()
+        return 'SSH_CONNECTION_FAILED'
+    if isinstance(error, socket.gaierror):
+        return 'SSH_NAME_RESOLUTION_FAILED'
+    if isinstance(error, (TimeoutError, socket.timeout)):
+        return 'SSH_CONNECT_TIMEOUT'
+    if isinstance(error, EOFError):
+        return 'SSH_TRANSPORT_CLOSED'
+    if isinstance(error, paramiko.pkey.UnknownKeyType):
+        return 'SSH_KEY_FORMAT_INVALID'
+    if isinstance(error, OSError):
+        number = getattr(error, 'winerror', None) or getattr(error, 'errno', None)
+        # Windows 10013 and socket EACCES are local access failures, not proof
+        # that a VM is offline. A matching filename proves a local key read.
+        filename = getattr(error, 'filename', None)
+        if host.key_file and isinstance(filename, str):
+            try:
+                if Path(filename).absolute() == Path(host.key_file).absolute():
+                    return 'SSH_KEY_FILE_UNAVAILABLE'
+            except (OSError, ValueError):
+                pass
+        if isinstance(error, FileNotFoundError) and host.key_file:
+            return 'SSH_KEY_FILE_UNAVAILABLE'
+        if number in (errno.EACCES, errno.EPERM, 10013):
+            return 'SSH_LOCAL_NETWORK_DENIED'
+        if number in (errno.ECONNREFUSED, 10061):
+            return 'SSH_CONNECTION_REFUSED'
+        if number in (errno.ENETUNREACH, errno.EHOSTUNREACH, 10051, 10065):
+            return 'SSH_NETWORK_UNREACHABLE'
+        if number in (errno.ETIMEDOUT, 10060):
+            return 'SSH_CONNECT_TIMEOUT'
+        if number in (errno.ECONNRESET, errno.ECONNABORTED, errno.EPIPE, 10053, 10054):
+            return 'SSH_TRANSPORT_CLOSED'
+    if isinstance(error, paramiko.SSHException):
+        return 'SSH_PROTOCOL_FAILED'
+    return 'SSH_CONNECTION_FAILED'
+
+
 class SSH:
     def __init__(self, host, confirm_key, cancelled=None, *, confirm_changed_key=None):
         import paramiko
         host.validate()
         self.host = host
         self.cancelled = cancelled or threading.Event()
-        key_home = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'StreamsAIORecovery'
-        key_home.mkdir(parents=True, exist_ok=True)
-        self.known_hosts = key_home / 'known_hosts'
+        self.client = None
+        try:
+            key_home = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'StreamsAIORecovery'
+            key_home.mkdir(parents=True, exist_ok=True)
+            self.known_hosts = key_home / 'known_hosts'
+        except Exception:
+            raise Failure('SSH_HOST_KEY_STORE_FAILED') from None
         peer = ssh_identity.endpoint(host.address, host.port)
         approved = []
         class VerifiedHostPolicy(paramiko.MissingHostKeyPolicy):
@@ -275,15 +328,25 @@ class SSH:
                 approved.append(key)
         self_cancelled = self.cancelled
         def make_client(replacement=None):
-            client = paramiko.SSHClient()
-            keys = ssh_identity.trusted_keys(self.known_hosts, peer)
+            try:
+                keys = ssh_identity.trusted_keys(self.known_hosts, peer)
+            except Exception:
+                raise Failure('SSH_HOST_KEY_STORE_FAILED') from None
             if replacement is not None:
                 keys = ssh_identity.without_peer(keys, peer)
                 keys.add(peer, replacement.get_name(), replacement)
-            for label in keys.keys():
-                for kind, key in keys[label].items():
-                    client.get_host_keys().add(label, kind, key)
-            client.set_missing_host_key_policy(VerifiedHostPolicy())
+            client = paramiko.SSHClient()
+            try:
+                for label in keys.keys():
+                    for kind, key in keys[label].items():
+                        client.get_host_keys().add(label, kind, key)
+                client.set_missing_host_key_policy(VerifiedHostPolicy())
+            except Exception:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                raise
             return client
         def connect():
             require(not self.cancelled.is_set(), 'INTERRUPTED')
@@ -291,7 +354,6 @@ class SSH:
                                 password=host.password or None, key_filename=host.key_file or None,
                                 passphrase=host.key_password or None, look_for_keys=False, allow_agent=False,
                                 timeout=15, auth_timeout=20, banner_timeout=20)
-        self.client = None
         try:
             self.client = make_client()
             try:
@@ -309,28 +371,42 @@ class SSH:
                 self.client = make_client(changed.key)
                 connect()
                 approved.append(changed.key)
+            try:
+                transport = self.client.get_transport()
+                require(transport is not None and transport.is_active(), 'SSH_TRANSPORT_CLOSED')
+                require(transport.is_authenticated(), 'SSH_AUTH_FAILED')
+                transport.set_keepalive(15)
+            except (EOFError, OSError, paramiko.SSHException):
+                raise Failure('SSH_TRANSPORT_CLOSED') from None
             if approved:
                 try:
                     ssh_identity.remember(self.known_hosts, peer, approved[-1])
-                except OSError:
+                except Exception:
                     raise Failure('SSH_HOST_KEY_STORE_FAILED') from None
-            self.client.get_transport().set_keepalive(15)
         except paramiko.BadHostKeyException:
             self.close()
             raise Failure('SSH_HOST_KEY_CHANGED') from None
+        except paramiko.PasswordRequiredException:
+            self.close()
+            raise Failure('SSH_KEY_PASSPHRASE_REQUIRED') from None
         except paramiko.AuthenticationException:
             self.close()
             raise Failure('SSH_AUTH_FAILED') from None
         except Failure:
             self.close()
             raise
-        except Exception:
+        except Exception as error:
             self.close()
-            raise Failure('SSH_CONNECTION_FAILED') from None
+            raise Failure(_ssh_connection_code(error, host, paramiko)) from None
 
     def close(self):
         if self.client is not None:
-            self.client.close()
+            try:
+                self.client.close()
+            except Exception:
+                # Cleanup must not replace a closed diagnostic with a raw
+                # transport exception or prevent the other VM being closed.
+                pass
 
     def configure_host_dns(self, server):
         server = dns_server_address(server)
@@ -412,8 +488,13 @@ class SSH:
             raise Failure(code)
         return bytes(collected)
 
-    def check(self, fresh=True, role='stack'):
+    def check(self, fresh=True, role='stack', lab_point=None):
         require(role in ('stack', 'infisical'), 'INVALID_RECOVERY_ROLE')
+        if lab_point is not None:
+            require(isinstance(lab_point, tuple) and len(lab_point) == 2
+                    and isinstance(lab_point[0], str) and TAG.fullmatch(lab_point[0])
+                    and isinstance(lab_point[1], str) and SHA.fullmatch(lab_point[1]),
+                    'LAB_RUNTIME_SCOPE_REFUSED')
         home = self.run(['sh', '-c', 'printf %s "$HOME"']).decode()
         require(bool(re.fullmatch(r'/[A-Za-z0-9/_-]+', home)), 'UNSUPPORTED_REMOTE_HOME')
         source = (resources() / 'probe.py').read_text(encoding='utf-8')
@@ -422,6 +503,8 @@ class SSH:
         args = ['python3', '-c', source, '--target', target, '--runner', area, '--role', role]
         if fresh:
             args.append('--fresh')
+        if lab_point is not None:
+            args.extend(['--lab-tag', lab_point[0], '--lab-commit', lab_point[1]])
         info = json.loads(self.run(args, sudo=True, timeout=40))
         require(info.get('user') == self.host.user and info.get('home') == home, 'DEPLOYMENT_USER_MISMATCH')
         return info
@@ -432,8 +515,29 @@ class SSH:
 
     def upload(self, request):
         validate_remote_shell_scripts()
+        laboratory = request.get('lab_preparation', False)
+        require(type(laboratory) is bool, 'LAB_RUNTIME_SCOPE_REFUSED')
+        if laboratory:
+            require(request.get('aio_mode') == 'snapshot' and request.get('native_agent') is True
+                    and request.get('operational_profile') is not True,
+                    'LAB_RUNTIME_SCOPE_REFUSED')
+            require(request.get('onboarding_lab', False) is (request.get('role', 'stack') == 'stack'),
+                    'LAB_RUNTIME_SCOPE_REFUSED')
+        else:
+            require(request.get('onboarding_lab', False) is False, 'LAB_RUNTIME_SCOPE_REFUSED')
+        identity_mode = request.get('age_identity_mode', 'file')
+        require(identity_mode in ('file', 'paste'), 'AGE_IDENTITY_FILE_INVALID')
+        pasted_identity = None
+        if identity_mode == 'paste':
+            try:
+                pasted_identity = validate_pasted_identity(request.get('age_identity_text', ''))
+            except AgeInputFailure as error:
+                raise Failure(str(error)) from None
         role = request.get('role', 'stack')
-        home = (self.check(role=role) if role != 'stack' else self.check())['home']
+        if laboratory:
+            home = self.check(role=role, lab_point=(request.get('dr_tag'), request.get('public_commit')))['home']
+        else:
+            home = (self.check(role=role) if role != 'stack' else self.check())['home']
         area = self.area(home, role)
         remote = area + '/upload-' + uuid.uuid4().hex
         # The installer already requires sudo. Create only this new staging
@@ -451,6 +555,8 @@ class SSH:
             config = {key: request[key] for key in ('github_token', 'public_commit', 'dr_tag',
                       'infisical_address', 'project_id', 'environment')}
             config.update(role=role, ssh_bridge=request.get('ssh_bridge') is True)
+            if laboratory and role == 'stack':
+                config['onboarding_lab'] = True
             require(type(request.get('native_agent',True)) is bool, 'INVALID_RECOVERY_REQUEST')
             config['native_agent'] = request.get('native_agent',True)
             if request.get('operational_profile') is True:
@@ -460,7 +566,13 @@ class SSH:
             mode = request.get('aio_mode', 'import')
             require(mode in ('import', 'manual', 'snapshot'), 'INVALID_AIO_RECOVERY_MODE')
             config['aio_mode'] = mode
+            if pasted_identity is not None:
+                destination = remote + '/age_identity'
+                self._put_private_bytes(sftp, pasted_identity, destination)
+                config['age_identity'] = destination
             for name in ('age_identity', 'client_id_file', 'client_secret_file', 'aio_payload', 'supplemental_inputs'):
+                if name == 'age_identity' and identity_mode == 'paste':
+                    continue
                 if (request.get(name) and not (mode in ('manual', 'snapshot') and name == 'aio_payload')
                         and not (role == 'infisical' and name == 'supplemental_inputs')):
                     destination = remote + '/' + name
@@ -477,6 +589,34 @@ class SSH:
             return remote, json.dumps(config).encode() + b'\n'
         finally:
             sftp.close()
+
+    @staticmethod
+    def _put_private_bytes(sftp, raw, destination):
+        """Create an empty exclusive file, harden it, then write only via SFTP."""
+        require(isinstance(raw, bytes) and 0 < len(raw) <= 65536, 'AGE_IDENTITY_FILE_INVALID')
+        try:
+            # The parent is the fresh authenticated user's 0700 upload area.
+            # 'x' sets SSH_FXF_EXCL; 'w' supplies the writable create handle.
+            with sftp.open(destination, 'wx') as writer:
+                writer.chmod(0o600)
+                info = writer.stat()
+                require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
+                        and info.st_size == 0, 'SSH_UPLOAD_FAILED')
+                writer.write(raw)
+                writer.flush()
+            with sftp.open(destination, 'rb') as reader:
+                info = reader.stat()
+                require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600,
+                        'SSH_UPLOAD_FAILED')
+                require(info.st_size == len(raw), 'SSH_UPLOAD_SHA256_MISMATCH')
+                copied = reader.read(len(raw) + 1)
+            require(isinstance(copied, bytes) and len(copied) == len(raw)
+                    and hashlib.sha256(copied).digest() == hashlib.sha256(raw).digest(),
+                    'SSH_UPLOAD_SHA256_MISMATCH')
+        except Failure:
+            raise
+        except Exception:
+            raise Failure('SSH_UPLOAD_FAILED') from None
 
     @staticmethod
     def _put(sftp, source, destination):

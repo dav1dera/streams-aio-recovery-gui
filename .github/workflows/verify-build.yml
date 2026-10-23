@@ -1,7 +1,7 @@
 name: Safety tests and Windows app
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/v*']
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -13,6 +13,17 @@ on:
 permissions:
   contents: read
 jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+          GITLEAKS_ENABLE_COMMENTS: 'false'
   safety:
     runs-on: ubuntu-latest
     steps:
@@ -100,13 +111,16 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r requirements-build.txt
-      - run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name StreamsAIO-Recovery --add-data 'remote;remote' main.py
+      - run: python -m PyInstaller --noconfirm --clean StreamsAIO-Recovery.spec
       - name: Check executable and bundled GUI dependencies
         shell: pwsh
         run: |
           $app = Start-Process -FilePath ./dist/StreamsAIO-Recovery.exe -ArgumentList '--self-test' -WindowStyle Hidden -PassThru
           if (-not $app.WaitForExit(60000)) { $app.Kill(); throw 'Executable startup timed out' }
           if ($app.ExitCode -ne 0) { throw 'Executable startup failed' }
+          $webApp = Start-Process -FilePath ./dist/StreamsAIO-Recovery.exe -ArgumentList '--web-ui-self-test' -WindowStyle Hidden -PassThru
+          if (-not $webApp.WaitForExit(60000)) { $webApp.Kill(); throw 'Web interface self-test timed out' }
+          if ($webApp.ExitCode -ne 0) { throw 'Web interface self-test failed' }
           $hash = (Get-FileHash -Algorithm SHA256 dist/StreamsAIO-Recovery.exe).Hash.ToLower()
           "$hash  StreamsAIO-Recovery.exe" | Set-Content -Encoding ascii dist/SHA256SUMS
       - uses: actions/upload-artifact@v4
@@ -117,8 +131,10 @@ jobs:
             dist/SHA256SUMS
           retention-days: 30
   publish:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release && github.ref == 'refs/heads/main'
-    needs: windows
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.publish_release && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v'))
+    needs: [windows, secret-scan]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -137,8 +153,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag=$(python -c "import re; from recovery_gui import __version__; assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', __version__); print('v' + __version__)")
-          # Allow manually triggered verified releases from private or public repositories.
+          tag=$(python - <<'PY'
+          import os, re
+          from recovery_gui import __version__
+          if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-dev\.[0-9]+)?', __version__):
+              raise SystemExit('RELEASE_VERSION_INVALID')
+          tag = 'v' + __version__
+          if os.environ['GITHUB_EVENT_NAME'] == 'push':
+              if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+', __version__):
+                  raise SystemExit('RELEASE_BRANCH_REQUIRES_DEV_VERSION')
+              if os.environ['GITHUB_REF'] != 'refs/heads/release/' + tag:
+                  raise SystemExit('RELEASE_BRANCH_VERSION_MISMATCH')
+          elif os.environ['GITHUB_EVENT_NAME'] != 'workflow_dispatch' or os.environ['GITHUB_REF'] != 'refs/heads/main':
+              raise SystemExit('RELEASE_TRIGGER_REFUSED')
+          print(tag)
+          PY
+          )
+          release_notes="docs/RELEASE-NOTES-$tag.md"
+          test -s "$release_notes"
+          test -s docs/PRIMA-DI-INIZIARE.md
+          # A release branch publishes only its identically named dev version.
+          # Manual publication from main remains available after all checks.
           # A release/tag already present is never overwritten or moved.
           test -z "$(git ls-remote --tags origin "refs/tags/$tag")"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -147,13 +182,14 @@ jobs:
           python -c "from pathlib import Path; p=Path('dist/SHA256SUMS'); p.write_bytes(p.read_bytes().replace(b'\r\n', b'\n'))"
           (cd dist && sha256sum -c SHA256SUMS)
           git archive --format=zip --output=dist/streams-aio-recovery-gui-source.zip "$GITHUB_SHA"
-          (cd dist && sha256sum StreamsAIO-Recovery.exe streams-aio-recovery-gui-source.zip > SHA256SUMS)
-          gh release create "$tag" dist/StreamsAIO-Recovery.exe dist/streams-aio-recovery-gui-source.zip dist/SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease \
-            --title "Streams AIO Recovery $tag" --notes-file docs/RELEASE-NOTES.md
+          cp docs/PRIMA-DI-INIZIARE.md dist/PRIMA-DI-INIZIARE.md
+          (cd dist && sha256sum StreamsAIO-Recovery.exe streams-aio-recovery-gui-source.zip PRIMA-DI-INIZIARE.md > SHA256SUMS)
+          gh release create "$tag" dist/StreamsAIO-Recovery.exe dist/streams-aio-recovery-gui-source.zip dist/PRIMA-DI-INIZIARE.md dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease --latest=false \
+            --title "Streams AIO Recovery $tag" --notes-file "$release_notes"
           mkdir -p dist/verified
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir dist/verified
           (cd dist/verified && sha256sum -c SHA256SUMS)
           cmp dist/SHA256SUMS dist/verified/SHA256SUMS
-          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
           echo "RELEASE_UPLOAD_VERIFY PASS tag=$tag commit=$GITHUB_SHA"

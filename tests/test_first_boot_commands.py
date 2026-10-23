@@ -62,6 +62,7 @@ class FirstBootCommands(unittest.TestCase):
         self.policy = N(Refused=profile.Refused, FIRST_BOOT_IMAGES=profile.FIRST_BOOT_IMAGES,
                         PG_IMAGE=profile.PG_IMAGE, DNS_IMAGE=profile.DNS_IMAGE,
                         OAUTH_IMAGE=profile.OAUTH_IMAGE, PGBOUNCER_IMAGE=profile.PGBOUNCER_IMAGE,
+                        first_boot_images=Mock(return_value=profile.FIRST_BOOT_IMAGES),
                         validate=Mock(return_value=False), first_boot_scope=Mock(), apply_fresh=Mock())
         self.calls = []
 
@@ -90,6 +91,7 @@ class FirstBootCommands(unittest.TestCase):
         self.assertEqual(inspected, list(profile.FIRST_BOOT_IMAGES))
         self.assertFalse(any(args[:2] == ['docker', 'pull'] for args, _, _ in self.calls))
         self.policy.first_boot_scope.assert_called_once_with(self.root, self.home, self.job.state, installing=True)
+        self.policy.first_boot_images.assert_called_once_with(self.root, {'services': {}})
         self.policy.apply_fresh.assert_called_once()
         self.unchanged()
 
@@ -103,6 +105,25 @@ class FirstBootCommands(unittest.TestCase):
         self.assertEqual(pulls, [(['docker', 'pull', profile.OAUTH_IMAGE],
                                 'RUNTIME_PROFILE_OAUTH_PULL_FAILED', dict(cwd=self.root, timeout=300))])
         self.policy.apply_fresh.assert_called_once()
+        self.unchanged()
+
+    def test_cache_and_pull_follow_the_selected_backup_instead_of_legacy_constants(self):
+        selected = (*profile.FIRST_BOOT_IMAGES[:3],
+                    'edoburu/pgbouncer@sha256:8638aa563607256d3c7440437534195f1066a92b68015d89ae9d6b935b444a6d')
+        self.assertNotEqual(selected[-1], profile.PGBOUNCER_IMAGE)
+        self.policy.first_boot_images.return_value = selected
+        def runner(args, code, **kwargs):
+            if code == 'RUNTIME_PROFILE_IMAGE_CACHE_INSPECT_FAILED' and args[-1] == selected[-1]:
+                self.calls.append((args, code, kwargs))
+                return None
+            return self.runner(args, code, **kwargs)
+        self.invoke(runner)
+        inspected = [args[-1] for args, code, _ in self.calls
+                     if code == 'RUNTIME_PROFILE_IMAGE_CACHE_INSPECT_FAILED']
+        self.assertEqual(inspected, list(selected))
+        self.assertNotIn(profile.PGBOUNCER_IMAGE, inspected)
+        self.assertEqual([args[-1] for args, _, _ in self.calls if args[:2] == ['docker', 'pull']],
+                         [selected[-1]])
         self.unchanged()
 
     def test_registered_profile_reuses_without_any_command(self):
@@ -135,12 +156,15 @@ class FirstBootCommands(unittest.TestCase):
 
     def test_cache_failure_does_not_guess_miss_or_pull(self):
         def runner(args, code, **kwargs):
-            self.calls.append((args, code, kwargs))
-            raise recovery.Refused(code)
+            if code == 'RUNTIME_PROFILE_IMAGE_CACHE_INSPECT_FAILED':
+                self.calls.append((args, code, kwargs))
+                raise recovery.Refused(code)
+            return self.runner(args, code, **kwargs)
         with self.assertRaisesRegex(recovery.Refused, '^RUNTIME_PROFILE_IMAGE_CACHE_INSPECT_FAILED$'):
             self.invoke(runner)
-        self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.calls[0][0][-1], profile.PG_IMAGE)
+        self.assertEqual([code for _, code, _ in self.calls],
+                         ['RUNTIME_PROFILE_COMPOSE_CONFIG_FAILED', 'RUNTIME_PROFILE_IMAGE_CACHE_INSPECT_FAILED'])
+        self.assertEqual(self.calls[-1][0][-1], profile.PG_IMAGE)
         self.policy.apply_fresh.assert_not_called()
         self.unchanged()
 

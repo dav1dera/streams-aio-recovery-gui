@@ -1,0 +1,230 @@
+{
+  "uiVersion": "0.5.0-dev.8",
+  "synthetic": true,
+  "network": "HTTP blocked; APIs simulated; no VM connections",
+  "screenshots": [
+    {
+      "file": "01-accessi.png",
+      "targets": [
+        {
+          "number": 1,
+          "selector": "#page-connections .two-columns article:nth-child(1)",
+          "label": "VM stack"
+        },
+        {
+          "number": 2,
+          "selector": "#page-connections .two-columns article:nth-child(2)",
+          "label": "VM Infisical"
+        },
+        {
+          "number": 3,
+          "selector": "#page-connections article:has(#load-backups) .token-row",
+          "label": "GitHub e backup"
+        },
+        {
+          "number": 4,
+          "selector": "#page-connections .age-key-field",
+          "label": "Chiave age"
+        }
+      ],
+      "clip": {
+        "width": 1440,
+        "height": 1250
+      }
+    },
+    {
+      "file": "02-domini.png",
+      "targets": [
+        {
+          "number": 1,
+          "selector": "[data-setting=\"routing_mode\"]",
+          "label": "Modalità"
+        },
+        {
+          "number": 2,
+          "selector": "[data-setting=\"domain_target_address\"]",
+          "label": "IP atteso"
+        },
+        {
+          "number": 3,
+          "selector": "#page-connections article:has([data-setting=\"routing_mode\"]) .inline-note",
+          "label": "DNS e router manuali"
+        }
+      ],
+      "clip": {
+        "x": 223,
+        "y": 900.4375,
+        "width": 1216,
+        "height": 307.140625
+      }
+    },
+    {
+      "file": "03-crea-da-zero.png",
+      "targets": [
+        {
+          "number": 1,
+          "selector": "#recovery-selection",
+          "label": "Backup selezionato"
+        },
+        {
+          "number": 2,
+          "selector": "#recover-fresh",
+          "label": "Crea da zero"
+        },
+        {
+          "number": 3,
+          "selector": "#recovery-phases",
+          "label": "Fasi verificate"
+        }
+      ],
+      "clip": {
+        "width": 1440,
+        "height": 1250
+      }
+    },
+    {
+      "file": "04-riprendi.png",
+      "targets": [
+        {
+          "number": 1,
+          "selector": "#recovery-selection",
+          "label": "Stesso punto di recupero"
+        },
+        {
+          "number": 2,
+          "selector": "#recover-resume",
+          "label": "Rileva e continua"
+        },
+        {
+          "number": 3,
+          "selector": "#page-overview .save-report",
+          "label": "Salva esiti"
+        }
+      ],
+      "clip": {
+        "width": 1440,
+        "height": 1250
+      }
+    },
+    {
+      "file": "09-destinazione.png",
+      "targets": [
+        {
+          "number": 1,
+          "selector": "#service-step-0 .mode-grid",
+          "label": "Stack esistente o collaudo locale"
+        },
+        {
+          "number": 2,
+          "selector": "#service-step-0 details",
+          "label": "Percorso e controllo HTTP"
+        },
+        {
+          "number": 3,
+          "selector": "#prepare-lab",
+          "label": "Preparazione VM laboratorio"
+        }
+      ],
+      "clip": {
+        "width": 1440,
+        "height": 1250
+      }
+    },
+    {
+      "file": "05-servizio.png",
+      "targets": [
+        {
+          "number": 1,
+          "selector": "#service-name",
+          "label": "Nome servizio"
+        },
+        {
+          "number": 2,
+          "selector": "#service-compose",
+          "label": "Compose"
+        },
+        {
+          "number": 3,
+          "selector": "#service-env",
+          "label": "Variabili env"
+        }
+      ],
+      "clip": {
+        "width": 1440,
+        "height": 1250
+      }
+    },
+    {
+      "file": "06-segreti.png",
+      "targets": [
+        {
+          "number": 1,
+          "selector": "#service-step-2 .variable-table",
+          "label": "Scelta pubblico/privato"
+        },
+        {
+          "number": 2,
+          "selector": "#secret-editor",
+          "label": "Valore privato mascherato"
+        },
+        {
+          "number": 3,
+          "selector": "#service-infisical-panel",
+          "label": "Progetto, ambiente e token"
+        },
+        {
+          "number": 4,
+          "selector": "label:has(#service-reviewed)",
+          "label": "Conferma revisione"
+        }
+      ],
+      "clip": {
+        "width": 1440,
+        "height": 1250
+      }
+    },
+    {
+      "file": "07-verifica.png",
+      "targets": [
+        {
+          "number": 1,
+          "selector": "#plan-overview",
+          "label": "Piano pronto"
+        },
+        {
+          "number": 2,
+          "selector": "#inspect-service",
+          "label": "Verifica VM"
+        },
+        {
+          "number": 3,
+          "selector": "#apply-service",
+          "label": "Aggiungi e verifica"
+        }
+      ],
+      "clip": {
+        "width": 1440,
+        "height": 1250
+      }
+    },
+    {
+      "file": "08-esito-locale.png",
+      "targets": [
+        {
+          "number": 1,
+          "selector": "#service-feedback",
+          "label": "Servizio e Agent verificati"
+        },
+        {
+          "number": 2,
+          "selector": "#service-verification",
+          "label": "GitHub e backup esclusi"
+        }
+      ],
+      "clip": {
+        "width": 1440,
+        "height": 1250
+      }
+    }
+  ]
+}

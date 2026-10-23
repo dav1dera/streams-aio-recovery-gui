@@ -14,8 +14,43 @@ if getattr(sys, 'frozen', False):
 
 from recovery_gui.app import App, main
 
+
+def check_package():
+    """Validate imports and packaged sources without creating a Tk window."""
+    import paramiko
+    import yaml
+    from recovery_gui.backend import resources, validate_remote_shell_scripts
+    from recovery_gui.onboarding import ServiceController
+    from recovery_gui.lab_prepare import prepare_lab
+    from recovery_gui.onboarding_ssh_api import SSHInfisicalOpener
+    from recovery_gui.service_plan import analyze_inputs
+    from recovery_gui.ui_onboarding import ServiceOnboardingPanel
+    from recovery_gui.web_host import document
+    assert paramiko.__version__ and yaml.__version__
+    assert ServiceController is not None and ServiceOnboardingPanel is not None
+    assert prepare_lab is not None and SSHInfisicalOpener is not None
+    import webview
+    assert webview.create_window is not None and '<style>' in document()
+    validate_remote_shell_scripts()
+    for path in resources().glob('*.py'):
+        compile(path.read_bytes(), path.name, 'exec')
+    assert (resources() / 'service_onboarding.py').is_file()
+    plan = analyze_inputs('demo:\n  image: example/demo:latest\n', 'PORT=8080\n').plan
+    assert plan.service_name == 'demo' and not plan.private_bindings
+
+
 if __name__ == '__main__':
-    if sys.argv[1:] == ['--self-test']:
+    if sys.argv[1:] == ['--check-package']:
+        try:
+            check_package()
+        except Exception:
+            # A packaging failure must not open a native error dialog during
+            # unattended checks on a computer the user is actively using.
+            raise SystemExit(1) from None
+    elif sys.argv[1:] == ['--web-ui-self-test']:
+        from recovery_gui.web_host import run
+        run(self_test=True)
+    elif sys.argv[1:] == ['--self-test']:
         import paramiko
         from recovery_gui.backend import resources, validate_remote_shell_scripts
         from recovery_gui.ui_state import PHASES, operational_request
@@ -23,13 +58,15 @@ if __name__ == '__main__':
                     'requirements-dr.txt', 'requirements-new-vm.txt', 'infisical_server.py','infisical_inventory.py','infisical-deployment.json',
                     'native_agent.py', 'test_reset.py', 'aio_snapshot.py', 'runtime_profile.py',
                     'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
-                    'npm-route-probe.mjs', 'tailscale_recovery.py', 'headplane_recovery.py', 'host_dns.py', 'local_endpoints.py')
+                    'npm-route-probe.mjs', 'tailscale_recovery.py', 'headplane_recovery.py', 'host_dns.py', 'local_endpoints.py',
+                    'service_onboarding.py')
         assert all((resources() / name).is_file() for name in required)
         validate_remote_shell_scripts()
         app = App()
         try:
             app.update()
-            assert len(app.book.tabs()) == len(app.nav) == len(app.pages) == 3
+            assert len(app.book.tabs()) == len(app.nav) == len(app.pages) == 4
+            assert app.onboarding.controller is not None
             assert set(app.phase_labels) == set(PHASES)
             assert app.infrastructure_verified is False and app.backup_has_aio is None
             assert app.vars['routing_mode'].get() == 'parallel_test'
@@ -67,10 +104,36 @@ if __name__ == '__main__':
                 request = operational_request({}, action)
                 assert request['aio_mode'] == 'snapshot' and request['native_agent'] is True
                 assert request['operational_profile'] is True and request['restart_test'] is False
+            # Exercise the real button, widget freeze and Tk event delivery on
+            # the Windows CI runner. The controller is synthetic: this never
+            # connects to any VM or GitHub, or reads credentials from disk.
+            from recovery_gui.ui_onboarding import InputFailure
+            import time
+            class RefusedLabController:
+                calls = 0
+                def prepare_lab(self, snapshot, progress):
+                    self.calls += 1
+                    progress({'stage': 'HOST', 'status': 'RUNNING'})
+                    raise InputFailure('LAB_EMPTY_VMS_REQUIRED')
+            original_controller = app.onboarding.controller
+            fixture_controller = RefusedLabController()
+            try:
+                app.onboarding.set_controller(fixture_controller)
+                app.onboarding.lab_button.invoke()
+                deadline = time.monotonic() + 5
+                while app.onboarding._busy and time.monotonic() < deadline:
+                    app.update()
+                    time.sleep(0.01)
+                assert fixture_controller.calls == 1
+                assert not app.busy and not app.onboarding._busy
+                assert 'LAB_EMPTY_VMS_REQUIRED' in app.onboarding.lab_hint.get()
+                assert str(app.onboarding.lab_button.cget('state')) == 'normal'
+            finally:
+                app.onboarding.set_controller(original_controller)
             for width, height in ((1220, 860), (980, 740)):
                 app.geometry(f'{width}x{height}')
                 app.update()
-                for tab in range(3):
+                for tab in range(4):
                     app.nav[tab].invoke()
                     app.update()
                     assert app.book.index(app.book.select()) == tab
@@ -80,5 +143,8 @@ if __name__ == '__main__':
                     assert page.canvas.bbox('all') is not None
         finally:
             app.destroy()
-    else:
+    elif sys.argv[1:] == ['--classic']:
         main()
+    else:
+        from recovery_gui.web_host import run
+        run()

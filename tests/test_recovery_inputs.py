@@ -286,6 +286,7 @@ class Inputs(unittest.TestCase):
             pass
         pins = recovery.load_module(ROOT/'remote/runtime_profile.py', 'fresh_input_runtime_policy')
         policy = N(Refused=PolicyRefused, FIRST_BOOT_IMAGES=pins.FIRST_BOOT_IMAGES,
+                   first_boot_images=lambda root, model: pins.FIRST_BOOT_IMAGES,
                    PG_IMAGE=pins.PG_IMAGE, DNS_IMAGE=pins.DNS_IMAGE,
                    OAUTH_IMAGE=pins.OAUTH_IMAGE, PGBOUNCER_IMAGE=pins.PGBOUNCER_IMAGE,
                    validate=lambda root, home, state: bool(state.get('runtime_profile')))

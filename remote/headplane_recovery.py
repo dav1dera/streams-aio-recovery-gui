@@ -194,6 +194,27 @@ def _controller():
     return module
 
 
+def _image_selection(root, model):
+    """Resolve the selected immutable image through the trusted sibling policy."""
+    try:
+        spec = importlib.util.spec_from_file_location('headplane_runtime_image_policy',
+                    Path(__file__).with_name('runtime_profile.py'))
+        policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(policy)
+        reference = policy.selected_runtime_images(root, model)['headplane']
+        require(isinstance(reference, str) and re.fullmatch(
+            r'[^@\s]+@sha256:[0-9a-f]{64}', reference), SCOPE)
+        expected = policy.image_identity(reference)
+        def same_image(value):
+            try:
+                return policy.image_identity(value) == expected
+            except Exception:
+                return False
+        return reference, same_image
+    except Exception:
+        raise ValueError(SCOPE) from None
+
+
 def _scope(root, home, state, model):
     root, home = _safe(root, SCOPE), _safe(home, SCOPE)
     require(root.is_dir() and home.is_dir() and state.get('target') == str(root)
@@ -203,7 +224,7 @@ def _scope(root, home, state, model):
             and 'EMPTY_STATE' in state.get('completed', [])
             and (state.get('runtime_profile') or {}).get('origin') == 'FIRST_BOOT'
             and model.get('name') == 'streams-aio'
-            and model['services']['headplane'].get('image') == HEADPLANE_IMAGE, SCOPE)
+            and model['services']['headplane'].get('image') == _image_selection(root, model)[0], SCOPE)
     machine = Path('/etc/machine-id')
     if os.name != 'nt':
         require(state['machine_id'] == machine.read_text().strip(), SCOPE)
@@ -226,6 +247,7 @@ def _scope(root, home, state, model):
 def _headplane_container(root, model, run):
     """A previous failed Headplane may be recreated only with exact ownership."""
     try:
+        reference, same_image = _image_selection(root, model)
         ids = run(['docker', 'compose', '--profile', 'all', 'ps', '-aq', 'headplane']).decode().split()
         if not ids:
             return None
@@ -240,8 +262,8 @@ def _headplane_container(root, model, run):
                 and labels.get('com.docker.compose.project') == 'streams-aio'
                 and labels.get('com.docker.compose.project.working_dir') == str(root)
                 and labels.get('com.docker.compose.service') == 'headplane'
-                and row.get('Config', {}).get('Image') == HEADPLANE_IMAGE, SCOPE)
-        image = json.loads(run(['docker', 'image', 'inspect', '--format', '{{json .Id}}', HEADPLANE_IMAGE]))
+                and same_image(row.get('Config', {}).get('Image')), SCOPE)
+        image = json.loads(run(['docker', 'image', 'inspect', '--format', '{{json .Id}}', reference]))
         require(isinstance(image, str) and re.fullmatch(r'sha256:[0-9a-f]{64}', image)
                 and row.get('Image') == image, SCOPE)
         mounts = row.get('Mounts', [])

@@ -1,9 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files
 
 a = Analysis(
     ['main.py'],
-    pathex=['../gui-dependencies'],
+    pathex=['../web-ui-dependencies', '../gui-dependencies', '../test-dependencies'],
     binaries=[],
     datas=[('remote/' + name, 'remote') for name in (
         'bootstrap.sh', 'recover.py', 'probe.py', 'requirements-dr.txt',
@@ -11,7 +12,8 @@ a = Analysis(
         'infisical_inventory.py', 'infisical-deployment.json',
         'native_agent.py', 'local_config.py', 'runtime_profile.py', 'test_reset.py', 'aio_snapshot.py',
         'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
-        'npm-route-probe.mjs', 'tailscale_recovery.py', 'headplane_recovery.py', 'host_dns.py', 'local_endpoints.py')],
+        'npm-route-probe.mjs', 'tailscale_recovery.py', 'headplane_recovery.py', 'host_dns.py', 'local_endpoints.py',
+        'service_onboarding.py')] + [('recovery_gui/web', 'recovery_gui/web')] + collect_data_files('webview', subdir='js'),
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
