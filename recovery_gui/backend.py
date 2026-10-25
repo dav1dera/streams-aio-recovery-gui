@@ -30,7 +30,7 @@ from .age_input import AgeInputFailure, validate_pasted_identity
 PUBLIC = 'dav1dera/streams-aio-sanitized'
 PRIVATE = 'dav1dera/streams-aio-dr'
 STAGES = {'DEPENDENCIES', 'CLONES', 'DOWNLOAD', 'DECRYPT', 'INITIALIZE', 'INPUTS',
-          'RENDER', 'EMPTY_STATE', 'NPM', 'AIO', 'PREFLIGHT', 'PREPARED', 'STARTED', 'REFUSED', 'TLS',
+          'RENDER', 'EMPTY_STATE', 'NPM', 'AIO', 'SERVICES', 'PREFLIGHT', 'PREPARED', 'STARTED', 'REFUSED', 'TLS',
           'INFISICAL_CONFIG', 'INFISICAL_DATABASE', 'INFISICAL_SERVER', 'NATIVE_AGENT',
           'RUNTIME_PROFILE', 'COMETNET_TRIAL', 'IMAGES', 'APPLICATION_CHECKS', 'TEST_RESET_STACK', 'TEST_RESET_INFISICAL',
           'OPERATIONAL_PROFILE', 'PUBLIC_DOMAINS', 'PUBLIC_CONTROLLERS', 'OPERATIONAL_READY', 'AIO_BACKUP', 'NPM_TOPOLOGY', 'EXTERNAL_UPSTREAMS',
@@ -229,7 +229,7 @@ class GitHub:
                 'infisical-config.tar.gz.age', 'infisical-postgres.dump.age', 'infisical-postgres-globals.sql.age',
                 'manifest.json', 'SHA256SUMS'}
         names = {a.get('name') for a in assets}
-        require(names in (base, base | {'aio-state.tar.gz.age'}) and len(assets) == len(names),
+        require(names in (base, base | {'aio-state.tar.gz.age'}, base | {'aio-state.tar.gz.age', 'services-state.tar.gz.age'}) and len(assets) == len(names),
                 'UNEXPECTED_RELEASE_ASSETS')
         if 'aio-state.tar.gz.age' not in names:
             # Legacy points remain visible for diagnostics, never advertised as
@@ -549,7 +549,7 @@ class SSH:
             sftp.mkdir(remote + '/remote', mode=0o700)
             for name in ('bootstrap.sh', 'recover.py', 'probe.py', 'requirements-dr.txt', 'requirements-new-vm.txt', 'start.py',
                          'infisical_server.py', 'infisical_inventory.py', 'infisical-deployment.json', 'native_agent.py', 'runtime_profile.py',
-                         'aio_snapshot.py', 'local_config.py', 'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
+                         'aio_snapshot.py', 'service_snapshot.py', 'local_config.py', 'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
                          'npm-route-probe.mjs', 'tailscale_recovery.py', 'headplane_recovery.py', 'local_endpoints.py'):
                 self._put(sftp, resources() / name, remote + '/remote/' + name)
             config = {key: request[key] for key in ('github_token', 'public_commit', 'dr_tag',
@@ -693,7 +693,7 @@ class SSH:
         area=self.area(home,role)
         sftp=self.client.open_sftp()
         try:
-            for name in ('native_agent.py','recover.py','local_config.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs','tailscale_recovery.py', 'headplane_recovery.py', 'local_endpoints.py'):
+            for name in ('native_agent.py','recover.py','local_config.py','runtime_profile.py','aio_snapshot.py','service_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs','tailscale_recovery.py', 'headplane_recovery.py', 'local_endpoints.py'):
                 self._put(sftp,resources()/name,area+'/'+name)
         finally:
             sftp.close()
@@ -708,7 +708,7 @@ class SSH:
         area = home + '/.local/share/streams-aio-recovery'
         sftp = self.client.open_sftp()
         try:
-            for name in ('start.py','recover.py','local_config.py','runtime_profile.py','aio_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs','tailscale_recovery.py', 'headplane_recovery.py', 'local_endpoints.py'):
+            for name in ('start.py','recover.py','local_config.py','runtime_profile.py','aio_snapshot.py','service_snapshot.py','operational_profile.py','npm_runtime.py','npm_topology.py','npm-domain-probe.mjs','npm-route-probe.mjs','tailscale_recovery.py', 'headplane_recovery.py', 'local_endpoints.py'):
                 self._put(sftp, resources() / name, area + '/' + name)
         finally:
             sftp.close()

@@ -36,7 +36,9 @@ DR_UNIT = 'streams-aio-dr.service'
 ASSETS = frozenset({'aio-state.tar.gz.age', 'infisical-agent-infisical-agent.tar.gz.age',
                     'infisical-config.tar.gz.age', 'infisical-postgres.dump.age',
                     'infisical-postgres-globals.sql.age', 'npm-database.sqlite.age'})
+SERVICES_ASSET = 'services-state.tar.gz.age'
 FILES = ASSETS | {'manifest.json', 'SHA256SUMS'}
+RESOURCE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z')
 NAME = re.compile(r'[a-z0-9][a-z0-9_-]{0,62}\Z')
 KEY = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,127}\Z')
 ACL_ATTRIBUTES = frozenset({'system.posix_acl_access', 'system.posix_acl_default'})
@@ -111,7 +113,7 @@ def mapping_value(node, name):
     return matches[0]
 
 
-def plan_document(plan):
+def _single_plan_document(plan, allow_resources=False):
     need(isinstance(plan, dict), 'ONBOARDING_PLAN_INVALID')
     allowed = {'schema', 'service_name', 'image', 'compose_fragment', 'public_env_path',
                'public_env_content', 'public_env_text', 'private_env_path', 'bindings',
@@ -149,7 +151,7 @@ def plan_document(plan):
          and service['image'] == plan.get('image') and 0 < len(service['image']) < 512
          and not any(c.isspace() for c in service['image']) and not service['image'].startswith('-')
          and 'build' not in service and 'extends' not in service, 'ONBOARDING_FRAGMENT_INVALID')
-    need(not service.get('volumes'), 'ONBOARDING_PERSISTENT_DATA_COVERAGE_REQUIRED')
+    need(allow_resources or not service.get('volumes'), 'ONBOARDING_PERSISTENT_DATA_COVERAGE_REQUIRED')
     env_files = service.get('env_file') or []
     need(isinstance(env_files, list) and all(isinstance(p, str) for p in env_files),
          'ONBOARDING_ENV_FILE_INVALID')
@@ -168,9 +170,250 @@ def plan_document(plan):
                 private_bindings=normalized), service
 
 
+
+def components(plan):
+    return plan['components'] if plan.get('schema') == 2 else [plan]
+
+
+def relative_resource_path(value):
+    need(isinstance(value, str) and value and '\\' not in value and '\x00' not in value
+         and '$' not in value and not any(ord(c) < 32 for c in value), 'ONBOARDING_RESOURCE_PATH_INVALID')
+    path = PurePosixPath(value.removeprefix('./'))
+    need(not path.is_absolute() and '..' not in path.parts and path.parts
+         and path.parts[0] not in ('.git', '.secrets') and str(path) == value.removeprefix('./'),
+         'ONBOARDING_RESOURCE_PATH_INVALID')
+    return str(path)
+
+
+def bundle_plan_document(plan):
+    allowed = {'schema', 'service_name', 'image', 'compose_fragment', 'public_env_path',
+               'public_env_content', 'public_env_text', 'private_env_path', 'bindings',
+               'private_bindings', 'fingerprint', 'variables', 'components', 'service_names',
+               'images', 'compose_resources', 'resources', 'configuration_files'}
+    need(set(plan) <= allowed and type(plan.get('schema')) is int and plan['schema'] == 2,
+         'ONBOARDING_PLAN_INVALID')
+    rows = plan.get('components')
+    need(isinstance(rows, (list, tuple)) and 0 < len(rows) <= 50, 'ONBOARDING_COMPONENTS_INVALID')
+    normalized, services, aggregate = [], {}, {}
+    for row in rows:
+        need(isinstance(row, dict), 'ONBOARDING_COMPONENTS_INVALID')
+        value_names = row.get('value_names', {})
+        child, service = _single_plan_document({k: v for k, v in row.items() if k != 'value_names'}, True)
+        name = child['service_name']
+        need(name not in services and isinstance(value_names, dict)
+             and set(child['private_bindings']) <= set(value_names)
+             and all(isinstance(key, str) and KEY.fullmatch(key) and isinstance(value, str) and KEY.fullmatch(value)
+                     for key, value in value_names.items()), 'ONBOARDING_COMPONENTS_INVALID')
+        for key, source in child['private_bindings'].items():
+            selected = value_names[key]
+            need(isinstance(selected, str) and KEY.fullmatch(selected) and selected not in aggregate,
+                 'ONBOARDING_BINDINGS_INVALID')
+            aggregate[selected] = source
+        child['value_names'] = value_names
+        normalized.append(child)
+        services[name] = service
+    names = list(services)
+    need(plan.get('service_names') in (names, tuple(names))
+         and plan.get('images') == {row['service_name']: row['image'] for row in normalized}
+         and plan.get('private_bindings', {}) == aggregate, 'ONBOARDING_COMPONENTS_INVALID')
+    primary = plan.get('service_name')
+    need(primary in services, 'ONBOARDING_COMPONENTS_INVALID')
+    first = next(row for row in normalized if row['service_name'] == primary)
+    need(all(plan.get(key) == first[key] for key in ('service_name', 'image', 'public_env_path', 'private_env_path')),
+         'ONBOARDING_COMPONENTS_INVALID')
+    top = plan.get('compose_resources', {})
+    need(isinstance(top, dict) and set(top) <= {'volumes', 'networks', 'configs'}, 'ONBOARDING_COMPOSE_RESOURCES_INVALID')
+    for kind, definitions in top.items():
+        need(isinstance(definitions, dict) and all(isinstance(name, str) and RESOURCE_NAME.fullmatch(name)
+             and isinstance(definition, (dict, type(None))) for name, definition in definitions.items()),
+             'ONBOARDING_COMPOSE_RESOURCES_INVALID')
+    fragment = plan.get('compose_fragment')
+    need(isinstance(fragment, str) and fragment.startswith('  ')
+         and yaml_document('services:\n' + fragment) == {'services': services}, 'ONBOARDING_FRAGMENT_INVALID')
+    resources = plan.get('resources', [])
+    need(isinstance(resources, (list, tuple)) and len(resources) <= 300, 'ONBOARDING_RESOURCES_INVALID')
+    identifiers, targets = set(), set()
+    for resource in resources:
+        need(isinstance(resource, dict) and set(resource) == {'id', 'service', 'type', 'source', 'target',
+             'read_only', 'role', 'recovery'}, 'ONBOARDING_RESOURCES_INVALID')
+        name, target = resource.get('service'), resource.get('target')
+        need(name in services and isinstance(target, str) and target.startswith('/') and '..' not in PurePosixPath(target).parts
+             and '\\' not in target and '$' not in target and not any(ord(c) < 32 for c in target)
+             and (name, target) not in targets and isinstance(resource.get('id'), str)
+             and re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', resource['id']) and resource['id'] not in identifiers
+             and type(resource.get('read_only')) is bool, 'ONBOARDING_RESOURCES_INVALID')
+        identifiers.add(resource['id']); targets.add((name, target))
+        kind, source, role = resource['type'], resource['source'], resource['role']
+        method = resource.get('recovery', {}).get('method')
+        need(resource.get('recovery') == {'method': method} and kind in ('bind', 'volume', 'tmpfs', 'config')
+             and role in ('runtime', 'config', 'data', 'external') and method in ('recreate', 'stopped_archive', 'external'),
+             'ONBOARDING_RESOURCES_INVALID')
+        need(isinstance(source, str) and '$' not in source and '\x00' not in source
+             and not any(ord(c) < 32 for c in source), 'ONBOARDING_RESOURCE_PATH_INVALID')
+        if kind == 'bind':
+            if source.startswith('/'):
+                need('..' not in PurePosixPath(source).parts and '\\' not in source,
+                     'ONBOARDING_RESOURCE_PATH_INVALID')
+            else:
+                relative_resource_path(source)
+        elif kind == 'volume':
+            need(RESOURCE_NAME.fullmatch(source), 'ONBOARDING_RESOURCES_INVALID')
+        need((role != 'data' or method == 'stopped_archive') and
+             (role not in ('runtime', 'config') or method == 'recreate') and
+             (role != 'external' or method in ('recreate', 'external')) and
+             (not resource['read_only'] or role != 'data'), 'ONBOARDING_RECOVERY_POLICY_INVALID')
+        if role == 'runtime':
+            runtime_source = source == '/' or any(source == base or source.startswith(base + '/')
+                for base in ('/proc', '/sys', '/dev', '/run', '/var/run', '/var/lib/docker')) or (
+                source.startswith('/') and source.endswith('.sock')) or source in ('/etc/localtime', '/etc/timezone')
+            need(kind == 'tmpfs' or kind == 'bind' and runtime_source, 'ONBOARDING_RUNTIME_POLICY_INVALID')
+        mounts = services[name].get('volumes') or []
+        need(isinstance(mounts, list), 'ONBOARDING_RESOURCES_INVALID')
+        if kind in ('bind', 'volume', 'tmpfs'):
+            matches = [mount for mount in mounts if isinstance(mount, dict) and mount.get('target') == target]
+            if kind == 'tmpfs' and not matches:
+                tmpfs = services[name].get('tmpfs') or []
+                tmpfs = [tmpfs] if isinstance(tmpfs, str) else tmpfs
+                need(isinstance(tmpfs, list) and any(isinstance(value, str) and value.split(':', 1)[0] == target
+                     for value in tmpfs) and source == '' and role == 'runtime', 'ONBOARDING_MOUNT_INVENTORY_MISMATCH')
+            else:
+                need(len(matches) == 1 and matches[0].get('type') == kind
+                     and matches[0].get('source', '') == source
+                     and bool(matches[0].get('read_only', False)) == resource['read_only'], 'ONBOARDING_MOUNT_INVENTORY_MISMATCH')
+        elif kind == 'config':
+            matches = []
+            for reference in services[name].get('configs', []):
+                config_name = reference if isinstance(reference, str) else reference.get('source') if isinstance(reference, dict) else None
+                selected_target = '/' + config_name if isinstance(reference, str) else reference.get('target', '/' + str(config_name)) if isinstance(reference, dict) else ''
+                if selected_target == target:
+                    definition = top.get('configs', {}).get(config_name, {}) or {}
+                    expected_source = definition.get('file', 'config:' + str(config_name)).removeprefix('./')
+                    matches.append(expected_source)
+            need(matches == [source] and resource['read_only'], 'ONBOARDING_MOUNT_INVENTORY_MISMATCH')
+    for name, service in services.items():
+        need(not ({'secrets', 'volumes_from'} & set(service)), 'ONBOARDING_EXTERNAL_CONFIGURATION_UNSUPPORTED')
+        actual_targets = []
+        mounts = service.get('volumes') or []
+        need(isinstance(mounts, list) and all(isinstance(mount, dict) for mount in mounts),
+             'ONBOARDING_MOUNT_INVENTORY_MISMATCH')
+        actual_targets.extend(mount.get('target') for mount in mounts)
+        tmpfs = service.get('tmpfs') or []
+        tmpfs = [tmpfs] if isinstance(tmpfs, str) else tmpfs
+        need(isinstance(tmpfs, list) and all(isinstance(value, str) for value in tmpfs), 'ONBOARDING_MOUNT_INVENTORY_MISMATCH')
+        actual_targets.extend(value.split(':', 1)[0] for value in tmpfs)
+        configs = service.get('configs') or []
+        need(isinstance(configs, list) and all(isinstance(value, (str, dict)) for value in configs),
+             'ONBOARDING_MOUNT_INVENTORY_MISMATCH')
+        actual_targets.extend('/' + value if isinstance(value, str) else value.get('target', '/' + str(value.get('source')))
+                              for value in configs)
+        need(len(actual_targets) == len(set(actual_targets)) and
+             set(actual_targets) == {target for selected_name, target in targets if selected_name == name},
+             'ONBOARDING_MOUNT_INVENTORY_MISMATCH')
+    files = plan.get('configuration_files', [])
+    need(isinstance(files, (list, tuple)) and len(files) <= 200, 'ONBOARDING_CONFIGURATION_FILES_INVALID')
+    seen, normalized_files = set(), []
+    reserved = {row['public_env_path'] for row in normalized}
+    for entry in files:
+        need(isinstance(entry, dict) and set(entry) <= {'path', 'content', 'mode', 'sha256'},
+             'ONBOARDING_CONFIGURATION_FILES_INVALID')
+        path = relative_resource_path(entry.get('path'))
+        selected = PurePosixPath(path)
+        content, mode = entry.get('content'), entry.get('mode', 0o640)
+        need(len(selected.parts) >= 4 and selected.parts[0] == 'data' and selected.parts[1] in services and selected.parts[2] == 'public'
+             and path not in reserved and path not in seen and '.git' not in selected.parts and '.secrets' not in selected.parts
+             and isinstance(content, str) and '\x00' not in content and len(content.encode()) <= MAX_FILE
+             and type(mode) is int and 0 <= mode <= 0o777, 'ONBOARDING_CONFIGURATION_FILES_INVALID')
+        need(any(row['role'] == 'config' and row['source'].removeprefix('./') == path
+                 or row['type'] == 'bind' and not row['source'].startswith('/') and
+                 path.startswith(row['source'].removeprefix('./').rstrip('/') + '/') for row in resources),
+             'ONBOARDING_CONFIGURATION_FILE_NOT_MOUNTED')
+        actual = digest(content.encode())
+        need('sha256' not in entry or entry['sha256'] == actual, 'ONBOARDING_CONFIGURATION_HASH_INVALID')
+        normalized_files.append(dict(path=path, content=content, mode=mode, sha256=actual)); seen.add(path)
+    for resource in resources:
+        if resource['type'] == 'bind' and resource['role'] == 'config':
+            source = resource['source'].removeprefix('./')
+            need(source in seen or any(path.startswith(source.rstrip('/') + '/') for path in seen),
+                 'ONBOARDING_CONFIGURATION_RESOURCE_MISSING')
+    public_targets = seen | {row['public_env_path'] for row in normalized}
+    for resource in resources:
+        if resource['type'] == 'bind' and resource['recovery']['method'] == 'stopped_archive':
+            source = resource['source'].removeprefix('./').rstrip('/')
+            need(not any(path == source or path.startswith(source + '/') for path in public_targets),
+                 'ONBOARDING_CONFIGURATION_DATA_OVERLAP')
+    for entry in normalized_files:
+        need(any(row['read_only'] and (row['source'].removeprefix('./') == entry['path']
+                 or row['type'] == 'bind' and entry['path'].startswith(row['source'].removeprefix('./').rstrip('/') + '/'))
+                 for row in resources), 'ONBOARDING_CONFIGURATION_READ_ONLY_REQUIRED')
+    result = dict(first, schema=2, components=normalized, service_names=names,
+                  images={name: services[name]['image'] for name in names}, private_bindings=aggregate,
+                  compose_fragment=fragment, compose_resources=top, resources=list(resources),
+                  configuration_files=normalized_files)
+    result.pop('value_names', None)
+    return result, services[first['service_name']]
+
+
+def plan_document(plan):
+    need(isinstance(plan, dict), 'ONBOARDING_PLAN_INVALID')
+    return bundle_plan_document(plan) if plan.get('schema') == 2 else _single_plan_document(plan)
+
+
+def insert_mapping_entries(text, section, additions):
+    """Add entries without changing any byte belonging to an existing mapping."""
+    if not additions:
+        return text
+    document = yaml_document(text)
+    previous = document.get(section, {})
+    need(isinstance(previous, dict), 'ONBOARDING_EXISTING_COMPOSE_UNSUPPORTED')
+    for name in set(previous) & set(additions):
+        need(previous[name] == additions[name], 'ONBOARDING_COMPOSE_RESOURCE_CONFLICT')
+    additions = {key: value for key, value in additions.items() if key not in previous}
+    if not additions:
+        return text
+    newline = '\r\n' if '\r\n' in text else '\n'
+    if section not in document:
+        body = yaml.safe_dump({section: additions}, sort_keys=False, allow_unicode=True).replace('\n', newline)
+        return text + ('' if text.endswith(('\n', '\r')) else newline) + newline + body
+    node = mapping_value(yaml.compose(text), section)
+    need(isinstance(node, yaml.MappingNode) and not node.flow_style, 'ONBOARDING_EXISTING_COMPOSE_UNSUPPORTED')
+    position = node.end_mark.index
+    beginning = text.rfind('\n', 0, position) + 1
+    if not text[beginning:position].strip():
+        position = beginning
+    body = yaml.safe_dump(additions, sort_keys=False, allow_unicode=True)
+    body = ''.join('  ' + line + '\n' for line in body.splitlines()).replace('\n', newline)
+    prefix, suffix = text[:position], text[position:]
+    return prefix + ('' if prefix.endswith(('\n', '\r')) else newline) + newline + body + suffix
+
+
+def merge_bundle_compose(raw, plan):
+    text = raw.decode('utf-8') if isinstance(raw, bytes) else raw
+    before = yaml_document(text)
+    need(isinstance(before, dict) and isinstance(before.get('services'), dict) and 'include' not in before,
+         'ONBOARDING_EXISTING_COMPOSE_UNSUPPORTED')
+    addition = yaml_document('services:\n' + plan['compose_fragment'])['services']
+    need(not set(addition) & set(before['services']), 'ONBOARDING_SERVICE_ALREADY_EXISTS')
+    names = set(before['services']) | set(addition)
+    for service in addition.values():
+        dependencies = service.get('depends_on') or {}
+        need(isinstance(dependencies, (dict, list)) and set(dependencies) <= names, 'ONBOARDING_DEPENDENCY_MISSING')
+        mode = service.get('network_mode', '')
+        need(not isinstance(mode, str) or not mode.startswith('service:') or mode[8:] in names,
+             'ONBOARDING_DEPENDENCY_MISSING')
+    result = insert_mapping_entries(text, 'services', addition)
+    for kind, definitions in plan['compose_resources'].items():
+        result = insert_mapping_entries(result, kind, definitions)
+    expected = dict(before, services=dict(before['services'], **addition))
+    for kind, definitions in plan['compose_resources'].items():
+        expected[kind] = dict(before.get(kind, {}), **definitions)
+    need(yaml_document(result) == expected, 'ONBOARDING_COMPOSE_MERGE_INVALID')
+    return result.encode('utf-8')
+
 def merge_compose(raw, plan):
     """Insert a service inside the existing block without rewriting any byte."""
     plan, service = plan_document(plan)
+    if plan.get('schema') == 2:
+        return merge_bundle_compose(raw, plan)
     text = raw.decode('utf-8') if isinstance(raw, bytes) else raw
     document = yaml_document(text)
     need(isinstance(document, dict) and isinstance(document.get('services'), dict)
@@ -752,9 +995,119 @@ class Engine:
         return dict(kind=kind, config=str(config), directory_mode=directory_mode,
                     output=dict(uid=owner, gid=self.layout.gid, mode=mode), api_address=api_address), agent
 
+    def resource_inventory(self, plan):
+        target = self.layout.root / 'config/service-resources.json'
+        previous = self.store.snapshot(target) if self.store.exists(target) else None
+        value = load_json(previous.raw) if previous else dict(schema=1, resources=[], configuration_files=[])
+        need(isinstance(value, dict) and value.get('schema') == 1
+             and isinstance(value.get('resources'), list) and isinstance(value.get('configuration_files'), list),
+             'ONBOARDING_RESOURCE_INVENTORY_INVALID')
+        names = set(plan['service_names'])
+        need(not any(row.get('service') in names for row in value['resources']), 'ONBOARDING_RESOURCE_INVENTORY_CONFLICT')
+        files = [{key: row[key] for key in ('path', 'mode', 'sha256')} for row in plan['configuration_files']]
+        old_paths = {row.get('path') for row in value['configuration_files']}
+        need(not old_paths & {row['path'] for row in files}, 'ONBOARDING_RESOURCE_INVENTORY_CONFLICT')
+        result = dict(schema=1, resources=value['resources'] + plan['resources'],
+                      configuration_files=value['configuration_files'] + files)
+        return target, canonical_json(result) + b'\n', previous
+
+    def resource_preflight(self, plan):
+        root = self.layout.root
+        configuration = {row['path'] for row in plan['configuration_files']}
+        for row in plan['resources']:
+            if row['type'] not in ('bind', 'config'):
+                continue
+            source = row['source']
+            if row['type'] == 'config' and source.startswith('config:'):
+                definition = plan['compose_resources'].get('configs', {}).get(source[7:], {}) or {}
+                need('content' in definition or definition.get('external') or 'environment' in definition,
+                     'ONBOARDING_CONFIGURATION_RESOURCE_MISSING')
+                continue
+            target = PurePosixPath(source) if source.startswith('/') else root / source.removeprefix('./')
+            if row['role'] == 'runtime':
+                option = '-S' if source.endswith('.sock') else '-e'
+                # Runtime paths may include the distribution's /var/run symlink;
+                # they are consumed by Docker and never traversed by the archiver.
+                self.runner.run(['test', option, target], 'ONBOARDING_RUNTIME_RESOURCE_MISSING')
+            elif row['role'] == 'external':
+                relative = str(target.relative_to(root)) if target.is_relative_to(root) else ''
+                supplied = relative and (relative in configuration or any(path.startswith(relative.rstrip('/') + '/') for path in configuration))
+                if not supplied:
+                    self.runner.run(['test', '-e', target], 'ONBOARDING_EXTERNAL_RESOURCE_MISSING')
+            else:
+                need(target.is_relative_to(root) and len(target.relative_to(root).parts) >= 2
+                     and target.relative_to(root).parts[0] == 'data', 'ONBOARDING_DATA_RESOURCE_OUTSIDE_STACK')
+                self.store.safe(target)
+                relative = str(target.relative_to(root))
+                if row['role'] == 'config':
+                    covered = relative in configuration or any(path.startswith(relative.rstrip('/') + '/') for path in configuration)
+                    need(covered or self.store.exists(target), 'ONBOARDING_CONFIGURATION_RESOURCE_MISSING')
+        for row in plan['configuration_files']:
+            need(not self.store.exists(root / row['path']), 'ONBOARDING_OUTPUT_EXISTS')
+        if any(row['recovery']['method'] == 'stopped_archive' for row in plan['resources']):
+            if self.verification_scope != 'local_lab':
+                script = PurePosixPath('/usr/local/sbin/streams-aio-services-dr-backup')
+                need(self.store.exists(script), 'ONBOARDING_RESOURCE_BACKUP_CAPABILITY_REQUIRED')
+                self.runner.run(['test', '-x', script], 'ONBOARDING_RESOURCE_BACKUP_CAPABILITY_REQUIRED')
+
+    def ensure_public_parents(self, target):
+        root = self.layout.root
+        need(target.is_relative_to(root), 'ONBOARDING_RESOURCE_PATH_INVALID')
+        parents = list(target.relative_to(root).parents)
+        for parent in reversed(parents[:-1]):
+            directory = root / parent
+            if not self.store.exists(directory):
+                self.store.directory(directory, self.layout.uid, self.layout.gid, 0o750, create=True, public=True)
+            else:
+                self.store.safe(directory)
+
+    def inspect_bundle(self, request, plan, service):
+        self.pipeline_readiness()
+        root = self.layout.root
+        need(self.store.exists(root), 'ONBOARDING_STACK_NOT_FOUND')
+        compose = self.store.snapshot(root / 'docker-compose.yml')
+        result = merge_compose(compose.raw, plan)
+        self.resource_preflight(plan)
+        for child in components(plan):
+            need(not self.store.exists(root / child['public_env_path']) and
+                 not self.store.exists(root / child['private_env_path']), 'ONBOARDING_OUTPUT_EXISTS')
+        inventory_target, inventory_raw, inventory_before = self.resource_inventory(plan)
+        project, environment = request.get('project_id', ''), request.get('environment', '')
+        agent, agent_result = None, None
+        profile = dict(kind='not_required', output=None, api_address='')
+        if plan['private_bindings']:
+            profile, agent = self.agent_profile()
+            agent_result = agent.raw
+            for child in components(plan):
+                if child['private_bindings']:
+                    agent_result = extend_agent(agent_result, root, child, project, environment, profile['kind'])
+        health_probe = probe_url(request.get('probe_url', ''), service)
+        source = dict(root=str(root), owner=self.layout.user, plan=plan, project=project,
+                      environment=environment, probe_url=health_probe, compose=compose.identity(),
+                      agent=agent.identity() if agent else None, agent_profile=profile,
+                      inventory=inventory_before.identity() if inventory_before else None,
+                      verification_scope=self.verification_scope,
+                      machine=digest(self.store.read(PurePosixPath('/etc/machine-id'), 256)))
+        return dict(schema=2, status='PREVIEW', fingerprint=digest(canonical_json(source)),
+                    verification_scope=self.verification_scope, service=plan['service_name'],
+                    services=plan['service_names'], image=plan['image'], images=plan['images'], stack_root=str(root),
+                    public_files=[child['public_env_path'] for child in components(plan)] +
+                                 [row['path'] for row in plan['configuration_files']] +
+                                 ['docker-compose.yml', 'config/service-resources.json'],
+                    private_env=plan['private_env_path'] if plan['private_bindings'] else None,
+                    private_envs=[child['private_env_path'] for child in components(plan) if child['private_bindings']],
+                    private_keys=sorted(plan['private_bindings']), project_id=project, environment=environment,
+                    resources=plan['resources'], agent_kind=profile['kind'], agent_output=profile['output'],
+                    api_address=profile['api_address'], application_probe=health_probe or 'Docker HEALTHCHECK required',
+                    _plan=plan, _service=service, _compose=compose, _compose_result=result,
+                    _agent=agent, _agent_result=agent_result, _agent_profile=profile,
+                    _inventory_target=inventory_target, _inventory_raw=inventory_raw, _inventory_before=inventory_before)
+
     def inspect(self, request):
         self.configure_scope(request)
         plan, service = plan_document(request.get('plan'))
+        if plan.get('schema') == 2:
+            return self.inspect_bundle(request, plan, service)
         self.pipeline_readiness()
         root = self.layout.root
         need(self.store.exists(root), 'ONBOARDING_STACK_NOT_FOUND')
@@ -794,7 +1147,8 @@ class Engine:
 
     def safe_result(self, journal, status=None):
         return dict(schema=1, status=status or journal['phase'], job_id=journal['job_id'],
-                    service=journal['plan']['service_name'], phase=journal['phase'],
+                    service=journal['plan']['service_name'], services=[child['service_name'] for child in components(journal['plan'])],
+                    phase=journal['phase'],
                     public_commit=journal.get('public_commit'), backup_tag=journal.get('backup_tag'),
                     application_verified=journal.get('application_verified', False),
                     backup_integrity_verified=journal.get('backup_integrity_verified', False),
@@ -830,6 +1184,12 @@ class Engine:
         raise Refused('ONBOARDING_AGENT_RENDER_FAILED')
 
     def health(self, journal):
+        if journal['plan'].get('schema') == 2:
+            for child in components(journal['plan']):
+                primary = child['service_name'] == journal['plan']['service_name']
+                self.health(dict(journal, plan=child, probe_url=journal.get('probe_url', '') if primary else '',
+                                 _bundle_sidecar=not primary))
+            return
         service = journal['plan']['service_name']
         stable = 0
         for _ in range(90):
@@ -851,7 +1211,12 @@ class Engine:
                     if stable >= 3:
                         return
                 elif state.get('Status') == 'running':
-                    raise Refused('ONBOARDING_APPLICATION_PROBE_REQUIRED')
+                    if journal.get('_bundle_sidecar'):
+                        stable += 1
+                        if stable >= 3:
+                            return
+                    else:
+                        raise Refused('ONBOARDING_APPLICATION_PROBE_REQUIRED')
             self.runner.sleep(2)
         raise Refused('ONBOARDING_APPLICATION_HEALTH_TIMEOUT')
 
@@ -872,7 +1237,7 @@ class Engine:
                     if output.get('before'):
                         old = Snapshot.restore(output['before'])
                         self.store.write(target, old.raw, old.uid, old.gid, old.mode, current,
-                                         public=name in ('compose', 'public_env'))
+                                         public=name in ('compose', 'public_env') or name.startswith(('public_env:', 'configuration:', 'inventory')))
                     else:
                         self.store.unlink(target, output['expected'])
                 elif not output.get('before') or digest(current.raw) != output['before']['sha256']:
@@ -881,8 +1246,19 @@ class Engine:
                 value = journal['private_output']
                 if self.store.exists(PurePosixPath(value['path'])):
                     self.store.unlink(PurePosixPath(value['path']), value['sha256'])
-            elif journal['plan']['private_bindings'] and self.store.exists(self.layout.root / journal['plan']['private_env_path']):
+            elif journal.get('private_outputs'):
+                for value in journal['private_outputs']:
+                    if self.store.exists(PurePosixPath(value['path'])):
+                        self.store.unlink(PurePosixPath(value['path']), value['sha256'])
+            elif journal['plan']['private_bindings'] and any(self.store.exists(self.layout.root / child['private_env_path'])
+                    for child in components(journal['plan']) if child['private_bindings']):
                 complete = False  # Unknown partial output is retained for review.
+            if journal.get('private_outputs') is not None:
+                known = {value['path'] for value in journal['private_outputs']}
+                if any(str(self.layout.root / child['private_env_path']) not in known and
+                       self.store.exists(self.layout.root / child['private_env_path'])
+                       for child in components(journal['plan']) if child['private_bindings']):
+                    complete = False
         except Exception:
             complete = False
         finally:
@@ -925,6 +1301,8 @@ class Engine:
             preview = self.inspect(request)
             need(request.get('fingerprint') == preview['fingerprint'], 'ONBOARDING_PREVIEW_STALE')
             plan = preview['_plan']
+            if plan.get('schema') == 2:
+                return self.apply_bundle(request, job, preview)
             journal = dict(schema=1, job_id=job, root=str(self.layout.root), owner=self.layout.user,
                            plan=plan, fingerprint=preview['fingerprint'], phase='PREPARED',
                            agent_profile=preview['_agent_profile'],
@@ -986,6 +1364,70 @@ class Engine:
                 self.save(journal)
                 return dict(self.safe_result(journal, 'REFUSED'), code=code)
 
+    def apply_bundle(self, request, job, preview):
+        plan, root = preview['_plan'], self.layout.root
+        journal = dict(schema=2, job_id=job, root=str(root), owner=self.layout.user, plan=plan,
+                       fingerprint=preview['fingerprint'], phase='PREPARED', agent_profile=preview['_agent_profile'],
+                       verification_scope=self.verification_scope, request_identity=self.request_identity(request),
+                       probe_url=request.get('probe_url', ''), outputs={}, agent_changed=False, private_outputs=[])
+        files = [('public_env:' + child['service_name'], root / child['public_env_path'],
+                  child['public_env_text'].encode(), None, 0o640) for child in components(plan)]
+        files += [('configuration:' + row['path'], root / row['path'], row['content'].encode(), None, row['mode'])
+                  for row in plan['configuration_files']]
+        files += [('inventory', preview['_inventory_target'], preview['_inventory_raw'], preview['_inventory_before'], 0o640),
+                  ('compose', root / 'docker-compose.yml', preview['_compose_result'], preview['_compose'], preview['_compose'].mode)]
+        if preview['_agent']:
+            files.append(('agent', PurePosixPath(preview['_agent'].path), preview['_agent_result'],
+                          preview['_agent'], preview['_agent'].mode))
+        for name, target, raw, before, mode in files:
+            journal['outputs'][name] = dict(path=str(target), expected=digest(raw), before=before.saved() if before else None)
+        self.save(journal)
+        try:
+            need(self.store.exists(root / 'data'), 'ONBOARDING_DATA_DIRECTORY_MISSING')
+            for row in plan['resources']:
+                if row['type'] == 'bind' and row['role'] == 'data':
+                    target = PurePosixPath(row['source']) if row['source'].startswith('/') else root / row['source'].removeprefix('./')
+                    self.ensure_public_parents(target / '.onboarding-directory')
+            for name, target, raw, before, mode in files:
+                if name == 'agent':
+                    journal['agent_changed'] = True
+                    self.save(journal)
+                self.ensure_public_parents(target) if name != 'agent' else None
+                uid, gid = (before.uid, before.gid) if before else (self.layout.uid, self.layout.gid)
+                item = self.store.write(target, raw, uid, gid, mode, before, public=name != 'agent')
+                journal['outputs'][name]['after'] = item.identity()
+                self.save(journal)
+            if preview['_agent_result'] is not None:
+                self.runner.run(['systemctl', 'restart', AGENT_UNIT], 'ONBOARDING_AGENT_RESTART_FAILED')
+                for child in components(plan):
+                    if child['private_bindings']:
+                        item = self.generated_env(child, profile=journal['agent_profile'])
+                        journal['private_outputs'].append(dict(path=item.path, sha256=digest(item.raw)))
+                        self.save(journal)
+            journal['phase'] = 'FILES_WRITTEN'; self.save(journal)
+            self.compose('config', '--quiet')
+            names = plan['service_names']
+            self.compose('pull', '--', *names)
+            for child in components(plan):
+                volumes = load_json(self.runner.run(['docker', 'image', 'inspect', '--format', '{{json .Config.Volumes}}',
+                                                     child['image']], 'ONBOARDING_IMAGE_METADATA_FAILED'))
+                need(volumes is None or isinstance(volumes, dict), 'ONBOARDING_IMAGE_METADATA_FAILED')
+                targets = [row['target'].rstrip('/') or '/' for row in plan['resources']
+                           if row['service'] == child['service_name'] and row['type'] in ('bind', 'volume', 'tmpfs')]
+                need(all(any(target == '/' or declared == target or declared.startswith(target + '/')
+                             for target in targets) for declared in (volumes or {})),
+                     'ONBOARDING_ANONYMOUS_VOLUME_MAPPING_REQUIRED')
+            journal['phase'] = 'START_ATTEMPTED'; self.save(journal)
+            self.compose('up', '-d', '--no-deps', '--pull', 'missing', '--', *names)
+            self.health(journal)
+            journal.update(phase='SERVICE_READY', application_verified=True); self.save(journal)
+            return self.safe_result(journal)
+        except Exception as error:
+            code = str(error) if isinstance(error, Refused) else 'ONBOARDING_APPLY_FAILED'
+            journal['phase'] = ('ROLLED_BACK' if self.rollback(journal) else 'REVIEW_REQUIRED') if journal['phase'] != 'START_ATTEMPTED' else 'REVIEW_REQUIRED'
+            journal['failure_code'] = code; self.save(journal)
+            return dict(self.safe_result(journal, 'REFUSED'), code=code)
+
     def unchanged(self, journal):
         for name, output in journal['outputs'].items():
             item = self.store.snapshot(PurePosixPath(output['path']))
@@ -993,12 +1435,18 @@ class Engine:
             need(digest(item.raw) == output['expected'] and isinstance(expected, dict)
                  and (item.uid, item.gid) == (expected['uid'], expected['gid'])
                  and (item.mode & ~0o070 == expected['mode'] & ~0o070
-                      if name in ('compose', 'public_env') else item.mode == expected['mode'])
+                      if name in ('compose', 'public_env', 'inventory') or name.startswith(('public_env:', 'configuration:')) else item.mode == expected['mode'])
                  and {key: digest(value) for key, value in item.attributes.items()
                       if name == 'agent' or key not in ACL_ATTRIBUTES} ==
                      {key: value for key, value in expected['attributes'].items()
                       if name == 'agent' or key not in ACL_ATTRIBUTES},
                  'ONBOARDING_INSTALLED_FILES_CHANGED')
+        if journal.get('private_outputs'):
+            current, _ = self.agent_profile()
+            need(current == journal['agent_profile'], 'ONBOARDING_AGENT_PROFILE_CHANGED')
+            for child in components(journal['plan']):
+                if child['private_bindings']:
+                    self.generated_env(child, 2, current)
         if journal.get('private_output'):
             current, _ = self.agent_profile()
             need(current == journal['agent_profile'], 'ONBOARDING_AGENT_PROFILE_CHANGED')
@@ -1016,6 +1464,20 @@ class Engine:
     def public_readback(self, journal, commit):
         need(isinstance(commit, str) and SHA.fullmatch(commit), 'ONBOARDING_PUBLIC_RECEIPT_INVALID')
         plan = journal['plan']
+        if plan.get('schema') == 2:
+            for child in components(plan):
+                self.public_readback(dict(journal, plan=child), commit)
+            observed = yaml_document(self.github_file(PUBLIC, 'docker-compose.yml', commit))
+            for kind, definitions in plan['compose_resources'].items():
+                need(all(observed.get(kind, {}).get(key) == value for key, value in definitions.items()),
+                     'ONBOARDING_PUBLIC_RESOURCE_READBACK_FAILED')
+            for row in plan['configuration_files']:
+                need(digest(self.github_file(PUBLIC, row['path'], commit)) == row['sha256'],
+                     'ONBOARDING_PUBLIC_CONFIGURATION_READBACK_FAILED')
+            inventory = self.github_file(PUBLIC, 'config/service-resources.json', commit)
+            need(digest(inventory) == journal['outputs']['inventory']['expected'],
+                 'ONBOARDING_PUBLIC_RESOURCE_READBACK_FAILED')
+            return
         compose = yaml_document(self.github_file(PUBLIC, 'docker-compose.yml', commit))
         service = compose.get('services', {}).get(plan['service_name'])
         need(isinstance(service, dict), 'ONBOARDING_PUBLIC_SERVICE_MISSING')
@@ -1138,7 +1600,14 @@ class Engine:
         need(bool(selected), 'ONBOARDING_NEW_BACKUP_NOT_FOUND')
         release = sorted(selected, key=lambda row: row['tag_name'], reverse=True)[0]
         assets = release.get('assets', [])
-        need(len(assets) == 8 and {row.get('name') for row in assets} == FILES
+        inventory_path = self.layout.root / 'config/service-resources.json'
+        inventory_raw = self.store.read(inventory_path) if self.store.exists(inventory_path) else None
+        inventory = load_json(inventory_raw) if inventory_raw else {}
+        requires_services = any(row.get('recovery', {}).get('method') == 'stopped_archive'
+                                for row in inventory.get('resources', []))
+        encrypted_assets = ASSETS | ({SERVICES_ASSET} if requires_services else set())
+        files = encrypted_assets | {'manifest.json', 'SHA256SUMS'}
+        need(len(assets) == len(files) and {row.get('name') for row in assets} == files
              and all(row.get('state') == 'uploaded' for row in assets), 'ONBOARDING_BACKUP_ASSETS_INVALID')
         # Download and hash every encrypted asset. Plaintext identities are never
         # present on this VM; archive content decryption is a separate offline test.
@@ -1147,7 +1616,7 @@ class Engine:
             need(type(row.get('size')) is int and 0 < row['size'] <= 1024**3 and type(row.get('id')) is int,
                  'ONBOARDING_BACKUP_ASSETS_INVALID')
             endpoint = 'repos/' + PRIVATE + '/releases/assets/' + str(row['id'])
-            if row['name'] in ASSETS:
+            if row['name'] in encrypted_assets:
                 item = self.runner.asset_digest(endpoint, row['size'])
                 need(item['prefix'].startswith(b'age-encryption.org/v1\n'), 'ONBOARDING_BACKUP_NOT_ENCRYPTED')
                 downloads[row['name']] = {key: item[key] for key in ('sha256', 'size')}
@@ -1162,15 +1631,18 @@ class Engine:
                 sums_raw = raw
         need(manifest.get('schema') == 2 and manifest.get('repository') == PRIVATE
              and manifest.get('encryption') == 'age' and release['tag_name'] == 'dr-' + manifest.get('run', '')
-             and set(manifest.get('artifacts', {})) == ASSETS, 'ONBOARDING_BACKUP_MANIFEST_INVALID')
-        need(all(manifest['artifacts'][name] == downloads[name] for name in ASSETS),
+             and set(manifest.get('artifacts', {})) == encrypted_assets, 'ONBOARDING_BACKUP_MANIFEST_INVALID')
+        if requires_services:
+            need(manifest.get('services_inventory_sha256') == digest(inventory_raw),
+                 'ONBOARDING_BACKUP_RESOURCE_COVERAGE_MISMATCH')
+        need(all(manifest['artifacts'][name] == downloads[name] for name in encrypted_assets),
              'ONBOARDING_BACKUP_CHECKSUM_MISMATCH')
         sums = {}
         for line in sums_raw.decode('ascii').splitlines():
             match = re.fullmatch(r'([0-9a-f]{64}) [ *]([A-Za-z0-9_.-]+)', line)
             need(match is not None and match[2] not in sums, 'ONBOARDING_BACKUP_CHECKSUM_INVALID')
             sums[match[2]] = match[1]
-        need(set(sums) == ASSETS | {'manifest.json'} and
+        need(set(sums) == encrypted_assets | {'manifest.json'} and
              all(downloads[name]['sha256'] == value for name, value in sums.items()),
              'ONBOARDING_BACKUP_CHECKSUM_MISMATCH')
         commit = manifest.get('stack_commit')
@@ -1179,6 +1651,9 @@ class Engine:
         need(comparison.get('status') in ('ahead', 'identical') and comparison.get('behind_by') == 0,
              'ONBOARDING_BACKUP_PUBLIC_COMMIT_MISMATCH')
         self.public_readback(journal, commit)
+        if requires_services:
+            need(digest(self.github_file(PUBLIC, 'config/service-resources.json', commit)) == digest(inventory_raw),
+                 'ONBOARDING_BACKUP_RESOURCE_COVERAGE_MISMATCH')
         self.unchanged(journal)
         self.health(journal)
         journal.update(phase='COMPLETE', backup_tag=release['tag_name'], backup_stack_commit=commit,

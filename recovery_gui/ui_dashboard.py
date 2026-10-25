@@ -622,7 +622,7 @@ class App(tk.Tk):
                 stage, status = value['stage'], value['status']
                 self.phase_event(stage, status)
                 extra = {'DOMAINS': 'Domini dello stack', 'PUBLIC_COMETNET': 'CometNet sul dominio',
-                         'NPM_TOPOLOGY': 'Collegamenti NPM alle nuove VM',
+                         'SERVICES': 'Dati dei servizi', 'NPM_TOPOLOGY': 'Collegamenti NPM alle nuove VM',
                          'OPERATIONAL_PROFILE': 'Configurazione per i domini del recupero',
                          'PUBLIC_DOMAINS': 'NPM, HTTPS e dominio CometNet',
                          'TAILSCALE': 'Controller Headscale e registrazione Tailscale',

@@ -1,5 +1,6 @@
 """Headless workflow tests: no Tk window, live VM or credentials are used."""
 import ast
+import json
 from pathlib import Path
 import queue
 import tempfile
@@ -13,6 +14,7 @@ from recovery_gui.ui_onboarding import (
     InputFailure, OnboardingState, ServiceOnboardingPanel, STAGES,
     connection_from_snapshot, infisical_from_fields, safe_code,
     safe_stage_event, verified_completion, verified_local_completion,
+    resource_editor_inputs, plan_public_metadata, plan_summary, ERROR_TEXT,
 )
 
 
@@ -369,6 +371,8 @@ class MainThreadFlowTests(unittest.TestCase):
             SimpleNamespace(name='CUSTOM', suggested_private=False),
             SimpleNamespace(name='API_KEY', suggested_private=True),
         )
+        view._planner.return_value.inspect_resources.return_value = ()
+        view.resources.get_children.return_value = ()
         view.state = OnboardingState(private_values={'CUSTOM': SECRET, 'API_KEY': SECRET})
         ServiceOnboardingPanel.analyse_variables(view)
         self.assertEqual(view.private_names, {'API_KEY'})
@@ -477,6 +481,81 @@ class MainThreadFlowTests(unittest.TestCase):
         self.assertNotIn('tk.Tk', names)
         self.assertNotIn('SSH', names)
         self.assertNotIn('subprocess.run', names)
+
+
+class GenericServicePresentationTests(unittest.TestCase):
+    def test_optional_resource_editors_parse_public_files_and_omit_empty_lists(self):
+        self.assertEqual(resource_editor_inputs(), {})
+        self.assertEqual(resource_editor_inputs('[]', '[]'), {})
+        files = [dict(path='data/demo/public/settings.yaml', content='title: Demo\n', mode=420)]
+        policies = [dict(service='demo', target='/data', method='stopped_archive')]
+        self.assertEqual(resource_editor_inputs(json.dumps(files), json.dumps(policies)),
+                         dict(configuration_files=files, storage_policies=policies))
+
+    def test_invalid_editor_text_has_fixed_errors_without_input_excerpts(self):
+        for source in (SECRET, '{}', '["' + SECRET + '"]', '[{"path":"a","path":"b"}]'):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(InputFailure, '^SERVICE_CONFIGURATION_INVALID$') as result:
+                    resource_editor_inputs(source)
+                self.assertNotIn(SECRET, str(result.exception))
+        with self.assertRaisesRegex(InputFailure, '^SERVICE_STORAGE_POLICY_INVALID$'):
+            resource_editor_inputs('', SECRET)
+
+    def test_recap_and_export_projection_remove_contents_and_keep_all_recovery_methods(self):
+        public = dict(schema=2, service_names=['demo', 'helper'], images={'demo': 'example/demo'},
+            private_bindings={'DEMO__PASSWORD': {'key': 'PASSWORD', 'value': SECRET}},
+            components=[dict(service_name='demo', public_env_text=SECRET, compose_fragment=SECRET,
+                             private_bindings={'PASSWORD': {'value': SECRET}})],
+            configuration_files=[dict(path='data/demo/public/settings.yaml', mode=420, content=SECRET, sha256='a'*64)],
+            resources=[dict(service='demo', source='data/demo/state', target='/data', role='data',
+                            read_only=False, recovery={'method':'stopped_archive', 'private': SECRET}),
+                       dict(service='helper', source='/proc', target='/host/proc', role='runtime',
+                            read_only=True, recovery={'method':'recreate'}),
+                       dict(service='demo', source='existing', target='/external', role='external',
+                            read_only=False, recovery={'method':'external'})],
+            private_values={'PASSWORD':SECRET})
+        metadata = plan_public_metadata(public)
+        self.assertNotIn(SECRET, json.dumps(metadata))
+        self.assertEqual([item['recovery']['method'] for item in metadata['resources']],
+                         ['stopped_archive', 'recreate', 'external'])
+        summary = plan_summary(public)
+        self.assertNotIn(SECRET, summary)
+        for expected in ('demo, helper', 'Archivia con container fermi', 'Ricreato durante il recupero',
+                         'Risorsa esterna', 'DEMO__PASSWORD', '0644', 'GitHub e nuovo backup'):
+            self.assertIn(expected, summary)
+        self.assertIn('GitHub e backup esclusi', plan_summary(public, local_lab=True))
+
+    def test_fallback_prepares_multiservice_plan_with_public_file_and_private_group_ids(self):
+        from recovery_gui import service_plan
+        compose = ('services:\n  demo:\n    image: example/demo:latest\n    environment:\n'
+            '      PASSWORD: ${PASSWORD}\n    volumes:\n      - ./data/demo/public/settings.yaml:/settings.yaml:ro\n'
+            '      - store:/data\n  helper:\n    image: example/helper:latest\n    environment:\n      PASSWORD: ${PASSWORD}\n')
+        files = [dict(path='data/demo/public/settings.yaml', content='title: Demo\n', mode=420)]
+        policy = [dict(service='demo', target='/data', method='stopped_archive')]
+        sources = (compose, 'PASSWORD=' + SECRET + '\n', '', json.dumps(files), json.dumps(policy))
+        view = Mock()
+        view._operation_running.return_value = False
+        view._sources.return_value = sources
+        view._scan_sources = sources
+        view._planner.return_value = service_plan
+        view.reviewed.get.return_value = True
+        view.local_lab.get.return_value = False
+        view.private_names = {'DEMO__PASSWORD', 'HELPER__PASSWORD'}
+        view.state = OnboardingState()
+        ServiceOnboardingPanel.prepare_plan(view)
+        view._show_error.assert_not_called()
+        self.assertEqual(view.state.analysis.plan.schema, 2)
+        self.assertEqual(set(view.state.analysis.plan.private_bindings), view.private_names)
+        summary = view.preview.insert.call_args.args[1]
+        self.assertNotIn(SECRET, summary)
+        self.assertIn('demo, helper', summary)
+        self.assertIn('data/demo/public/settings.yaml', summary)
+
+    def test_resource_failures_have_actionable_fixed_presentation(self):
+        import re
+        source = Path(__file__).parents[1] / 'recovery_gui' / 'service_resources.py'
+        codes = set(re.findall(r"'(SERVICE_[A-Z0-9_]+)'", source.read_text(encoding='utf-8')))
+        self.assertFalse(codes - ERROR_TEXT.keys(), 'Every resource failure needs a fixed explanation')
 
 
 class WidgetFreezeTests(unittest.TestCase):

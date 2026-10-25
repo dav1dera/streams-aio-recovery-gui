@@ -14,6 +14,8 @@ from collections.abc import Mapping
 import yaml
 from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
+from .service_resources import ResourceFailure, inventory as resource_inventory
+
 
 NAME = re.compile(r"[a-z][a-z0-9_-]{0,62}\Z")
 VARIABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
@@ -99,6 +101,17 @@ class VariableCandidate:
     has_value: bool = False
 
 
+def _selection_names(names):
+    _require(not isinstance(names, (str, bytes)), 'SERVICE_PRIVATE_SELECTION_INVALID')
+    try:
+        values = list(names)
+    except TypeError:
+        raise PlanFailure('SERVICE_PRIVATE_SELECTION_INVALID') from None
+    _require(all(isinstance(name, str) and VARIABLE.fullmatch(name) for name in values),
+             'SERVICE_PRIVATE_SELECTION_INVALID')
+    return set(values)
+
+
 class SensitiveValues(Mapping):
     """Explicitly separate credential carrier; repr/str never includes values."""
     def __init__(self, values=()):
@@ -133,13 +146,19 @@ class ServicePlan:
     public_env_text: str = field(repr=False)
     fingerprint: str
     schema: int = 1
+    components: tuple = ()
+    service_names: tuple = ()
+    images: dict = field(default_factory=dict)
+    compose_resources: dict = field(default_factory=dict, repr=False)
+    resources: tuple = ()
+    configuration_files: tuple = field(default=(), repr=False)
 
     def __repr__(self):
-        return '<ServicePlan schema=1 contents=redacted>'
+        return '<ServicePlan schema=' + str(self.schema) + ' contents=redacted>'
 
     def to_public_dict(self):
-        """A value-free report/export; even public user values are excluded."""
-        return {
+        """Value-free metadata: no Compose, env, or configuration file bytes."""
+        result = {
             'schema': self.schema, 'service_name': self.service_name,
             'image': self.image, 'public_env_path': self.public_env_path,
             'private_env_path': self.private_env_path,
@@ -148,13 +167,31 @@ class ServicePlan:
                                selected_private=v.selected_private, has_value=v.has_value)
                           for v in self.inventory], 'fingerprint': self.fingerprint,
         }
+        if self.schema == 2:
+            result.update(
+                service_names=list(self.service_names), images=dict(self.images),
+                components=[{key: value for key, value in component.items()
+                             if key not in {'compose_fragment', 'public_env_text', 'configuration_files', 'compose_resources'}}
+                            for component in self.components],
+                compose_resources={kind: list(definitions) for kind, definitions in self.compose_resources.items()},
+                resources=[dict(resource) for resource in self.resources],
+                configuration_files=[{key: value for key, value in item.items() if key != 'content'}
+                                     for item in self.configuration_files])
+        return result
 
     def deployment_payload(self):
-        """Public deployment bytes. Selected credential values are not present."""
-        return dict(self.to_public_dict(), compose_fragment=self.compose_fragment,
-                    public_env_text=self.public_env_text)
+        result = dict(self.to_public_dict(), compose_fragment=self.compose_fragment,
+                      public_env_text=self.public_env_text)
+        if self.schema == 2:
+            result.update(components=[dict(item) for item in self.components],
+                          compose_resources=dict(self.compose_resources),
+                          configuration_files=[dict(item) for item in self.configuration_files])
+        return result
 
     def render_compose(self, existing_compose_text):
+        if self.schema == 2:
+            return append_bundle(existing_compose_text, self.compose_fragment,
+                                 self.service_names, self.compose_resources)
         return append_service(existing_compose_text, self.compose_fragment, self.service_name)
 
 
@@ -375,17 +412,16 @@ def _inventory(compose_text, public_env_text, service_name):
     return name, service, fragment, service_node, env, environment, environment_node, candidates
 
 
-def inspect_inputs(compose_text, public_env_text='', service_name=''):
+def _inspect_single(compose_text, public_env_text='', service_name=''):
     """Inventory can be shown before values for required placeholders are entered."""
     return _inventory(compose_text, public_env_text, service_name)[-1]
 
 
-def analyze_inputs(compose_text, public_env_text='', service_name='', private_names=(), private_values=None):
+def _analyze_single(compose_text, public_env_text='', service_name='', private_names=(), private_values=None, *, allow_resources=False):
     """Plan a new service. private_names is an explicit user choice, not a guess."""
     (name, service, fragment, service_node, env, environment, environment_node,
      candidates) = _inventory(compose_text, public_env_text, service_name)
-    _require(not isinstance(private_names, str), 'SERVICE_PRIVATE_SELECTION_INVALID')
-    selected = set(private_names)
+    selected = _selection_names(private_names)
     known = {row.name for row in candidates}
     _require(all(isinstance(key, str) and VARIABLE.fullmatch(key) for key in selected)
              and selected <= known, 'SERVICE_PRIVATE_SELECTION_INVALID')
@@ -478,7 +514,8 @@ def analyze_inputs(compose_text, public_env_text='', service_name='', private_na
             '      - ' + json.dumps(path) + '\n' for path in desired_files)
     output, _ = _load(fragment, new=True)
     actual = output[name]
-    _validate_mounts(actual, name)
+    if not allow_resources:
+        _validate_mounts(actual, name)
     image = actual['image'].replace('$$', '$')
     _require(IMAGE.fullmatch(image) and '$' not in image, 'SERVICE_IMAGE_INVALID')
     if '@' in image:
@@ -524,4 +561,262 @@ def append_service(existing_compose_text, compose_fragment, service_name):
     _require(all(check['services'].get(key) == value for key, value in existing['services'].items())
              and {k: v for k, v in check.items() if k != 'services'} ==
                  {k: v for k, v in existing.items() if k != 'services'}, 'SERVICE_APPEND_INVALID')
+    return result
+
+
+def _bundle_document(compose_text, service_name=''):
+    value, _ = _load(compose_text, new=True)
+    if 'services' in value:
+        _require(set(value) <= {'services', 'volumes', 'networks', 'configs', 'version'}
+                 and isinstance(value['services'], dict), 'SERVICE_COMPOSE_TOP_LEVEL_UNSUPPORTED')
+        services = value['services']
+        top = {key: value[key] for key in ('volumes', 'networks', 'configs') if key in value}
+    elif 'image' in value:
+        _require(bool(service_name), 'SERVICE_NAME_REQUIRED')
+        _require(isinstance(service_name, str) and NAME.fullmatch(service_name), 'SERVICE_NAME_INVALID')
+        services, top = {service_name: value}, {}
+    else:
+        services, top = value, {}
+    _require(bool(services) and len(services) <= 64 and all(isinstance(name, str) and NAME.fullmatch(name)
+             and isinstance(service, dict) for name, service in services.items()), 'SERVICE_NAME_INVALID')
+    _require(not service_name or service_name in services, 'SERVICE_NAME_INVALID')
+    for name, service in services.items():
+        _require(isinstance(service.get('image'), str)
+                 and not ({'build', 'extends', 'include', 'develop'} & set(service)),
+                 'SERVICE_COMPOSE_FEATURE_UNSUPPORTED')
+    primary = service_name or next(iter(services))
+    return services, top, primary
+
+
+def _snippet(name, service):
+    return yaml.safe_dump({name: service}, sort_keys=False, allow_unicode=True, width=4096)
+
+
+def _component_env(public_env_text, service, primary=False):
+    """A bundle env supplies interpolation values, not unrelated secrets to peers."""
+    values = _env_values(public_env_text)
+    _, node = _load(_snippet('component', service), new=True)
+    _, service_node = _node_value(node, 'component')
+    environment, _ = _environment(service, service_node)
+    required = set(environment)
+    for scalar in _scalar_nodes(service_node):
+        required.update(token[2] for token in _interpolations(scalar.value))
+    # Unreferenced explicit env assignments retain the legacy behavior on the
+    # selected primary service. Peers only receive variables they reference.
+    selected = set(values) if primary else required & set(values)
+    return _edit(public_env_text, [(row.start, row.end, '') for key, row in values.items() if key not in selected])
+
+
+def _bundle_candidates(services, public_env_text, primary):
+    records = []
+    multiple = len(services) > 1
+    for name, service in services.items():
+        env = _component_env(public_env_text, service, primary=name == primary) if multiple else public_env_text
+        candidates = _inspect_single(_snippet(name, service), env, name)
+        records.append((name, service, env, candidates))
+    counts = {}
+    for _, _, _, candidates in records:
+        for row in candidates:
+            counts[row.name] = counts.get(row.name, 0) + 1
+    used, maps = set(), {}
+    for name, _, _, candidates in records:
+        mapping = {}
+        for row in candidates:
+            candidate = row.name if counts[row.name] == 1 else name.replace('-', '_').upper() + '__' + row.name
+            # A pre-existing env key can coincide with a generated identifier.
+            if candidate in used or (candidate != row.name and candidate in counts):
+                candidate = name.replace('-', '_').upper() + '__' + hashlib.sha256(name.encode()).hexdigest()[:8] + '__' + row.name
+            if len(candidate) > 128:
+                candidate = candidate[:108] + '__' + hashlib.sha256((name + ':' + row.name).encode()).hexdigest()[:16]
+            _require(VARIABLE.fullmatch(candidate), 'SERVICE_VARIABLE_NAME_INVALID')
+            _require(candidate not in used, 'SERVICE_VARIABLE_NAME_INVALID')
+            used.add(candidate)
+            mapping[row.name] = candidate
+        maps[name] = mapping
+    return records, maps
+
+
+def _resolve_resource_values(value, values):
+    if isinstance(value, str):
+        return _resolve(value, values) if _interpolations(value) else value
+    if isinstance(value, dict):
+        return {key: _resolve_resource_values(item, values) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_resolve_resource_values(item, values) for item in value]
+    return value
+
+
+def inspect_resources(compose_text, public_env_text='', service_name='', configuration_files=(), storage_policies=()):
+    """Inventory mounts without requesting missing private environment values."""
+    services, top, _ = _bundle_document(compose_text, service_name)
+    values = {key: row.value for key, row in _env_values(public_env_text).items()}
+    inspected = {name: dict(service) for name, service in services.items()}
+    for service in inspected.values():
+        for key in ('volumes', 'configs', 'tmpfs'):
+            if key in service:
+                service[key] = _resolve_resource_values(service[key], values)
+    try:
+        return resource_inventory(inspected, _resolve_resource_values(top, values),
+                                  configuration_files, storage_policies)['resources']
+    except ResourceFailure as error:
+        raise PlanFailure(str(error)) from None
+
+
+def inspect_inputs(compose_text, public_env_text='', service_name='', configuration_files=(), storage_policies=()):
+    services, top, primary = _bundle_document(compose_text, service_name)
+    if len(services) == 1 and not top and not configuration_files and not storage_policies:
+        return _inspect_single(compose_text, public_env_text, service_name)
+    records, names = _bundle_candidates(services, public_env_text, primary)
+    return tuple(VariableCandidate(names[name][row.name], name + ' · ' + row.name + ' (' + row.source + ')',
+                                   row.suggested_private, row.selected_private, row.has_value)
+                 for name, _, _, candidates in records for row in candidates)
+
+
+def analyze_inputs(compose_text, public_env_text='', service_name='', private_names=(), private_values=None,
+                   configuration_files=(), storage_policies=()):
+    services, top, primary = _bundle_document(compose_text, service_name)
+    document, _ = _load(compose_text, new=True)
+    extended = 'version' in document or len(services) > 1 or bool(top) or bool(configuration_files) or bool(storage_policies) or any(
+        service.get('volumes') or service.get('configs') for service in services.values())
+    if not extended:
+        return _analyze_single(compose_text, public_env_text, service_name, private_names, private_values)
+    records, value_names = _bundle_candidates(services, public_env_text, primary)
+    known = {global_name for mapping in value_names.values() for global_name in mapping.values()}
+    selected = _selection_names(private_names)
+    _require(selected <= known and all(isinstance(name, str) for name in selected), 'SERVICE_PRIVATE_SELECTION_INVALID')
+    private_values = {} if private_values is None else private_values
+    _require(isinstance(private_values, dict) and set(private_values) <= selected, 'SERVICE_PRIVATE_VALUES_INVALID')
+    children, sensitive, inventory, bindings = {}, {}, [], {}
+    for name, service, env, candidates in records:
+        mapping = value_names[name]
+        child_private = [key for key, global_name in mapping.items() if global_name in selected]
+        child_values = {key: private_values[global_name] for key, global_name in mapping.items() if global_name in private_values}
+        child = _analyze_single(_snippet(name, service), env, name, child_private, child_values, allow_resources=True)
+        children[name] = child
+        for row in child.inventory:
+            global_name = mapping[row.name]
+            inventory.append(VariableCandidate(global_name, name + ' · ' + row.name + ' (' + row.source + ')',
+                                                row.suggested_private, row.selected_private, row.has_value))
+            if row.selected_private:
+                sensitive[global_name] = child.sensitive[row.name]
+                bindings[global_name] = dict(child.plan.private_bindings[row.name])
+    public_values = {key: row.value for key, row in _env_values(public_env_text).items()}
+    for name, mapping in value_names.items():
+        for key, global_name in mapping.items():
+            if global_name in selected:
+                public_values.pop(key, None)
+    selected_keys = {key for mapping in value_names.values() for key, global_name in mapping.items()
+                     if global_name in selected}
+    if top:
+        _, top_node = _load(yaml.safe_dump(top, sort_keys=False), new=True)
+        _require(not any(selected_keys.intersection(token[2] for token in _interpolations(node.value))
+                         for node in _scalar_nodes(top_node)), 'SERVICE_PRIVATE_INTERPOLATION_OUTSIDE_ENV')
+    resolved_top = _resolve_resource_values(top, public_values)
+    resolved_services = {name: _load(child.plan.compose_fragment, new=True)[0][name] for name, child in children.items()}
+    try:
+        resource_plan = resource_inventory(resolved_services, resolved_top, configuration_files, storage_policies)
+    except ResourceFailure as error:
+        raise PlanFailure(str(error)) from None
+    components = []
+    for name, child in children.items():
+        component = child.plan.deployment_payload()
+        component['compose_fragment'] = textwrap.indent(_snippet(name, resource_plan['services'][name]), '  ')
+        component['value_names'] = dict(value_names[name])
+        component['fingerprint'] = hashlib.sha256(json.dumps(dict(schema=1, service_name=name,
+            compose_fragment=component['compose_fragment'], public_env_text=component['public_env_text'],
+            private_bindings=component['private_bindings']), sort_keys=True, ensure_ascii=False,
+            separators=(',', ':')).encode()).hexdigest()
+        components.append(component)
+    fragment = ''.join(component['compose_fragment'] for component in components)
+    public_strings = [fragment, *(component['public_env_text'] for component in components)]
+    public_strings.extend(_strings_in(resource_plan['services']))
+    public_strings.extend(_strings_in(resource_plan['compose_resources']))
+    public_strings.extend(item['content'] for item in resource_plan['configuration_files'])
+    for value in sensitive.values():
+        _require(len(value) < 4 or not any(value in text or value in text.replace('$$', '$')
+                                         for text in public_strings), 'SERVICE_PRIVATE_VALUE_OUTSIDE_ENV')
+    core = dict(schema=2, service_name=primary, service_names=list(services), components=components,
+                compose_resources=resource_plan['compose_resources'], resources=resource_plan['resources'],
+                configuration_files=resource_plan['configuration_files'], private_bindings=bindings)
+    fingerprint = hashlib.sha256(json.dumps(core, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+    chosen = children[primary].plan
+    images = {name: child.plan.image for name, child in children.items()}
+    plan = ServicePlan(primary, chosen.image, chosen.public_env_path, chosen.private_env_path, bindings,
+                       tuple(inventory), fragment, chosen.public_env_text, fingerprint, schema=2,
+                       components=tuple(components), service_names=tuple(services), images=images,
+                       compose_resources=resource_plan['compose_resources'], resources=resource_plan['resources'],
+                       configuration_files=resource_plan['configuration_files'])
+    return ServiceAnalysis(plan, SensitiveValues(sensitive), tuple(inventory))
+
+
+
+def _strings_in(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _strings_in(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _strings_in(child)
+
+
+def _mapping_addition(text, node, entries, newline):
+    """Build a local edit; existing entries and their comments retain bytes."""
+    empty = isinstance(node, ScalarNode) and node.tag == 'tag:yaml.org,2002:null'
+    _require(empty or isinstance(node, MappingNode), 'SERVICE_EXISTING_COMPOSE_UNSUPPORTED')
+    indent = node.value[0][0].start_mark.column if isinstance(node, MappingNode) and node.value else 2
+    body = textwrap.indent(yaml.safe_dump(entries, sort_keys=False, allow_unicode=True, width=4096),
+                           ' ' * indent).replace('\n', newline)
+    if empty or node.flow_style:
+        _require(empty or not node.value, 'SERVICE_EXISTING_COMPOSE_UNSUPPORTED')
+        return node.start_mark.index, node.end_mark.index, newline + body
+    position = node.end_mark.index
+    position = text.rfind('\n', 0, position) + 1 if position < len(text) else position
+    prefix = '' if text[:position].endswith(('\n', '\r')) else newline
+    return position, position, prefix + newline + body
+
+def append_bundle(existing_compose_text, compose_fragment, service_names, compose_resources):
+    """Merge only new service/resource blocks; preserve unrelated existing bytes."""
+    additions, _ = _load(compose_fragment, new=True)
+    _require(set(additions) == set(service_names), 'SERVICE_BUNDLE_INVALID')
+    existing, root_node = _load(existing_compose_text)
+    _require(isinstance(existing.get('services'), dict), 'SERVICE_EXISTING_COMPOSE_INVALID')
+    expected = dict(existing)
+    expected['services'] = dict(existing['services'])
+    edits = []
+    newline = '\r\n' if '\r\n' in existing_compose_text else '\n'
+    new_services = {}
+    for name, service in additions.items():
+        _require(name not in existing['services'] or existing['services'][name] == service, 'SERVICE_ALREADY_EXISTS')
+        if name not in existing['services']:
+            new_services[name] = service
+        expected['services'][name] = service
+    if new_services:
+        _, node = _node_value(root_node, 'services')
+        edits.append(_mapping_addition(existing_compose_text, node, new_services, newline))
+    tail = ''
+    for kind, definitions in compose_resources.items():
+        _require(kind in {'volumes', 'networks', 'configs'} and isinstance(definitions, dict), 'SERVICE_COMPOSE_RESOURCE_INVALID')
+        current = existing.get(kind, {})
+        _require(current is None or isinstance(current, dict), 'SERVICE_EXISTING_COMPOSE_UNSUPPORTED')
+        current = current or {}
+        missing = {}
+        for name, definition in definitions.items():
+            _require(name not in current or (current[name] or {}) == (definition or {}), 'SERVICE_COMPOSE_RESOURCE_CONFLICT')
+            if name not in current:
+                missing[name] = definition
+        if not missing:
+            continue
+        expected[kind] = dict(current, **missing)
+        if kind not in existing:
+            tail += newline + yaml.safe_dump({kind: missing}, sort_keys=False, allow_unicode=True, width=4096).replace('\n', newline)
+        else:
+            _, node = _node_value(root_node, kind)
+            edits.append(_mapping_addition(existing_compose_text, node, missing, newline))
+    result = _edit(existing_compose_text, edits)
+    if tail:
+        result += ('' if result.endswith(('\n', '\r')) else newline) + tail
+    actual, _ = _load(result)
+    _require(actual == expected, 'SERVICE_APPEND_INVALID')
     return result

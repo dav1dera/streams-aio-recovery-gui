@@ -214,23 +214,39 @@ class ServiceController:
             need(1 <= int(address.rsplit(':', 1)[1]) <= 65535, 'SERVICE_RESPONSE_INVALID')
         return address
 
+    @staticmethod
+    def _component_values(analysis, values):
+        """Route namespaced desktop values to each service's original env keys."""
+        components = getattr(analysis.plan, 'components', ())
+        if not components:
+            return [(analysis.plan.service_name, analysis.plan.private_env_path, values)]
+        groups = []
+        for component in components:
+            bindings = component.get('private_bindings', {})
+            names = component.get('value_names', {})
+            local = {name: values[names.get(name, name)] for name in bindings}
+            if local:
+                groups.append((component['service_name'], component['private_env_path'], local))
+        return groups
+
     def _verify_private(self, ssh, analysis, connection, values, agent_output):
-        if not values:
-            return
-        challenge = secrets.token_bytes(32)
-        request = dict(path=connection['stack_root'] + '/' + analysis.plan.private_env_path,
-                       metadata=dict(zip(('uid', 'gid', 'mode'), agent_output)),
-                       challenge=challenge.hex(), expected={name: hmac.digest(challenge,
-                           (name + '\0' + value).encode('utf-8'), 'sha256').hex()
-                           for name, value in values.items()})
-        try:
-            result = json.loads(ssh.run(['python3', '-B', '-c', PRIVATE_PROOF], sudo=True,
-                                        input=PRIVATE_PROOF_FRAME + json.dumps(request).encode() + b'\n', timeout=30))
-            need(result == {'status': 'PASS'}, 'ONBOARDING_AGENT_VALUE_READBACK_FAILED')
-        except (OnboardingError, Failure):
-            raise
-        except Exception:
-            raise OnboardingError('ONBOARDING_AGENT_VALUE_READBACK_FAILED') from None
+        for service, private_path, local_values in self._component_values(analysis, values):
+            if not local_values:
+                continue
+            challenge = secrets.token_bytes(32)
+            request = dict(path=connection['stack_root'] + '/' + private_path,
+                           metadata=dict(zip(('uid', 'gid', 'mode'), agent_output)),
+                           challenge=challenge.hex(), expected={name: hmac.digest(challenge,
+                               (name + '\0' + value).encode('utf-8'), 'sha256').hex()
+                               for name, value in local_values.items()})
+            try:
+                result = json.loads(ssh.run(['python3', '-B', '-c', PRIVATE_PROOF], sudo=True,
+                                            input=PRIVATE_PROOF_FRAME + json.dumps(request).encode() + b'\n', timeout=30))
+                need(result == {'status': 'PASS'}, 'ONBOARDING_AGENT_VALUE_READBACK_FAILED')
+            except (OnboardingError, Failure):
+                raise
+            except Exception:
+                raise OnboardingError('ONBOARDING_AGENT_VALUE_READBACK_FAILED') from None
 
     def _remote(self, ssh, request):
         self._check_cancel()
@@ -291,7 +307,9 @@ class ServiceController:
             self._progress(progress_callback, 'HOST', 'PASS')
             if values:
                 self._progress(progress_callback, 'INFISICAL', 'RUNNING')
-                self._api(infisical, ssh, receipt).inspect(analysis.plan.service_name, values)
+                api = self._api(infisical, ssh, receipt)
+                for service, _, local_values in self._component_values(analysis, values):
+                    api.inspect(service, local_values)
                 self._progress(progress_callback, 'INFISICAL', 'PASS')
             return receipt
         finally:
@@ -311,7 +329,9 @@ class ServiceController:
                      'ONBOARDING_AGENT_PROFILE_CHANGED')
             if values:
                 self._progress(progress_callback, 'INFISICAL', 'RUNNING')
-                self._api(infisical, ssh, receipt).ensure(analysis.plan.service_name, values)
+                api = self._api(infisical, ssh, receipt)
+                for service, _, local_values in self._component_values(analysis, values):
+                    api.ensure(service, local_values)
                 self._progress(progress_callback, 'INFISICAL', 'PASS')
             self._check_cancel()
             self.__jobs[key] = receipt

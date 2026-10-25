@@ -5,11 +5,12 @@
 | Versione | Stato e uso |
 | --- | --- |
 | **0.4.19 stabile** | [Programma e checksum della release](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.19). |
+| **0.5.0-dev.9 locale, in sviluppo** | Gruppi di servizi, file pubblici, montaggi e dati: [nuova guida](docs/SERVICE-RESOURCES.md). Build di prova, con aggiornamento coordinato dei worker; nessuna nuova prova sulle VM reali attestata. |
 | **0.5.0-dev.8 in anteprima** | [Programma, sorgenti e checksum](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.5.0-dev.8). Interfaccia scura e scheda **Aggiungi servizio**; [sorgenti su main](https://github.com/dav1dera/streams-aio-recovery-gui/tree/main). Non è una release stabile. |
 
 Le immagini di questa guida mostrano la **0.5.0-dev.8**, con dati dimostrativi e richiami numerati. Sono schermate della vera interfaccia, preparate per spiegare i comandi; non attestano un'esecuzione sulle VM per ciascuna immagine. La versione stabile ha un aspetto diverso.
 
-**Prova reale completata:** preparazione del laboratorio e aggiunta del servizio `prova-agent` sulle VM `.30` e `.33`, compresi segreto Infisical, Agent e risposta HTTP. **Da completare nell'anteprima:** un nuovo recupero dell'intero stack da VM pulite, la pubblicazione GitHub con nuovo backup e la verifica dopo riavvio.
+**Prova reale completata sulla precedente dev.8:** preparazione del laboratorio e aggiunta del servizio `prova-agent` sulle VM `.30` e `.33`, compresi segreto Infisical, Agent e risposta HTTP. **Da completare nell'anteprima:** un nuovo recupero dell'intero stack da VM pulite, la pubblicazione GitHub con nuovo backup e la verifica dopo riavvio.
 
 ## Indice
 
