@@ -52,6 +52,48 @@ class ReadinessRunner(BundleRunner):
         return super().public_preflight(candidate)
 
 
+class CandidateComposeRunnerTests(unittest.TestCase):
+    def setUp(self):
+        self.runner = remote.Runner(LAYOUT)
+
+    def test_complete_original_candidate_crosses_stdin_without_future_env_file_resolution(self):
+        raw = (b'# preserved candidate comment\nservices:\n'
+               b'  demo:\n    image: example/demo:latest\n'
+               b'    env_file: [./data/demo/.env, ./.secrets/demo.env]\n')
+        with patch.object(self.runner, 'run', return_value=b'demo\n') as execute:
+            self.runner.validate_candidate(raw)
+        execute.assert_called_once_with(
+            ['docker', 'compose', '--project-directory', ROOT, '-f', '-',
+             'config', '--services', '--quiet'], 'ONBOARDING_PREFLIGHT_COMPOSE_FAILED', input_data=raw)
+        self.assertIs(execute.call_args.kwargs['input_data'], raw)
+
+    def test_duplicate_explicit_container_names_fail_before_compose_or_file_changes(self):
+        raw = (b'services:\n  before:\n    image: example/before\n    container_name: shared-name\n'
+               b'  new:\n    image: example/new\n    container_name: shared-name\n')
+        with patch.object(self.runner, 'run') as execute:
+            with self.assertRaisesRegex(remote.Refused, '^ONBOARDING_PREFLIGHT_COMPOSE_FAILED$') as raised:
+                self.runner.validate_candidate(raw)
+        execute.assert_not_called()
+        self.assertEqual(raised.exception.diagnostic['code'], 'COMPOSE_CONFIG_FAILED')
+        self.assertNotIn('shared-name', str(raised.exception))
+
+    def test_default_empty_and_existing_interpolated_names_are_not_guessed(self):
+        raw = (b'services:\n  one:\n    image: example/one\n'
+               b'  two:\n    image: example/two\n    container_name: ""\n'
+               b'  three:\n    image: example/three\n    container_name: "${OPTIONAL_NAME:-}"\n'
+               b'  four:\n    image: example/four\n    container_name: "${OPTIONAL_NAME:-}"\n')
+        with patch.object(self.runner, 'run', return_value=b'') as execute:
+            self.runner.validate_candidate(raw)
+        execute.assert_called_once()
+        self.assertIs(execute.call_args.kwargs['input_data'], raw)
+
+    def test_compose_schema_and_consistency_failure_remains_a_preflight_failure(self):
+        raw = b'services:\n  demo:\n    image: example/demo\n    depends_on: [missing]\n'
+        with patch.object(self.runner, 'run', side_effect=remote.Refused('ONBOARDING_PREFLIGHT_COMPOSE_FAILED')):
+            with self.assertRaisesRegex(remote.Refused, '^ONBOARDING_PREFLIGHT_COMPOSE_FAILED$'):
+                self.runner.validate_candidate(raw)
+
+
 class ServiceReadinessTests(unittest.TestCase):
     def setUp(self):
         self.store = MemoryStore()

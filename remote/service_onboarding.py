@@ -835,8 +835,27 @@ class Runner:
         return result.stdout
 
     def validate_candidate(self, raw):
+        # --services loads the complete typed project with environment-file
+        # resolution disabled. --no-env-resolution on the normal config path
+        # skips only a later pass in Compose versions such as 2.38.2.
+        document = yaml_document(raw)
+        need(isinstance(document, dict) and isinstance(document.get('services'), dict),
+             'ONBOARDING_PREFLIGHT_COMPOSE_FAILED')
+        names = set()
+        for service in document['services'].values():
+            if not isinstance(service, dict):
+                continue  # Docker validates the complete service schema below.
+            name = service.get('container_name')
+            if isinstance(name, str) and name and '$' not in name:
+                # Docker's ordinary render path performs this extra check.
+                # Existing interpolated names are checked by runtime config;
+                # the new-service planner resolves explicit public inputs.
+                if name in names:
+                    raise Refused('ONBOARDING_PREFLIGHT_COMPOSE_FAILED', dict(schema=1,
+                        stage='HOST', code='COMPOSE_CONFIG_FAILED', path='docker-compose.yml', retryable=False))
+                names.add(name)
         self.run(['docker', 'compose', '--project-directory', self.layout.root, '-f', '-',
-                  'config', '--quiet', '--no-env-resolution'], 'ONBOARDING_PREFLIGHT_COMPOSE_FAILED',
+                  'config', '--services', '--quiet'], 'ONBOARDING_PREFLIGHT_COMPOSE_FAILED',
                  input_data=raw)
 
     def check_images(self, plan):

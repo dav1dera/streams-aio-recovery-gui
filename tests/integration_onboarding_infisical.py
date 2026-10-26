@@ -178,6 +178,24 @@ class ProcessRunner(remote.Runner):
 
     def run(self, args, code, timeout=120, user=False, input_data=None):
         arguments = list(map(str, args))
+        if code == 'ONBOARDING_PREFLIGHT_COMPOSE_FAILED':
+            # Preserve a closed actual-CLI signature for CI debugging. Upstream
+            # stdout/stderr may contain file contents and are never emitted.
+            command, environment = self.command(args, user)
+            try:
+                result = subprocess.run(command, cwd=str(self.layout.root), env=environment,
+                    stdin=subprocess.DEVNULL if input_data is None else None,
+                    input=input_data, capture_output=True, timeout=timeout)
+            except (OSError, subprocess.SubprocessError):
+                raise remote.Refused('ONBOARDING_E2E_PREFLIGHT_PROCESS_FAILED') from None
+            if result.returncode:
+                error = result.stderr.lower()
+                reason = ('ENV_FILE_MISSING' if b'env file' in error and b'not found' in error else
+                          'UNKNOWN_FLAG' if b'unknown flag' in error else
+                          'INVALID_INTERPOLATION' if b'invalid interpolation' in error else
+                          'OTHER_COMPOSE_ERROR')
+                raise remote.Refused('ONBOARDING_E2E_PREFLIGHT_' + reason)
+            return result.stdout
         if arguments[:2] == ['systemctl', 'restart']:
             require(arguments == ['systemctl', 'restart', remote.AGENT_UNIT], 'ONBOARDING_E2E_UNEXPECTED_UNIT')
             self.agent.start()
@@ -283,6 +301,15 @@ class RealInfisicalOnboarding(unittest.TestCase):
 
             clear_fixture_acls(base)
             try:
+                # Fail quickly at the real Compose boundary before downloading
+                # or bootstrapping Infisical. Future env files must stay absent.
+                probe_root = base / 'compose-probe'
+                probe_root.mkdir(mode=0o700)
+                probe_layout = remote.Layout(PurePosixPath(probe_root), PurePosixPath(base), 'root', 0, 0)
+                probe = {'name': 'recovery-onboarding-probe', 'services': {'probe': {
+                    'image': APPLICATION_TAG, 'env_file': ['./future-public.env', './future-private.env']}}}
+                ProcessRunner(probe_layout, None).validate_candidate(yaml.safe_dump(probe).encode())
+                require(not any(probe_root.iterdir()), 'ONBOARDING_E2E_PREFLIGHT_CREATED_FILES')
                 backend_image = pinned_image(SERVER_TAG)
                 application_image = pinned_image(APPLICATION_TAG)
                 database_image, redis_image = PROFILE['images']['db'], PROFILE['images']['redis']
