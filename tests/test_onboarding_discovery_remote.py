@@ -113,6 +113,36 @@ class ActualDiscoveryWireTests(unittest.TestCase):
         self.assertTrue(resumed.resume)
         self.assertEqual(resumed.job_id, receipt.job_id)
 
+    def test_many_preflight_positions_and_references_remain_a_valid_gui_diagnostic(self):
+        analysis = self.analysis()
+        path = analysis.plan.configuration_files[0]['path']
+        references = ['/demo/KEY_' + str(i).zfill(2) for i in range(25)]
+        diagnostic = dict(schema=1, stage='GITHUB', code='PRIVATE_VALUE_IN_PUBLIC_FILE',
+            path=path, lines=list(range(1, 26)), references=references, retryable=False)
+        with patch.object(self.runner, 'public_preflight', side_effect=remote.Refused(
+                'ONBOARDING_PUBLIC_PREFLIGHT_FAILED', diagnostic)):
+            with self.assertRaisesRegex(OnboardingError, '^ONBOARDING_PUBLIC_PREFLIGHT_FAILED$') as raised:
+                self.controller.inspect(analysis, self.connection, self.infisical)
+        self.assertEqual(raised.exception.diagnostic['path'], path)
+        self.assertEqual(raised.exception.diagnostic['lines'], list(range(1, 21)))
+        self.assertEqual(raised.exception.diagnostic['references'], references[:20])
+        self.assertFalse(self.runner.started)
+        self.assertFalse(self.store.writes)
+        self.assertFalse(self.api.calls)
+
+    def test_remote_diagnostic_references_match_desktop_length_and_depth_limits(self):
+        analysis = self.analysis()
+        path = analysis.plan.configuration_files[0]['path']
+        references = ['/valid/KEY', '/' + 'f' * 65 + '/KEY', '/demo/' + 'k' * 129,
+                      '/root/' + '/'.join('part' for _ in range(9)), 17]
+        diagnostic = dict(schema=1, stage='GITHUB', code='PRIVATE_VALUE_IN_PUBLIC_FILE',
+            path=path, lines=[], references=references, retryable=False)
+        with patch.object(self.runner, 'public_preflight', side_effect=remote.Refused(
+                'ONBOARDING_PUBLIC_PREFLIGHT_FAILED', diagnostic)):
+            with self.assertRaisesRegex(OnboardingError, '^ONBOARDING_PUBLIC_PREFLIGHT_FAILED$') as raised:
+                self.controller.inspect(analysis, self.connection, self.infisical)
+        self.assertEqual(raised.exception.diagnostic['references'], ['/valid/KEY'])
+
     def test_explicit_tooling_button_crosses_real_remote_dispatch_without_application_changes(self):
         analysis = self.analysis()
         before = len(self.store.writes)
