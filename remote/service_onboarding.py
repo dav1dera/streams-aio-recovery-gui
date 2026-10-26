@@ -98,11 +98,11 @@ def safe_diagnostic(value, plan=None, stage='HOST'):
         result['path'] = path
         lines = value.get('lines', [])
         if isinstance(lines, list) and all(type(n) is int and 1 <= n <= 1000000 for n in lines):
-            result['lines'] = sorted(set(lines))[:100]
+            result['lines'] = sorted(set(lines))[:20]
     refs = value.get('references', [])
-    if isinstance(refs, list) and all(isinstance(ref, str) and re.fullmatch(
-            r'/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)+', ref) for ref in refs):
-        result['references'] = sorted(set(refs))[:100]
+    if isinstance(refs, list):
+        result['references'] = sorted({ref for ref in refs if isinstance(ref, str) and re.fullmatch(
+            r'/[A-Za-z0-9_-]{1,64}(?:/[A-Za-z0-9_-]{1,128}){1,8}', ref)})[:20]
     return result
 
 

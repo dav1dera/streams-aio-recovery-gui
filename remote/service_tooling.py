@@ -14,7 +14,7 @@ import tempfile
 
 PUBLIC_REPOSITORY = 'dav1dera/streams-aio-sanitized'
 DR_REPOSITORY = 'dav1dera/streams-aio-dr'
-PUBLIC_MINIMUM_COMMIT = '7d1e89c230618136cdb46d581f143ba52e226ed7'
+PUBLIC_MINIMUM_COMMIT = 'd47c892a8770fe0370d666cf5a0614273f397950'
 DR_MINIMUM_COMMIT = 'd6addeda5ec936cf007d3bec020343330eb7b8cb'
 PUBLIC_API_VERSION = 1
 PRODUCER_SOURCES = ('install-service-resources.sh', 'service_snapshot.py',
@@ -197,12 +197,12 @@ def _prepare_tooling(layout, runner, store, request):
             # The current reviewed installer manages pi's production pipeline.
             need(layout.user == 'pi', 'ONBOARDING_TOOLING_OWNER_UNSUPPORTED')
         public_before = _repository(layout, runner, store, public, PUBLIC_REPOSITORY)
-        dr_before = _repository(layout, runner, store, dr, DR_REPOSITORY, main_required=True) if needs_producer else None
+        dr_before = _repository(layout, runner, store, dr, DR_REPOSITORY, main_required=True)
         public_target = _fetch(runner, public, public_before, minimum=PUBLIC_MINIMUM_COMMIT)
         api = _git(runner, public, 'show', public_target + ':scripts/public_export.py',
                    code='ONBOARDING_TOOLING_SOURCE_TOO_OLD')
         _api_source(api)
-        dr_target = _fetch(runner, dr, dr_before, minimum=DR_MINIMUM_COMMIT) if needs_producer else None
+        dr_target = _fetch(runner, dr, dr_before, minimum=DR_MINIMUM_COMMIT)
         producer_sources = ({name: _git(runner, dr, 'show', dr_target + ':scripts/' + name,
                              code='ONBOARDING_TOOLING_SOURCE_TOO_OLD') for name in PRODUCER_SOURCES}
                             if needs_producer else None)
@@ -216,8 +216,10 @@ def _prepare_tooling(layout, runner, store, request):
                    'assert callable(p.preflight)')
         _run(runner, [worker / 'venv/bin/python', '-I', '-B', '-c', program, public / 'scripts'],
              'ONBOARDING_TOOLING_VERIFY_FAILED')
+        # The DR service itself requires its clean main checkout to match
+        # origin/main, even when the root producer is already installed.
+        _merge(runner, dr, dr_before, dr_target)
         if needs_producer:
-            _merge(runner, dr, dr_before, dr_target)
             # The user-owned checkout is updated for future maintenance, but
             # root never executes its files. The staged bytes are the four
             # exact blobs captured from the verified Git revision above.

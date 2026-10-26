@@ -178,13 +178,18 @@ class ToolingUpdateTests(unittest.TestCase):
         self.assertEqual(self.runner.repositories[self.store.public]['head'], NEW)
         self.assertEqual(self.runner.repositories[self.store.public]['branch'], 'HEAD')
         merges = self.runner.commands('merge')
-        self.assertEqual(len(merges), 1)
+        self.assertEqual(len(merges), 2)
         self.assertEqual(merges[0][0][-3:], ['merge', '--ff-only', NEW])
+        self.assertEqual(merges[1][0][-3:], ['merge', '--ff-only', DR_NEW])
         self.assertEqual(len(self.runner.import_programs), 1)
         self.assertEqual(self.runner.import_programs[0][1:4], ['-I', '-B', '-c'])
         self.assertIn('PUBLIC_ONBOARDING_PREFLIGHT', self.runner.import_programs[0][4])
         self.assertTrue(all(call[2] for call in self.runner.calls))
-        self.assertFalse(any(str(self.store.dr) in call[0] for call in self.runner.calls))
+        self.assertEqual(self.runner.repositories[self.store.dr]['head'], DR_NEW)
+        self.assertEqual(self.runner.commands('bash'), [])
+        self.assertIsNone(self.staged_sources)
+        self.assertTrue(any(call[0][-4:] == ['merge-base', '--is-ancestor', tooling.DR_MINIMUM_COMMIT, DR_NEW]
+                            for call in self.runner.calls))
 
     def test_commands_disable_git_hooks_and_do_not_touch_application_lifecycle(self):
         self.prepare()
@@ -226,12 +231,10 @@ class ToolingUpdateTests(unittest.TestCase):
                          ['bash', str(STAGE / 'install-service-resources.sh')])
 
     def test_wrong_dr_branch_refuses_before_either_repository_is_merged(self):
-        self.store.files.pop(tooling.PRODUCER)
         self.runner.repositories[self.store.dr]['branch'] = 'HEAD'
         self.assert_refused_without_merge('ONBOARDING_TOOLING_BRANCH_INVALID')
 
     def test_invalid_dr_origin_refuses_before_public_repository_is_merged(self):
-        self.store.files.pop(tooling.PRODUCER)
         self.runner.repositories[self.store.dr]['origin'] = 'https://github.com/other/streams-aio-dr'
         self.assert_refused_without_merge('ONBOARDING_TOOLING_ORIGIN_INVALID')
 
@@ -266,6 +269,18 @@ class ToolingUpdateTests(unittest.TestCase):
         self.runner.diverged.add(self.store.public)
         self.assert_refused_without_merge('ONBOARDING_TOOLING_DIVERGED')
         self.assertEqual(self.runner.repositories[self.store.public]['head'], OLD)
+
+    def test_dirty_dr_is_preserved_even_when_root_producer_is_already_present(self):
+        self.runner.repositories[self.store.dr]['dirty'] = b' M scripts/update-dr.sh\n'
+        self.assert_refused_without_merge('ONBOARDING_TOOLING_LOCAL_CHANGES')
+        self.assertEqual(self.runner.repositories[self.store.public]['head'], OLD)
+        self.assertEqual(self.runner.repositories[self.store.dr]['head'], DR_OLD)
+
+    def test_diverged_dr_prevents_both_merges_even_with_existing_producer(self):
+        self.runner.diverged.add(self.store.dr)
+        self.assert_refused_without_merge('ONBOARDING_TOOLING_DIVERGED')
+        self.assertEqual(self.runner.repositories[self.store.public]['head'], OLD)
+        self.assertEqual(self.runner.repositories[self.store.dr]['head'], DR_OLD)
 
     def test_canonical_existing_repository_and_git_directory_are_required(self):
         for path in (self.store.public, self.store.public / '.git'):

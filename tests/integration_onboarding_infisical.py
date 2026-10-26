@@ -11,6 +11,7 @@ https://github.com/Infisical/infisical/blob/v0.167.1/backend/src/server/routes/v
 The native Agent archive and digest are the application's reviewed pin.
 """
 from contextlib import suppress
+import base64
 import hmac
 import json
 import os
@@ -27,10 +28,11 @@ import unittest
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 import uuid
+import zlib
 
 import yaml
 
-from recovery_gui.onboarding import ServiceController, OnboardingError, PRIVATE_PROOF
+from recovery_gui.onboarding import ServiceController, OnboardingError, PRIVATE_PROOF, REMOTE_LAUNCHER
 from recovery_gui.onboarding_infisical import InfisicalClient, InfisicalFailure
 from recovery_gui.onboarding_ssh_api import SSHInfisicalOpener, SSH_HTTP_HELPER, SSH_ORIGIN
 from recovery_gui.service_plan import analyze_inputs
@@ -202,14 +204,36 @@ class LoopbackSSH:
         if args[-1] in (SSH_HTTP_HELPER, PRIVATE_PROOF):
             return invoke(args, 'ONBOARDING_E2E_FIXED_HELPER_FAILED', payload=kwargs.get('input'),
                           timeout=kwargs.get('timeout', 60))
-        require(args[-1] == (ROOT / 'remote/service_onboarding.py').read_text(encoding='utf-8'),
-                'ONBOARDING_E2E_UNEXPECTED_REMOTE_SOURCE')
+        try:
+            self.validate_remote_command(args, self.layout.home)
+        except AssertionError as error:
+            # Preserve only this fixture's fixed code through controller redaction.
+            raise OnboardingError(str(error)) from None
         request = remote.framed_request(kwargs['input'])
         self.actions.append(request['action'])
         result = remote.handle(request, runner=self.runner, store=remote.Store(), layout=self.layout)
         raw = json.dumps(result).encode()
         self.responses.append(raw)
         return raw
+
+    @staticmethod
+    def validate_remote_command(args, home):
+        # The production launcher now carries two bounded compressed modules.
+        # Validate the actual encoded bytes before replacing only SSH delivery.
+        interpreter = str(home / '.local/share/streams-aio-recovery/venv/bin/python')
+        require(len(args) == 7 and args[:4] == ['python3', '-I', '-c', REMOTE_LAUNCHER]
+                and args[4] == interpreter, 'ONBOARDING_E2E_UNEXPECTED_REMOTE_COMMAND')
+        for encoded, name in zip(args[5:], ('service_onboarding.py', 'service_tooling.py')):
+            require(isinstance(encoded, str) and len(encoded) <= 120 * 1024,
+                    'ONBOARDING_E2E_REMOTE_SOURCE_BOUND')
+            try:
+                decoder = zlib.decompressobj()
+                raw = decoder.decompress(base64.b64decode(encoded, validate=True), 512 * 1024 + 1)
+                require(len(raw) <= 512 * 1024 and decoder.eof and not decoder.unused_data
+                        and not decoder.unconsumed_tail and raw == (ROOT / 'remote' / name).read_bytes(),
+                        'ONBOARDING_E2E_UNEXPECTED_REMOTE_SOURCE')
+            except (ValueError, zlib.error):
+                raise AssertionError('ONBOARDING_E2E_UNEXPECTED_REMOTE_SOURCE') from None
 
     def close(self):
         pass  # SSH disconnection must not terminate the independently running Agent.
