@@ -53,6 +53,12 @@ class PublicConfigurationModeTests(unittest.TestCase):
         self.assertTrue(self.check(raw=acl_bytes(group_object=7, mask=7)))
         self.assertTrue(self.check(mode=0o664, raw=acl_bytes(group_object=4, mask=6)))
 
+    def test_owning_group_keeps_declared_access_even_with_a_wide_mask(self):
+        for owning_group in range(8):
+            with self.subTest(owning_group=owning_group):
+                accepted = self.check(raw=acl_bytes(group_object=owning_group, mask=7))
+                self.assertEqual(accepted, bool(owning_group & 4))
+
     def test_owner_other_special_and_narrowed_masks_are_not_exempted(self):
         for mode in (0o474, 0o676, 0o4674, 0o634):
             with self.subTest(mode=oct(mode)):
@@ -127,6 +133,12 @@ class RealPublicConfigurationACLTests(unittest.TestCase):
             self.assertEqual(recover.verify_service_snapshot(root, {}), {})
             self.assertEqual(inventory_path.read_bytes(), inventory_raw)
             self.assertEqual(target.read_bytes(), raw)
+            self.setfacl(target, 'g::---,m::rwx')
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o674)
+            with self.assertRaisesRegex(recover.Refused, 'SERVICES_STATE_CONFIGURATION_CHANGED'):
+                recover.verify_service_snapshot(root, {})
+            self.setfacl(target, 'g::rwx')
+            self.assertEqual(recover.verify_service_snapshot(root, {}), {})
             # The normal restorer installs the portable mode; the existing
             # access watcher can then recalculate its host-local ACL mask.
             job = recover.Recovery.__new__(recover.Recovery)

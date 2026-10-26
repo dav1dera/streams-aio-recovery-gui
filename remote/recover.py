@@ -684,6 +684,7 @@ def public_configuration_mode_matches(target, declared_mode):
             basic[tag] = permissions
     return (bool(named) and set(basic) == {1, 4, 16, 32}
             and basic[1] == (current >> 6) & 7
+            and basic[4] & group & declared_group == declared_group
             and basic[16] == group and basic[32] == current & 7)
 
 
