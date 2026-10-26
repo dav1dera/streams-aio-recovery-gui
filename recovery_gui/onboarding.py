@@ -260,7 +260,7 @@ class ServiceController:
                           timeout=1200)
             need(len(raw) <= 256 * 1024, 'SERVICE_RESPONSE_INVALID')
             result = json.loads(raw)
-            need(isinstance(result, dict) and result.get('schema') == 1,
+            need(isinstance(result, dict) and type(result.get('schema')) is int and result['schema'] == 1,
                  'SERVICE_RESPONSE_INVALID')
             if result.get('status') == 'REFUSED':
                 code = result.get('code', '')

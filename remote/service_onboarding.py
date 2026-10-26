@@ -1088,7 +1088,8 @@ class Engine:
                       inventory=inventory_before.identity() if inventory_before else None,
                       verification_scope=self.verification_scope,
                       machine=digest(self.store.read(PurePosixPath('/etc/machine-id'), 256)))
-        return dict(schema=2, status='PREVIEW', fingerprint=digest(canonical_json(source)),
+        # The transport envelope stays v1; only the nested service plan is v2.
+        return dict(schema=1, status='PREVIEW', fingerprint=digest(canonical_json(source)),
                     verification_scope=self.verification_scope, service=plan['service_name'],
                     services=plan['service_names'], image=plan['image'], images=plan['images'], stack_root=str(root),
                     public_files=[child['public_env_path'] for child in components(plan)] +
