@@ -16,7 +16,7 @@
     settings: {}, settingsDirty: false, version: '', errors: {}, labels: {}, progressText: {}, phaseStages: {}, finishedStages: new Set(),
     point: null, stages: {}, phases: {}, phaseLabels: {}, activePhase: null, machines: {}, history: [], activeHostKey: null, hostKeys: [], pollInFlight: false,
     service: { step: 0, analyzed: false, variables: [], privateNames: new Set(), privateValues: Object.create(null),
-      selectedVariable: '', plan: null, inspected: false, completed: false, rootEdited: false, scope: 'full' }
+      selectedVariable: '', configurationFiles: [], nextConfigurationId: 1, resources: [], sourcePolicies: [], plan: null, inspected: false, completed: false, rootEdited: false, scope: 'full' }
   };
   window.recoveryUI = { ready: false };
 
@@ -187,7 +187,7 @@
 
   function renderBusy() {
     const locked = busy();
-    $$('input,textarea,select,[data-choose],[data-age-mode],#load-backups,#save-settings,#save-advanced,#recover-fresh,#recover-resume,#prepare-lab,#store-private,.scope-switch button').forEach(node => { node.disabled = locked; });
+    $$('input,textarea,select,[data-choose],[data-age-mode],#load-backups,#save-settings,#save-advanced,#recover-fresh,#recover-resume,#prepare-lab,#store-private,#add-configuration-file,#import-service-bundle,.remove-configuration-file,.scope-switch button').forEach(node => { node.disabled = locked; });
     $('#cancel-operation').hidden = !locked;
     if (!locked) $('#cancel-operation').disabled = false;
     const loadingButton = state.operation === 'lab' ? $('#prepare-lab') : state.operation === 'backups' ? $('#load-backups') : null;
@@ -304,13 +304,100 @@
     }
   }
 
+  function sourcePayload() {
+    const payload = { compose: $('#service-compose').value, env: $('#service-env').value, service_name: $('#service-name').value.trim() };
+    const files = state.service.configurationFiles.filter(file => file.path.trim() || file.content).map(file => ({ path: file.path.trim(), content: file.content, mode: file.mode }));
+    if (files.length) payload.configuration_files = files;
+    if (state.service.sourcePolicies.length) payload.storage_policies = state.service.sourcePolicies.map(policy => ({ ...policy }));
+    return payload;
+  }
   function draftPayload() {
-    const privateValues = Object.create(null);
+    const payload = sourcePayload(), privateValues = Object.create(null);
     state.service.privateNames.forEach(name => {
       if (Object.prototype.hasOwnProperty.call(state.service.privateValues, name)) privateValues[name] = state.service.privateValues[name];
     });
-    return { compose: $('#service-compose').value, env: $('#service-env').value, service_name: $('#service-name').value.trim(),
-      private_names: Array.from(state.service.privateNames).sort(), private_values: privateValues, reviewed: $('#service-reviewed').checked };
+    Object.assign(payload, { private_names: Array.from(state.service.privateNames).sort(), private_values: privateValues, reviewed: $('#service-reviewed').checked });
+    const policies = new Map(state.service.sourcePolicies.map(policy => [policy.service + '\n' + policy.target, { ...policy }]));
+    state.service.resources.filter(writableData).forEach(resource => policies.set(resource.service + '\n' + resource.target, { service: resource.service, target: resource.target, method: resourceMethod(resource) }));
+    if (policies.size) payload.storage_policies = Array.from(policies.values());
+    return payload;
+  }
+  function sourceChanged({ keepPolicies = false } = {}) {
+    if (!keepPolicies) state.service.sourcePolicies = [];
+    clearPlan(true); renderVariables(); renderResources(); renderPlan();
+  }
+  async function importServiceBundle() {
+    if (busy()) return;
+    const result = await runSynchronous(() => call('import_service_bundle'));
+    if (!result || !result.bundle || typeof result.bundle !== 'object') return;
+    const bundle = result.bundle;
+    $('#service-compose').value = text(bundle.compose); $('#service-env').value = text(bundle.env); $('#service-name').value = text(bundle.service_name);
+    state.service.configurationFiles = Array.isArray(bundle.configuration_files) ? bundle.configuration_files.filter(file => file && typeof file.path === 'string' && typeof file.content === 'string').map(file => ({ id: state.service.nextConfigurationId++, path: file.path, content: file.content, mode: typeof file.mode === 'number' ? file.mode : parseInt(text(file.mode, '0644'), 8) })) : [];
+    state.service.sourcePolicies = Array.isArray(bundle.storage_policies) ? bundle.storage_policies.filter(policy => policy && typeof policy.service === 'string' && typeof policy.target === 'string').map(policy => ({ service: policy.service, target: policy.target, method: text(policy.method, policy.recovery && text(policy.recovery.method)) })) : [];
+    sourceChanged({ keepPolicies: true }); renderConfigurationFiles();
+    setGlobal('Pacchetto importato', 'Controlla Compose e file pubblici, poi premi Analizza servizio.');
+  }
+  function renderConfigurationFiles() {
+    $('#configuration-files-empty').hidden = state.service.configurationFiles.length > 0;
+    $('#configuration-files').replaceChildren(...state.service.configurationFiles.map((file, index) => {
+      const card = element('article', 'configuration-file'), fields = element('div', 'configuration-file-fields');
+      card.dataset.configurationId = String(file.id);
+      const pathLabel = element('label', 'field'), pathInput = element('input');
+      pathLabel.append(element('span', '', 'Percorso del file pubblico'));
+      pathInput.value = file.path; pathInput.placeholder = 'es. data/dashboard/public/settings.yaml'; pathInput.autocomplete = 'off'; pathInput.spellcheck = false; pathInput.dataset.configurationField = 'path';
+      pathLabel.append(pathInput);
+      const modeLabel = element('label', 'field'), modeSelect = element('select');
+      modeLabel.append(element('span', '', 'Lettura del file'));
+      [['0644', 'Tutti · 0644'], ['0640', 'Utente e gruppo · 0640'], ['0600', 'Solo utente · 0600']].forEach(([value, label]) => {
+        const option = element('option', '', label); option.value = value; modeSelect.append(option);
+      });
+      const modeValue = file.mode.toString(8).padStart(4, '0');
+      if (!Array.from(modeSelect.options).some(option => option.value === modeValue)) { const option = element('option', '', 'Permessi importati · ' + modeValue); option.value = modeValue; modeSelect.append(option); }
+      modeSelect.value = modeValue; modeSelect.dataset.configurationField = 'mode'; modeLabel.append(modeSelect);
+      const remove = element('button', 'button subtle compact remove-configuration-file', 'Rimuovi');
+      remove.type = 'button'; remove.setAttribute('aria-label', 'Rimuovi file pubblico ' + (index + 1));
+      remove.addEventListener('click', () => { if (busy()) return; state.service.configurationFiles = state.service.configurationFiles.filter(item => item.id !== file.id); sourceChanged({ keepPolicies: true }); renderConfigurationFiles(); });
+      fields.append(pathLabel, modeLabel, remove);
+      const contentLabel = element('label', 'code-field'), content = element('textarea');
+      contentLabel.append(element('span', 'editor-heading', 'Contenuto pubblico'));
+      content.value = file.content; content.placeholder = 'Incolla la configurazione senza password o token'; content.spellcheck = false; content.autocomplete = 'off'; content.dataset.configurationField = 'content'; contentLabel.append(content);
+      [[pathInput, 'path'], [content, 'content'], [modeSelect, 'mode']].forEach(([input, field]) => {
+        input.disabled = busy();
+        input.addEventListener('input', () => { file[field] = field === 'mode' ? parseInt(input.value, 8) : input.value; sourceChanged({ keepPolicies: true }); });
+      });
+      remove.disabled = busy(); card.append(fields, contentLabel); return card;
+    }));
+  }
+  function writableData(resource) { return resource.role === 'data' && resource.read_only !== true; }
+  function resourceMethod(resource) {
+    if (resource.recovery && resource.recovery.method === 'external') return 'external';
+    return writableData(resource) ? 'stopped_archive' : 'recreate';
+  }
+  function recoveryLabel(method) {
+    if (method === 'stopped_archive') return 'Archivia con container fermi';
+    if (method === 'external') return 'Risorsa esterna: da predisporre sulla destinazione';
+    return 'Ricreato durante il recupero';
+  }
+  function resourceLabel(resource) {
+    if (resource.role === 'runtime') return 'Collegamento al sistema';
+    if (resource.role === 'config' || resource.role === 'configuration') return 'Configurazione pubblica';
+    if (resource.read_only === true) return 'Dati in sola lettura';
+    if (resource.role === 'external') return 'Risorsa esterna';
+    return 'Dati del servizio';
+  }
+  function resourceRow(resource) {
+    const row = element('article', 'resource-row'), info = element('div', 'resource-info');
+    info.append(element('strong', '', text(resource.service) + ' · ' + resourceLabel(resource)), element('span', 'mono resource-path', text(resource.source, 'Gestito da Docker') + ' → ' + text(resource.target)));
+    const strategy = element('div', 'resource-strategy');
+    strategy.append(element('span', 'resource-method', recoveryLabel(resourceMethod(resource))));
+    if (resource.read_only === true) strategy.append(element('small', '', 'Accesso in sola lettura'));
+    row.append(info, strategy); return row;
+  }
+  function renderResources() {
+    const resources = state.service.resources;
+    $('#service-resources').hidden = !resources.length;
+    $('#resource-count').textContent = resources.length + (resources.length === 1 ? ' elemento' : ' elementi');
+    $('#service-resource-rows').replaceChildren(...resources.map(resource => resourceRow(resource)));
   }
   function executionPayload() {
     return { stack_root: $('#service-stack-root').value.trim(), probe_url: $('#service-probe-url').value.trim(),
@@ -320,7 +407,7 @@
   function clearPlan(resetInventory = false) {
     state.service.plan = null; state.service.inspected = false; state.service.completed = false;
     $('#service-reviewed').checked = false;
-    if (resetInventory) { state.service.analyzed = false; state.service.variables = []; state.service.privateNames.clear(); state.service.privateValues = Object.create(null); state.service.selectedVariable = ''; }
+    if (resetInventory) { state.service.analyzed = false; state.service.variables = []; state.service.resources = []; state.service.privateNames.clear(); state.service.privateValues = Object.create(null); state.service.selectedVariable = ''; $('#private-value').value = ''; }
     // analyze_service and prepare_service invalidate the stored draft before
     // replacing it. A separate background invalidation could race the prepare.
     renderServiceActions();
@@ -357,7 +444,7 @@
     $('#service-back').disabled = locked || step === 0;
     $('#service-next').hidden = step === 3;
     $('#service-next').disabled = locked || (step === 2 && !$('#service-reviewed').checked);
-    const nextLabel = step === 1 ? 'Analizza variabili' : step === 2 ? 'Prepara il piano' : 'Continua';
+    const nextLabel = step === 1 ? 'Analizza servizio' : step === 2 ? 'Prepara il piano' : 'Continua';
     $('#service-next').replaceChildren(document.createTextNode(nextLabel), icon('arrow'));
     $('#inspect-service').hidden = step !== 3 || state.service.completed;
     $('#inspect-service').disabled = locked || !state.service.plan;
@@ -376,7 +463,7 @@
       const name = variable.name, isPrivate = state.service.privateNames.has(name);
       const row = element('tr', state.service.selectedVariable === name ? 'selected' : '');
       row.append(element('td', '', name));
-      const source = element('td'); source.append(element('span', 'source-badge', SOURCE_LABELS[variable.source] || 'Variabile')); row.append(source);
+      const source = element('td'); source.append(element('span', 'source-badge', SOURCE_LABELS[variable.source] || text(variable.source, 'Variabile'))); row.append(source);
       const scopeCell = element('td'), toggle = element('div', 'scope-switch');
       [['Pubblica', false], ['Infisical', true]].forEach(([label, privateScope]) => {
         const button = element('button', privateScope === isPrivate ? 'active' : '', label);
@@ -404,14 +491,15 @@
     state.service.selectedVariable = name; $('#private-value').value = ''; clearPlan(); renderVariables();
   }
   async function analyzeService() {
-    const result = await runSynchronous(() => call('analyze_service', [{ compose: $('#service-compose').value, env: $('#service-env').value, service_name: $('#service-name').value.trim() }]));
+    const result = await runSynchronous(() => call('analyze_service', [sourcePayload()]));
     if (!result) return;
     state.service.variables = Array.isArray(result.variables) ? result.variables.filter(v => v && typeof v.name === 'string') : [];
+    state.service.resources = Array.isArray(result.resources) ? result.resources.filter(resource => resource && typeof resource.service === 'string' && typeof resource.target === 'string') : [];
     state.service.privateNames = new Set(state.service.variables.filter(v => v.suggested_private === true).map(v => v.name));
     state.service.privateValues = Object.create(null); state.service.selectedVariable = '';
     state.service.analyzed = true; state.service.plan = null; state.service.inspected = false;
-    $('#service-reviewed').checked = false; renderVariables(); selectStep(2);
-    setGlobal('Variabili analizzate', 'Verifica le proposte pubblico/privato prima di preparare il piano.');
+    $('#service-reviewed').checked = false; renderVariables(); renderResources(); selectStep(2);
+    setGlobal('Servizio analizzato', 'Verifica i dati e le variabili prima di preparare il piano.');
   }
   function storePrivateValue() {
     const name = state.service.selectedVariable;
@@ -421,30 +509,73 @@
     setGlobal('Valore privato inserito', 'Conservato soltanto in memoria. Non viene mostrato nel piano o negli esiti.');
   }
   async function prepareService() {
-    if (!$('#service-reviewed').checked) { showError(fixedError('SERVICE_REVIEW_REQUIRED', 'Verifica la scelta pubblico/privato delle variabili prima di preparare il piano.')); return; }
+    if (!$('#service-reviewed').checked) { showError(fixedError('SERVICE_REVIEW_REQUIRED', 'Verifica le variabili e come conservare i dati prima di preparare il piano.')); return; }
     const result = await runSynchronous(() => call('prepare_service', [draftPayload()]));
     if (!result || !result.plan || typeof result.plan !== 'object') return;
-    state.service.plan = result.plan; state.service.inspected = false; state.service.completed = false;
+    state.service.plan = publicPlanMetadata(result.plan); state.service.inspected = false; state.service.completed = false;
     feedback('service-feedback', ''); resetStages(state.service.scope === 'local_lab'); renderPlan(); selectStep(3);
     setGlobal('Piano pronto', 'Verifica la VM. L’aggiunta richiede poi un tuo comando esplicito.');
   }
+  // Only metadata belongs in the recap. Configuration and variable contents stay in the draft.
+  function publicPlanMetadata(plan) {
+    const result = {};
+    ['schema', 'schema_version', 'service_name', 'image', 'public_env_path', 'private_env_path', 'plan_id', 'digest', 'fingerprint'].forEach(key => {
+      if (typeof plan[key] === 'string' || typeof plan[key] === 'number') result[key] = plan[key];
+    });
+    ['service_names', 'public_names', 'private_names'].forEach(key => {
+      if (Array.isArray(plan[key])) result[key] = plan[key].filter(value => typeof value === 'string');
+    });
+    if (!result.private_names && plan.private_bindings && typeof plan.private_bindings === 'object') result.private_names = Object.keys(plan.private_bindings);
+    if (plan.images && typeof plan.images === 'object' && !Array.isArray(plan.images)) result.images = Object.fromEntries(Object.entries(plan.images).filter(([, value]) => typeof value === 'string'));
+    const metadata = (rows, keys) => Array.isArray(rows) ? rows.filter(row => row && typeof row === 'object').map(row => {
+      const item = {};
+      keys.forEach(key => { if (['string', 'number', 'boolean'].includes(typeof row[key])) item[key] = row[key]; });
+      return item;
+    }) : [];
+    if (Array.isArray(plan.components)) result.components = plan.components.filter(row => row && typeof row === 'object').map(row => {
+      const component = metadata([row], ['service', 'service_name', 'name', 'image', 'public_env_path', 'private_env_path'])[0];
+      component.private_names = row.private_bindings && typeof row.private_bindings === 'object' ? Object.keys(row.private_bindings) : [];
+      return component;
+    });
+    if (Array.isArray(plan.configuration_files)) result.configuration_files = metadata(plan.configuration_files, ['path', 'mode', 'sha256', 'hash']);
+    if (Array.isArray(plan.resources)) result.resources = plan.resources.filter(row => row && typeof row === 'object').map(row => {
+      const item = metadata([row], ['service', 'type', 'source', 'target', 'read_only', 'role', 'id'])[0];
+      if (row.recovery && ['recreate', 'stopped_archive', 'external'].includes(row.recovery.method)) item.recovery = { method: row.recovery.method };
+      return item;
+    });
+    return result;
+  }
   function renderPlan() {
-    const plan = state.service.plan;
-    $('#plan-service-name').textContent = plan ? text(plan.service_name, 'Servizio') : 'Piano da preparare';
-    $('#plan-image').textContent = plan ? text(plan.image) : 'Completa i passaggi precedenti.';
+    const plan = state.service.plan, names = plan && Array.isArray(plan.service_names) ? plan.service_names : [];
+    $('#plan-service-name').textContent = plan ? (names.length ? names.join(' + ') : text(plan.service_name, 'Servizio')) : 'Piano da preparare';
+    $('#plan-image').textContent = plan ? (names.length > 1 ? names.length + ' servizi collegati nello stesso stack' : text(plan.image, plan.images && text(plan.images[names[0]]))) : 'Completa i passaggi precedenti.';
     $('#plan-scope-badge').textContent = state.service.completed ? 'Verificato' : state.service.inspected ? 'VM verificata' : plan ? (state.service.scope === 'local_lab' ? 'Collaudo locale' : 'Piano pronto') : 'Da verificare';
     $('#plan-scope-badge').className = 'badge ' + (state.service.completed ? 'ready' : plan ? 'brand' : 'neutral');
-    const files = [];
+    const files = [], components = [];
     if (plan) {
-      const rows = [['file', 'Variabili pubbliche', plan.public_env_path]];
-      if (privateRequired()) rows.push(['lock', 'Variabili private da Agent', plan.private_env_path]);
+      const rows = [];
+      if (Array.isArray(plan.components) && plan.components.length) plan.components.forEach(component => {
+        const name = text(component.service, text(component.service_name, text(component.name, 'Servizio'))), card = element('div', 'plan-component');
+        card.append(element('strong', '', name), element('span', 'mono', text(component.image, plan.images && text(plan.images[name])))); components.push(card);
+        if (component.public_env_path) rows.push(['file', name + ' · variabili pubbliche', component.public_env_path]);
+        if (component.private_names.length && component.private_env_path) rows.push(['lock', name + ' · variabili private da Agent', component.private_env_path]);
+      });
+      else {
+        if (plan.public_env_path) rows.push(['file', 'Variabili pubbliche', plan.public_env_path]);
+        if ((plan.private_names || []).length && plan.private_env_path) rows.push(['lock', 'Variabili private da Agent', plan.private_env_path]);
+      }
+      (plan.configuration_files || []).forEach(file => rows.push(['file', 'Configurazione pubblica · ' + (typeof file.mode === 'number' ? file.mode.toString(8).padStart(4, '0') : 'permessi standard'), file.path]));
       rows.forEach(([symbol, label, path]) => {
         const row = element('div', 'plan-file'), content = element('div');
         content.append(element('strong', '', label), element('span', '', text(path)));
         row.append(icon(symbol), content); files.push(row);
       });
     }
+    $('#plan-components').replaceChildren(...components); $('#plan-components').hidden = !components.length;
     $('#plan-files').replaceChildren(...files);
+    const resources = plan && Array.isArray(plan.resources) ? plan.resources : [];
+    $('#plan-resources').hidden = !resources.length;
+    $('#plan-resource-rows').replaceChildren(...resources.map(resource => resourceRow(resource)));
     $('#plan-json').textContent = plan ? JSON.stringify(plan, null, 2) : 'Nessun piano preparato.';
   }
   async function nextServiceStep() {
@@ -609,7 +740,9 @@
     $('#service-next').addEventListener('click', () => void nextServiceStep());
     $('#store-private').addEventListener('click', storePrivateValue);
     $('#service-reviewed').addEventListener('change', renderServiceActions);
-    ['service-compose', 'service-env', 'service-name'].forEach(id => $('#' + id).addEventListener('input', () => { clearPlan(true); renderVariables(); }));
+    ['service-compose', 'service-env', 'service-name'].forEach(id => $('#' + id).addEventListener('input', sourceChanged));
+    $('#import-service-bundle').addEventListener('click', () => void importServiceBundle());
+    $('#add-configuration-file').addEventListener('click', () => { if (busy()) return; state.service.configurationFiles.push({ id: state.service.nextConfigurationId++, path: '', content: '', mode: 420 }); sourceChanged({ keepPolicies: true }); renderConfigurationFiles(); $('#configuration-files .configuration-file:last-child input').focus(); });
     ['service-stack-root', 'service-probe-url', 'service-project-id', 'service-environment', 'service-access-token', 'service-infisical-endpoint'].forEach(id => $('#' + id).addEventListener('input', () => { state.service.inspected = false; if (id === 'service-stack-root') state.service.rootEdited = true; renderServiceActions(); }));
     $('#inspect-service').addEventListener('click', () => void inspectService()); $('#apply-service').addEventListener('click', () => void applyService());
     $('#cancel-operation').addEventListener('click', async () => { $('#cancel-operation').disabled = true; setGlobal('Interruzione richiesta', 'Attendi la chiusura del passaggio in corso. Lo stato sulle VM resta conservato.', 'running'); if (state.operation === 'lab') feedback('lab-feedback', 'Interruzione richiesta. Attendo la chiusura del passaggio sulle VM di collaudo.'); await call('cancel'); });
@@ -619,11 +752,11 @@
     $('#help-button').addEventListener('click', () => $('#help-dialog').showModal()); $('#close-help').addEventListener('click', () => $('#help-dialog').close());
     $('#host-key-approve').addEventListener('click', () => void answerHostKey(true)); $('#host-key-reject').addEventListener('click', () => void answerHostKey(false));
     $('#host-key-dialog').addEventListener('cancel', event => { event.preventDefault(); void answerHostKey(false); });
-    $$('.code-field textarea').forEach(input => input.addEventListener('keydown', event => { if (event.key === 'Tab' && !event.shiftKey) { event.preventDefault(); const start = input.selectionStart, end = input.selectionEnd; input.setRangeText('  ', start, end, 'end'); input.dispatchEvent(new Event('input', { bubbles: true })); } }));
+    document.addEventListener('keydown', event => { const input = event.target; if (input.matches('.code-field textarea') && event.key === 'Tab' && !event.shiftKey && !input.disabled) { event.preventDefault(); const start = input.selectionStart, end = input.selectionEnd; input.setRangeText('  ', start, end, 'end'); input.dispatchEvent(new Event('input', { bubbles: true })); } });
   }
   function initializeUI() {
     bindEvents(); syncSettings({ user: 'test', infisical_user: 'test2', port: '22', infisical_port: '22', routing_mode: 'parallel_test', age_identity_mode: 'file' });
-    resetStages(); renderVariables(); renderPlan(); renderServiceActions(); window.recoveryUI.ready = true;
+    resetStages(); renderConfigurationFiles(); renderVariables(); renderResources(); renderPlan(); renderServiceActions(); window.recoveryUI.ready = true;
     if (api()) void initializeBridge();
     else { document.body.dataset.bridgeState = 'preview'; $('#preview-banner').hidden = false; }
     window.setInterval(() => void poll(), 550);

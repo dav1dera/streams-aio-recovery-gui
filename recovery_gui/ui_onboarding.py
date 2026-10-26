@@ -55,6 +55,9 @@ PROGRESS_TEXT = {
     'SERVICE_LAB_CHECKING_INFISICAL': 'Verifica della VM Infisical: vuota oppure stesso laboratorio riprendibile.',
 }
 ERROR_TEXT = {
+    'SERVICE_VOLUME_DRIVER_UNSUPPORTED': 'Il volume usa un archivio esterno: dichiara la sua procedura di recupero esterna prima di continuare.',
+    'ONBOARDING_CONFIGURATION_DATA_OVERLAP': 'Separa i file pubblici dalle cartelle dati da archiviare.',
+    'ONBOARDING_CONFIGURATION_READ_ONLY_REQUIRED': 'Monta i file pubblici in sola lettura e usa una cartella separata per i dati.',
     'SSH_CONNECTION_FAILED': 'La connessione SSH non è stata completata. Conserva gli esiti per identificare il passaggio che si è fermato.',
     'SSH_CONNECT_TIMEOUT': 'Il collegamento SSH ha superato il tempo di attesa. Verifica indirizzo, porta e raggiungibilità della VM.',
     'SSH_CONNECTION_REFUSED': 'La destinazione rifiuta la connessione SSH. Verifica la porta e che il servizio SSH sia avviato.',
@@ -75,7 +78,7 @@ ERROR_TEXT = {
     'RUNTIME_PROFILE_IMAGE_METADATA_INVALID': 'Docker non ha restituito metadati validi per un’immagine del backup. Conserva lo stato e riprova dopo aver verificato Docker.',
     'SERVICE_CONTROLLER_REQUIRED': 'Il collegamento di installazione non è disponibile in questa versione.',
     'SERVICE_ANALYSIS_REQUIRED': 'Analizza le variabili e prepara il piano prima di collegarti alla VM.',
-    'SERVICE_REVIEW_REQUIRED': 'Verifica la scelta pubblico/privato delle variabili prima di preparare il piano.',
+    'SERVICE_REVIEW_REQUIRED': 'Verifica le variabili e come conservare i dati prima di preparare il piano.',
     'SERVICE_INSPECTION_REQUIRED': 'Premi Verifica VM prima di aggiungere il servizio.',
     'SERVICE_INPUTS_CHANGED': 'I dati sono cambiati: prepara e verifica di nuovo il piano.',
     'SERVICE_OPERATION_INCOMPLETE': 'Il servizio non ha ancora superato tutti i controlli. Consulta il passaggio indicato.',
@@ -98,7 +101,7 @@ ERROR_TEXT = {
     'SERVICE_INFISICAL_ACCESS_REQUIRED': 'Per creare i segreti servono progetto, ambiente e un token Infisical con permessi di scrittura.',
     'SERVICE_STACK_ROOT_REQUIRED': 'Questa anteprima richiede lo stack in /home/utente-SSH/streams-aio, per esempio /home/pi/streams-aio.',
     'SERVICE_STACK_OWNER_MISMATCH': 'La cartella dello stack deve appartenere allo stesso utente usato per il collegamento SSH.',
-    'SERVICE_PERSISTENT_DATA_COVERAGE_REQUIRED': 'Questa anteprima aggiunge servizi senza nuovi volumi dati o database. Per aggiungere dati persistenti serve prima includerli nel backup e nel recupero.',
+    'SERVICE_PERSISTENT_DATA_COVERAGE_REQUIRED': 'I dati del servizio richiedono una scelta di conservazione verificata. Analizza di nuovo il Compose e controlla i dati previsti nel piano.',
     'SERVICE_PRIVATE_VALUES_INVALID': 'Un valore privato manca o non è valido. Inseriscilo nel campo mascherato e prepara di nuovo il piano.',
     'SERVICE_PRIVATE_VALUE_QUOTING_UNSUPPORTED': 'Questa versione non supporta valori privati con apostrofi, righe multiple, caratteri di controllo o una barra inversa finale. Non applica modifiche a quel valore.',
     'INFISICAL_AUTH_FAILED': 'Il token Infisical non è valido o è scaduto. Inserisci un nuovo token e verifica di nuovo la VM.',
@@ -115,6 +118,60 @@ ERROR_TEXT = {
     'SERVICE_PROBE_URL_INVALID': 'Il controllo HTTP deve usare http://127.0.0.1:porta/percorso, senza credenziali o parametri.',
     'SSH_ADDRESS_REQUIRED': 'Completa l’accesso della VM stack in Accessi e backup.',
     'SERVICE_TOOL_FAILED': 'Il controllo non è stato completato. Nessuna credenziale viene inserita negli esiti.',
+    # Fixed messages for public files, linked services, data and recovery policies.
+    'SERVICE_CONFIGURATION_INVALID': 'Controlla l’elenco dei file pubblici: ogni file richiede percorso, contenuto e permessi.',
+    'SERVICE_CONFIGURATION_DATA_OVERLAP': 'Un file pubblico si trova anche nei dati da archiviare. Collega separatamente la sottocartella public in sola lettura e la cartella dei dati del servizio.',
+    'SERVICE_CONFIGURATION_CONTENT_INVALID': 'Un file pubblico supera i limiti di dimensione o contiene caratteri non supportati. Controlla i file e riprova.',
+    'SERVICE_CONFIGURATION_FILE_REQUIRED': 'Aggiungi il contenuto del file pubblico collegato dal Compose prima di preparare il piano.',
+    'SERVICE_CONFIGURATION_MISSING': 'Manca un file pubblico richiesto dal Compose. Aggiungilo nella sezione File pubblici.',
+    'SERVICE_CONFIGURATION_MODE_INVALID': 'I permessi del file non sono validi. Usa per esempio 420 per 0644, 416 per 0640 o 384 per 0600.',
+    'SERVICE_CONFIGURATION_PATH_INVALID': 'Salva i file pubblici sotto data/nome-servizio/public/, senza usare percorsi esterni o la cartella dei segreti.',
+    'SERVICE_CONFIGURATION_NOT_MOUNTED': 'Un file pubblico non è collegato ad alcun servizio nel Compose. Correggi il collegamento oppure rimuovi il file.',
+    'SERVICE_CONFIGURATION_SOURCE_INVALID': 'Il collegamento al file pubblico non corrisponde a un percorso gestito. Usa data/nome-servizio/public/.',
+    'SERVICE_DATA_RECOVERY_REQUIRED': 'I dati del servizio devono essere archiviati a servizio fermo. Verifica la scelta stopped_archive per questi dati.',
+    'SERVICE_DATA_RESOURCE_OUTSIDE_STACK': 'I nuovi dati devono restare nella cartella dello stack oppure in volumi gestiti da Docker.',
+    'SERVICE_EXTERNAL_CONFIGURATION_UNSUPPORTED': 'Questa configurazione dipende da un file esterno non gestito. Aggiungi il file pubblico nella cartella prevista.',
+    'SERVICE_STORAGE_POLICY_INVALID': 'Controlla le scelte di conservazione dei dati. Ogni scelta deve indicare servizio, destinazione e metodo supportato.',
+    'SERVICE_STORAGE_POLICY_TARGET_MISSING': 'Una scelta di conservazione riguarda dati non presenti nel Compose. Analizza di nuovo il servizio.',
+    'SERVICE_RUNTIME_ARCHIVE_REFUSED': 'I collegamenti al sistema vengono ricreati durante il recupero. Non possono essere archiviati come dati del servizio.',
+    'SERVICE_RUNTIME_SOURCE_INVALID': 'Un collegamento al sistema usa un percorso non supportato. Verifica il Compose prima di continuare.',
+    'SERVICE_BUNDLE_INVALID': 'Il Compose con più servizi non è valido. Controlla nomi, immagini e collegamenti tra i servizi.',
+    'SERVICE_COMPOSE_RESOURCE_CONFLICT': 'Una rete o un volume esiste già con una definizione diversa. Conserva la definizione attuale oppure scegli un altro nome.',
+    'SERVICE_COMPOSE_RESOURCE_INVALID': 'Una rete o un volume nel Compose non è valido. Controlla la relativa definizione.',
+    'SERVICE_COMPOSE_TOP_LEVEL_UNSUPPORTED': 'Il Compose contiene una sezione non ancora gestita. Controlla servizi, reti, volumi e file di configurazione.',
+    'SERVICE_VARIABLE_CONFLICT': 'Due variabili hanno definizioni incompatibili. Controlla le variabili dei servizi indicati nel Compose.',
+    'SERVICE_VOLUME_INVALID': 'Controlla il collegamento ai dati nel Compose: origine e destinazione devono essere valide.',
+    'SERVICE_VOLUME_NAME_INVALID': 'Il nome del volume non è valido. Usa lettere, numeri, punti, trattini o trattini bassi.',
+    'SERVICE_MOUNT_INVALID': 'Un collegamento a file o dati non è valido. Controlla origine e destinazione nel Compose.',
+    'SERVICE_MOUNT_OPTIONS_INVALID': 'Il collegamento usa opzioni non supportate. Controlla le opzioni di accesso ai file nel Compose.',
+    'SERVICE_MOUNT_TARGET_DUPLICATE': 'Lo stesso servizio collega più risorse alla stessa destinazione. Mantieni un solo collegamento per percorso.',
+    'SERVICE_MOUNT_TYPE_INVALID': 'Il tipo di collegamento a file o dati non è supportato. Usa i tipi gestiti dal Compose.',
+    'SERVICE_RESOURCE_PATH_INVALID': 'Un percorso di file o dati non è valido. Evita risalite di cartella e riferimenti a variabili nel percorso.',
+    'SERVICE_RESOURCES_INVALID': 'L’elenco di file, dati o collegamenti non è valido. Analizza di nuovo il Compose.',
+    'SERVICE_TMPFS_INVALID': 'La memoria temporanea del servizio non è configurata correttamente. Controlla il Compose.',
+    'ONBOARDING_RESOURCE_BACKUP_CAPABILITY_REQUIRED': 'Il sistema di backup della VM deve supportare i nuovi dati prima dell’installazione. Aggiorna il sistema di backup e verifica di nuovo.',
+    'ONBOARDING_BACKUP_RESOURCE_COVERAGE_MISMATCH': 'Il nuovo backup non contiene tutti i dati previsti. Conserva lo stato e verifica la copertura prima di riprovare.',
+    'ONBOARDING_ANONYMOUS_VOLUME_MAPPING_REQUIRED': 'Un volume senza nome non ha una destinazione verificabile nel recupero. Assegna un nome al volume e prepara di nuovo il piano.',
+    'ONBOARDING_RUNTIME_RESOURCE_MISSING': 'Sulla VM manca un collegamento al sistema richiesto dal servizio. Verifica che la destinazione possa fornirlo.',
+    'ONBOARDING_EXTERNAL_RESOURCE_MISSING': 'Sulla VM manca una rete o un volume esterno richiesto dal Compose. Preparalo prima di continuare.',
+    'ONBOARDING_DATA_RESOURCE_OUTSIDE_STACK': 'Un percorso dei nuovi dati esce dalla cartella dello stack. Correggi il Compose e prepara un nuovo piano.',
+    'ONBOARDING_CONFIGURATION_FILES_INVALID': 'L’elenco dei file pubblici non supera i controlli. Prepara di nuovo il piano con file e permessi validi.',
+    'ONBOARDING_CONFIGURATION_HASH_INVALID': 'Il contenuto di un file pubblico non corrisponde al piano verificato. Prepara e verifica di nuovo il piano.',
+    'ONBOARDING_CONFIGURATION_FILE_NOT_MOUNTED': 'Un file pubblico non è collegato ai servizi del piano. Controlla il Compose e prepara di nuovo il piano.',
+    'ONBOARDING_CONFIGURATION_RESOURCE_MISSING': 'Manca un file pubblico richiesto dai servizi del piano. Aggiungilo e prepara di nuovo il piano.',
+    'ONBOARDING_PUBLIC_CONFIGURATION_READBACK_FAILED': 'Non è stato possibile verificare tutti i file pubblici scritti sulla VM. Conserva lo stato e verifica di nuovo.',
+    'ONBOARDING_PUBLIC_RESOURCE_READBACK_FAILED': 'Reti, volumi o collegamenti scritti sulla VM non corrispondono al piano. Conserva lo stato e verifica di nuovo.',
+    'ONBOARDING_RESOURCE_INVENTORY_CONFLICT': 'Lo stack registra già dati o collegamenti con una definizione diversa. Conserva la registrazione attuale e controlla il piano.',
+    'ONBOARDING_RESOURCE_INVENTORY_INVALID': 'La registrazione dei dati dello stack non è valida. Conserva lo stato e verifica il piano prima di riprovare.',
+    'ONBOARDING_MOUNT_INVENTORY_MISMATCH': 'I collegamenti ai dati non corrispondono a quelli del piano verificato. Prepara e verifica un nuovo piano.',
+    'ONBOARDING_RECOVERY_POLICY_INVALID': 'La scelta di conservazione dei dati non è valida. Analizza il servizio e verifica le scelte nel riepilogo.',
+    'ONBOARDING_RUNTIME_POLICY_INVALID': 'I collegamenti al sistema devono essere ricreati durante il recupero. Correggi la scelta di conservazione.',
+    'ONBOARDING_COMPOSE_RESOURCE_CONFLICT': 'Una rete o un volume della VM ha una definizione diversa dal piano. Conserva lo stato e controlla i nomi e i collegamenti.',
+    'ONBOARDING_COMPOSE_RESOURCES_INVALID': 'Le reti o i volumi del piano non superano i controlli. Prepara un nuovo piano dal Compose corretto.',
+    'ONBOARDING_RESOURCES_INVALID': 'L’elenco dei dati e dei collegamenti del piano non è valido. Prepara e verifica un nuovo piano.',
+    'ONBOARDING_RESOURCE_PATH_INVALID': 'Un percorso di dati del piano non è valido. Correggi il Compose e prepara di nuovo il piano.',
+    'ONBOARDING_COMPONENTS_INVALID': 'L’elenco dei servizi collegati non è valido. Prepara e verifica un nuovo piano.',
+    'ONBOARDING_EXTERNAL_CONFIGURATION_UNSUPPORTED': 'Il servizio richiede una configurazione esterna non gestita. Aggiungi un file pubblico nella cartella prevista.',
 }
 
 
@@ -235,6 +292,93 @@ def infisical_from_fields(endpoint, project_id, environment, access_token, *, pr
             'environment': environment, 'access_token': access_token}
 
 
+def resource_editor_inputs(configuration_text='', policy_text=''):
+    """Parse optional editor lists without returning excerpts of invalid input."""
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError()
+            result[key] = value
+        return result
+    result = {}
+    for key, source, code, limit in (
+            ('configuration_files', configuration_text, 'SERVICE_CONFIGURATION_INVALID', 5 * 1024 * 1024),
+            ('storage_policies', policy_text, 'SERVICE_STORAGE_POLICY_INVALID', 256 * 1024)):
+        if not isinstance(source, str) or len(source) > limit:
+            raise InputFailure(code)
+        if not source.strip():
+            continue
+        try:
+            rows = json.loads(source, object_pairs_hook=unique_object)
+        except (ValueError, RecursionError):
+            raise InputFailure(code) from None
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise InputFailure(code)
+        if rows:
+            result[key] = rows
+    return result
+
+
+def plan_public_metadata(public):
+    """A second presentation boundary keeps config and variable bytes out."""
+    def fields(row, names):
+        return {key: row[key] for key in names if key in row and isinstance(row[key], (str, int, bool))}
+    result = fields(public, ('schema', 'service_name', 'image', 'public_env_path', 'private_env_path', 'fingerprint'))
+    result['private_names'] = list(public['private_bindings']) if isinstance(public.get('private_bindings'), dict) else []
+    names = public.get('service_names')
+    if isinstance(names, (list, tuple)):
+        result['service_names'] = [name for name in names if isinstance(name, str)]
+    if isinstance(public.get('images'), dict):
+        result['images'] = {name: image for name, image in public['images'].items() if isinstance(name, str) and isinstance(image, str)}
+    for key, allowed in (
+            ('components', ('service_name', 'service', 'name', 'image', 'public_env_path', 'private_env_path')),
+            ('configuration_files', ('path', 'mode', 'sha256', 'hash')),
+            ('resources', ('service', 'type', 'source', 'target', 'read_only', 'role', 'id'))):
+        if not isinstance(public.get(key), (list, tuple)):
+            continue
+        result[key] = []
+        for row in public[key]:
+            if not isinstance(row, dict):
+                continue
+            item = fields(row, allowed)
+            if key == 'components':
+                item['private_names'] = list(row['private_bindings']) if isinstance(row.get('private_bindings'), dict) else []
+            if key == 'resources' and isinstance(row.get('recovery'), dict) and row['recovery'].get('method') in ('recreate', 'stopped_archive', 'external'):
+                item['recovery'] = {'method': row['recovery']['method']}
+            result[key].append(item)
+    return result
+
+
+def plan_summary(public, *, local_lab=False):
+    """Readable, value-free recap, including linked services and data choices."""
+    plan = plan_public_metadata(public)
+    names = plan.get('service_names') or [plan.get('service_name', 'Servizio')]
+    lines = ['Servizi: ' + ', '.join(names)]
+    images = plan.get('images', {})
+    for name in names:
+        image = images.get(name, plan.get('image', ''))
+        if image:
+            lines.append('  ' + name + ': ' + image)
+    for file in plan.get('configuration_files', []):
+        mode = file.get('mode')
+        permission = (' · permessi ' + format(mode, '04o')) if type(mode) is int else ''
+        lines.append('File pubblico: ' + file.get('path', '') + permission)
+    for resource in plan.get('resources', []):
+        prefix = resource.get('service', '') + ': ' + resource.get('source', 'Gestito da Docker') + ' → ' + resource.get('target', '')
+        method = resource.get('recovery', {}).get('method')
+        if method == 'external':
+            label = 'Risorsa esterna: da predisporre sulla destinazione'
+        elif resource.get('role') == 'data' and not resource.get('read_only'):
+            label = 'Archivia con container fermi'
+        else:
+            label = 'Ricreato durante il recupero'
+        lines.append(prefix + '\n  ' + label)
+    lines.append('Variabili private: ' + (', '.join(plan['private_names']) or 'nessuna'))
+    lines.append('Collaudo locale: GitHub e backup esclusi.' if local_lab else 'Percorso completo: GitHub e nuovo backup cifrato verificati.')
+    return '\n'.join(lines)
+
+
 @dataclass
 class OnboardingState:
     """Memory-only workflow state, also usable in headless tests."""
@@ -272,6 +416,7 @@ class ServiceOnboardingPanel(ttk.Frame):
         self.app, self.controller = app, controller
         self.state = OnboardingState()
         self.inventory, self.private_names = (), set()
+        self.resource_inventory = ()
         self.events, self._busy, self._alive = queue.Queue(), False, True
         self._active_action = ''
         self._controls, self._restore_states, self._traces = [], [], []
@@ -375,16 +520,25 @@ class ServiceOnboardingPanel(ttk.Frame):
                   style='CardHint.TLabel', wraplength=820).pack(anchor='w', pady=(0, 8))
         ttk.Button(connection, text='Apri Accessi e backup', command=lambda: self.app.book.select(1)).pack(anchor='w')
 
-        inputs = self._card('2. Nuovo servizio', 'Anteprima: un solo servizio, senza nuovi volumi dati o database. I file esistenti dello stack vengono conservati; i dati persistenti richiedono prima una copertura nel backup e nel recupero.')
+        inputs = self._card('2. Nuovo servizio', 'Incolla il Compose, anche con più servizi collegati. Nel prossimo passo verifica variabili, file pubblici e conservazione dei dati.')
         grid = ttk.Frame(inputs)
         grid.pack(fill='x')
-        self._entry(grid, 'Nome del servizio (facoltativo se già nel Compose)', self.service_name)
+        self._entry(grid, 'Nome del servizio principale (facoltativo)', self.service_name)
         self.compose = self._editor(inputs, 'Compose da aggiungere', 11)
         self.public_env = self._editor(inputs, 'Variabili .env del servizio (facoltative)', 6)
-        self.analyse_button = self._control(ttk.Button(inputs, text='Analizza variabili', command=self.analyse_variables))
+        self.configuration_files = self._editor(inputs, 'File pubblici · elenco JSON facoltativo: path, content, mode', 5)
+        ttk.Label(inputs, text='Solo configurazioni pubbliche, senza password o token. Usa data/nome-servizio/public/nome-file. Il campo mode usa 420 per 0644, 416 per 0640 o 384 per 0600. Lascia vuoto se non servono file.', style='CardHint.TLabel', wraplength=820).pack(anchor='w', pady=(5, 8))
+        self.storage_policies = self._editor(inputs, 'Conservazione dati · elenco JSON facoltativo: service, target, method', 3)
+        ttk.Label(inputs, text='Lascia vuoto per archiviare i dati con i servizi fermi (stopped_archive). recreate è riservato ai collegamenti al sistema e ai file pubblici; external indica risorse esterne da predisporre sulla destinazione.', style='CardHint.TLabel', wraplength=820).pack(anchor='w', pady=(5, 8))
+        self.analyse_button = self._control(ttk.Button(inputs, text='Analizza servizio', command=self.analyse_variables))
         self.analyse_button.pack(anchor='w', pady=(10, 0))
 
-        classification = self._card('3. Pubblico o privato', 'Verifica le proposte: il nome della variabile, da solo, non identifica sempre un segreto.')
+        classification = self._card('3. Dati e segreti', 'Verifica i dati da conservare e quali variabili devono restare private.')
+        self.resources = ttk.Treeview(classification, columns=('service', 'path', 'recovery'), show='headings', height=4)
+        for name, label, width in (('service', 'Servizio', 160), ('path', 'Dati e collegamenti', 330), ('recovery', 'Conservazione', 260)):
+            self.resources.heading(name, text=label)
+            self.resources.column(name, width=width, minwidth=80, stretch=True)
+        self.resources.pack(fill='x', pady=(0, 14))
         self.variables = ttk.Treeview(classification, columns=('name', 'source', 'scope', 'value'), show='headings', height=7, selectmode='browse')
         for name, label, width in (('name', 'Variabile', 250), ('source', 'Origine', 110), ('scope', 'Destinazione', 130), ('value', 'Valore', 150)):
             self.variables.heading(name, text=label)
@@ -406,7 +560,7 @@ class ServiceOnboardingPanel(ttk.Frame):
         self.secret_button.pack(side='left')
         ttk.Label(classification, text='I valori già presenti nel testo vengono usati senza mostrarli nella tabella. I valori privati non vengono esportati.',
                   style='CardHint.TLabel', wraplength=820).pack(anchor='w', pady=(7, 8))
-        self.review_check = self._control(ttk.Checkbutton(classification, text='Ho verificato la scelta pubblico/privato delle variabili', variable=self.reviewed))
+        self.review_check = self._control(ttk.Checkbutton(classification, text='Ho verificato le variabili e come conservare i dati', variable=self.reviewed))
         self.review_check.pack(anchor='w')
         self.plan_button = self._control(ttk.Button(classification, text='Prepara piano', command=self.prepare_plan))
         self.plan_button.pack(anchor='w', pady=(10, 0))
@@ -450,7 +604,8 @@ class ServiceOnboardingPanel(ttk.Frame):
         return importlib.import_module('.service_plan', __package__)
 
     def _sources(self):
-        return (self.compose.get('1.0', 'end-1c'), self.public_env.get('1.0', 'end-1c'), self.service_name.get().strip())
+        return (self.compose.get('1.0', 'end-1c'), self.public_env.get('1.0', 'end-1c'), self.service_name.get().strip(),
+                self.configuration_files.get('1.0', 'end-1c'), self.storage_policies.get('1.0', 'end-1c'))
 
     def _text_changed(self, event):
         if event.widget.edit_modified():
@@ -507,7 +662,20 @@ class ServiceOnboardingPanel(ttk.Frame):
             return
         try:
             sources = self._sources()
-            inventory = self._planner().inspect_inputs(*sources)
+            options = resource_editor_inputs(*sources[3:])
+            inventory = self._planner().inspect_inputs(*sources[:3], **options)
+            resources = self._planner().inspect_resources(*sources[:3], **options)
+            self.resource_inventory = tuple(resources) if isinstance(resources, (tuple, list)) else ()
+            self.resources.delete(*self.resources.get_children())
+            for resource in self.resource_inventory:
+                method = resource.get('recovery', {}).get('method')
+                if method == 'external':
+                    label = 'Risorsa esterna: da predisporre sulla destinazione'
+                elif resource.get('role') == 'data' and not resource.get('read_only'):
+                    label = 'Archivia con container fermi'
+                else:
+                    label = 'Ricreato durante il recupero'
+                self.resources.insert('', 'end', values=(resource.get('service', ''), resource.get('source', '') + ' → ' + resource.get('target', ''), label))
             self.inventory = tuple(inventory)
             self.private_names = {item.name for item in self.inventory if item.suggested_private}
             self.state.private_values = {key: value for key, value in self.state.private_values.items()
@@ -516,7 +684,7 @@ class ServiceOnboardingPanel(ttk.Frame):
             self.state.invalidate()
             self.reviewed.set(False)
             self._fill_inventory()
-            self.status.set('Variabili rilevate. Verifica pubblico/privato, poi prepara il piano.')
+            self.status.set('Servizio analizzato. Verifica dati e variabili, poi prepara il piano.')
         except Exception as error:
             self.inventory, self._scan_sources = (), None
             self.state.invalidate()
@@ -573,12 +741,14 @@ class ServiceOnboardingPanel(ttk.Frame):
             if not self.reviewed.get():
                 raise InputFailure('SERVICE_REVIEW_REQUIRED')
             self.state.invalidate()
-            self.state.analysis = self._planner().analyze_inputs(*self._sources(),
-                private_names=tuple(sorted(self.private_names)), private_values=dict(self.state.private_values))
+            sources = self._sources()
+            self.state.analysis = self._planner().analyze_inputs(*sources[:3],
+                private_names=tuple(sorted(self.private_names)), private_values=dict(self.state.private_values),
+                **resource_editor_inputs(*sources[3:]))
             public = self.state.analysis.plan.to_public_dict()
             self.preview.configure(state='normal')
             self.preview.delete('1.0', 'end')
-            self.preview.insert('1.0', json.dumps(public, indent=2, ensure_ascii=False))
+            self.preview.insert('1.0', plan_summary(public, local_lab=self.local_lab.get()))
             self.preview.configure(state='disabled')
             self.status.set('Piano pronto. Verifica la VM prima di aggiungere il servizio.')
         except Exception as error:
@@ -818,7 +988,7 @@ class ServiceOnboardingPanel(ttk.Frame):
                                           filetypes=[('Piano senza valori', '*.json')])
         if path:
             try:
-                Path(path).write_text(json.dumps(self.state.analysis.plan.to_public_dict(), indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+                Path(path).write_text(json.dumps(plan_public_metadata(self.state.analysis.plan.to_public_dict()), indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
                 self.status.set('Piano senza valori salvato. Credenziali e valori privati non sono inclusi.')
             except Exception:
                 self._show_error(InputFailure('SERVICE_TOOL_FAILED'))

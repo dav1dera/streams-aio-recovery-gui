@@ -182,6 +182,30 @@ class WebAssetsTests(unittest.TestCase):
         self.assertEqual(modes, {'file', 'paste'})
 
 
+    def test_generic_service_flow_keeps_four_steps_and_explicit_public_files(self):
+        panels = [attrs for _, attrs in self.document.elements if 'data-step-panel' in attrs]
+        self.assertEqual({attrs['data-step-panel'] for attrs in panels}, {'0', '1', '2', '3'})
+        ids = [attrs.get('id') for _, attrs in self.document.elements]
+        for name in ('configuration-editor', 'configuration-files', 'add-configuration-file', 'import-service-bundle',
+                     'service-resources', 'service-resource-rows', 'plan-components',
+                     'plan-resources', 'plan-resource-rows'):
+            with self.subTest(control=name):
+                self.assertEqual(ids.count(name), 1)
+        self.assertIn('file pubblici', self.html)
+        self.assertIn('senza inserirli qui', self.html)
+        self.assertNotIn('Incolla un solo servizio', self.html)
+        self.assertNotIn('senza nuovi volumi dati', self.html)
+
+    def test_plan_rendering_uses_metadata_projection_before_display(self):
+        self.assertIn('state.service.plan = publicPlanMetadata(result.plan)', self.js)
+        projection = self.js.split('function publicPlanMetadata(plan)', 1)[1].split('function renderPlan()', 1)[0]
+        for field in ('compose_fragment', 'public_env_text', 'private_values', "'content'"):
+            with self.subTest(field=field):
+                self.assertNotIn(field, projection)
+        self.assertIn("['path', 'mode', 'sha256', 'hash']", projection)
+
+
+
 class LocalAssetResolverTests(unittest.TestCase):
     def test_remote_absolute_and_encoded_escape_references_are_refused(self):
         for reference in ('https://cdn.example/app.js', '//cdn.example/app.js',

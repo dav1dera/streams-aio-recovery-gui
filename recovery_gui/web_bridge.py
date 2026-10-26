@@ -20,7 +20,7 @@ from . import __version__, backend
 from .onboarding import ServiceController
 from .age_input import validate_identity_input
 from .lab_prepare import LabFailure
-from .service_plan import inspect_inputs, analyze_inputs
+from .service_plan import inspect_inputs, analyze_inputs, inspect_resources
 from .ui_onboarding import (ERROR_TEXT, PROGRESS_TEXT, STAGES as SERVICE_STAGES, connection_from_snapshot,
                            infisical_from_fields, verified_completion, verified_local_completion)
 from .ui_state import FINISHED_STAGES, PHASE_STAGES, operational_request, machine_status
@@ -582,19 +582,44 @@ class WebBridge:
 
     @staticmethod
     def _sources(payload, prepare=False):
-        allowed = {'compose', 'env', 'service_name'} | ({'private_names', 'private_values', 'reviewed'} if prepare else set())
+        allowed = {'compose', 'env', 'service_name', 'configuration_files', 'storage_policies'} | ({'private_names', 'private_values', 'reviewed'} if prepare else set())
         need(isinstance(payload, dict) and set(payload) <= allowed)
         values = tuple(payload.get(key, '') for key in ('compose', 'env', 'service_name'))
         need(all(isinstance(value, str) and len(value) <= MAX_INPUT and '\x00' not in value for value in values))
         return values
+
+    @staticmethod
+    def _resource_inputs(payload):
+        files = payload.get('configuration_files', [])
+        policies = payload.get('storage_policies', [])
+        need(isinstance(files, list) and len(files) <= 100, 'SERVICE_CONFIGURATION_INVALID')
+        need(isinstance(policies, list) and len(policies) <= 200, 'SERVICE_STORAGE_POLICY_INVALID')
+        for item in files:
+            need(isinstance(item, dict) and set(item) <= {'path', 'content', 'mode'}
+                 and {'path', 'content'} <= set(item)
+                 and isinstance(item['path'], str) and len(item['path']) <= 512
+                 and isinstance(item['content'], str) and len(item['content']) <= MAX_INPUT
+                 and '\x00' not in item['path'] + item['content']
+                 and type(item.get('mode', 0o644)) is int,
+                 'SERVICE_CONFIGURATION_INVALID')
+        need(sum(len(item['content']) for item in files) <= 2 * MAX_INPUT,
+             'SERVICE_CONFIGURATION_INVALID')
+        for item in policies:
+            need(isinstance(item, dict) and set(item) == {'service', 'target', 'method'}
+                 and all(isinstance(value, str) and len(value) <= 512 for value in item.values()),
+                 'SERVICE_STORAGE_POLICY_INVALID')
+        return dict(configuration_files=files, storage_policies=policies)
 
     @public
     def analyze_service(self, payload):
         with self._lock:
             self._guard()
             self._invalidate()
-            rows = inspect_inputs(*self._sources(payload))
-            return dict(ok=True, variables=[dict(name=row.name, source=row.source,
+            sources = self._sources(payload)
+            resource_inputs = self._resource_inputs(payload)
+            rows = inspect_inputs(*sources, **resource_inputs)
+            return dict(ok=True, resources=list(inspect_resources(*sources, **resource_inputs)),
+                        variables=[dict(name=row.name, source=row.source,
                 suggested_private=row.suggested_private, selected_private=row.selected_private,
                 has_value=row.has_value) for row in rows])
 
@@ -610,7 +635,8 @@ class WebBridge:
                  and all(isinstance(name, str) and ENV_NAME.fullmatch(name) for name in names), 'SERVICE_PRIVATE_VALUES_INVALID')
             need(isinstance(values, dict) and len(values) <= 200 and set(values) <= set(names)
                  and all(isinstance(value, str) and len(value) <= 16384 for value in values.values()), 'SERVICE_PRIVATE_VALUES_INVALID')
-            self._analysis = analyze_inputs(*sources, private_names=names, private_values=values)
+            self._analysis = analyze_inputs(*sources, private_names=names, private_values=values,
+                                            **self._resource_inputs(payload))
             return dict(ok=True, plan=self._analysis.plan.to_public_dict())
 
     def _service_inputs(self, payload):

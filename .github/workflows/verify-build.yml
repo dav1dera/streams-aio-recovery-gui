@@ -47,6 +47,18 @@ jobs:
           for test_file in test_snapshot_recovery_flow.py test_npm_topology.py test_npm_topology_flow.py test_upload_permissions.py test_headplane_recovery.py test_local_endpoints.py test_tailscale_profile.py test_tailscale_recovery.py; do
             sudo env RECOVERY_UPLOAD_PERMISSION_INTEGRATION=1 TMPDIR="$root_temp" TEMP="$root_temp" TMP="$root_temp" "$recovery_python" -B -m unittest discover -s tests -p "$test_file" -v
           done
+      - name: Roundtrip isolated container data with real Docker and age
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq age
+          recovery_python=$(python -c 'import sys; print(sys.executable)')
+          resources_temp=$(mktemp -d "$RUNNER_TEMP/recovery-service-resources.XXXXXX")
+          sudo chown root:root "$resources_temp"
+          sudo chmod 700 "$resources_temp"
+          sudo env RUN_SERVICE_RESOURCES_INTEGRATION=1 TMPDIR="$resources_temp" TEMP="$resources_temp" TMP="$resources_temp" "$recovery_python" -B -m unittest discover -s tests -p integration_service_resources.py -v
       - name: Verify the NPM domain and route helpers
         run: |
           node --experimental-vm-modules tests/check_domain_probe.mjs

@@ -279,7 +279,7 @@ class Inputs(unittest.TestCase):
         job.state, job.config = {'completed': [], 'in_progress': None}, {'aio_mode': 'manual'}
         job.state_path = self.home/'state.json'
         trace = []
-        for name in ('auth', 'validate_resume', 'clones', 'download', 'decrypt', 'initialize', 'inputs', 'npm', 'aio'):
+        for name in ('auth', 'validate_resume', 'clones', 'download', 'decrypt', 'initialize', 'inputs', 'npm', 'aio', 'services'):
             setattr(job, name, lambda name=name: trace.append(name))
         job.run_script = lambda name, action, *args, **kwargs: trace.append(action)
         class PolicyRefused(ValueError):

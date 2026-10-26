@@ -35,18 +35,21 @@ ASSETS = {
 BUNDLE_FILES = set(ASSETS) | {'manifest.json', 'SHA256SUMS'}
 AIO_ASSET = 'aio-state.tar.gz.age'
 AIO_PLAINTEXT = 'aio-state.tar.gz'
+SERVICES_ASSET = 'services-state.tar.gz.age'
+SERVICES_PLAINTEXT = 'services-state.tar.gz'
 
 
 def bundle_files(names):
     """Only the original bundle or its native AIO extension are accepted."""
     names = set(names)
-    require(names in (BUNDLE_FILES, BUNDLE_FILES | {AIO_ASSET}), 'UNEXPECTED_RELEASE_ASSETS')
+    require(names in (BUNDLE_FILES, BUNDLE_FILES | {AIO_ASSET}, BUNDLE_FILES | {AIO_ASSET, SERVICES_ASSET}), 'UNEXPECTED_RELEASE_ASSETS')
     return names
 
 
 def encrypted_assets(bundle):
     names = bundle_files(path.name for path in Path(bundle).iterdir())
-    return dict(ASSETS, **({AIO_ASSET: AIO_PLAINTEXT} if AIO_ASSET in names else {}))
+    return dict(ASSETS, **({AIO_ASSET: AIO_PLAINTEXT} if AIO_ASSET in names else {}),
+                **({SERVICES_ASSET: SERVICES_PLAINTEXT} if SERVICES_ASSET in names else {}))
 CODE = re.compile(r'[A-Z][A-Z0-9_]*\Z')
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 KEY = re.compile(r'[A-Z][A-Z0-9_]*\Z')
@@ -71,7 +74,7 @@ OAUTH_ALLOWLIST_REF = '/oauth2-proxy/ALLOWED_EMAILS'
 EVENTS = {'CLONES', 'DOWNLOAD', 'DECRYPT', 'INITIALIZE', 'INPUTS', 'RENDER',
           'EMPTY_STATE', 'NPM', 'AIO', 'PREFLIGHT', 'PREPARED', 'STARTED', 'REFUSED',
           'INFISICAL_CONFIG', 'INFISICAL_DATABASE', 'INFISICAL_SERVER', 'NATIVE_AGENT', 'RUNTIME_PROFILE',
-          'NPM_TOPOLOGY'}
+          'NPM_TOPOLOGY', 'SERVICES'}
 
 
 def event(stage, status='PASS', code=None):
@@ -638,33 +641,106 @@ def logical_payload(registry, streams, metadata):
     return result
 
 
+def verify_service_snapshot(root, state):
+    """Return verified resource IDs and owners; a checkpoint never proves data."""
+    root = safe_path(root)
+    inventory_path = safe_path(root / 'config/service-resources.json')
+    archive = safe_path(root.parent / '.local/share/streams-aio-recovery/private' / SERVICES_PLAINTEXT)
+    evidence = state.get('services_snapshot')
+    if not inventory_path.exists():
+        require(evidence is None and not archive.exists(), 'SERVICES_STATE_INVENTORY_REQUIRED')
+        return {}
+    module = load_module(Path(__file__).with_name('service_snapshot.py'), 'generic_services_verifier')
+    try:
+        value = module.inventory(root)
+        files = value.get('configuration_files', [])
+        require(isinstance(files, list), 'SERVICES_STATE_CONFIGURATION_INVALID')
+        for item in files:
+            require(isinstance(item, dict) and set(item) == {'path', 'mode', 'sha256'}
+                    and isinstance(item['path'], str)
+                    and re.fullmatch(r'data/[a-z0-9][a-z0-9_-]*/public/.+', item['path'])
+                    and '..' not in PurePosixPath(item['path']).parts and '\\' not in item['path']
+                    and not any(ord(char) < 32 or ord(char) == 127 for char in item['path'])
+                    and type(item['mode']) is int and 0 <= item['mode'] <= 0o777
+                    and isinstance(item['sha256'], str) and re.fullmatch(r'[0-9a-f]{64}', item['sha256']),
+                    'SERVICES_STATE_CONFIGURATION_INVALID')
+            target = safe_path(root / item['path'])
+            require(target.is_file() and digest(target) == item['sha256']
+                    and (os.name == 'nt' or stat.S_IMODE(target.stat().st_mode) == item['mode']),
+                    'SERVICES_STATE_CONFIGURATION_CHANGED')
+        selected = module.selected(value)
+        if not selected:
+            require(evidence is None and not archive.exists(), 'SERVICES_STATE_UNEXPECTED_ARCHIVE')
+            return {}
+        require(isinstance(evidence, dict) and set(evidence) == {
+                    'schema', 'run', 'stack_commit', 'inventory_sha256', 'archive_sha256', 'resources'},
+                'SERVICES_STATE_CHECKPOINT_REQUIRED')
+        require(state.get('target') == str(root) and isinstance(state.get('tag'), str)
+                and re.fullmatch(r'dr-[0-9]{8}T[0-9]{6}Z', state['tag'])
+                and isinstance(state.get('public_commit'), str) and SHA.fullmatch(state['public_commit'])
+                and evidence.get('run') == state['tag'][3:]
+                and evidence.get('stack_commit') == state['public_commit'], 'SERVICES_STATE_SCOPE_MISMATCH')
+        require(type(evidence.get('schema')) is int and evidence['schema'] == 1
+                and evidence.get('inventory_sha256') == digest(inventory_path)
+                and evidence.get('resources') == sorted(item['id'] for item in selected),
+                'SERVICES_STATE_CHECKPOINT_CHANGED')
+        require(archive.is_file(), 'SERVICES_STATE_BACKUP_REQUIRED')
+        if os.name != 'nt':
+            private_file(archive, (root,))
+        require(evidence.get('archive_sha256') == digest(archive), 'SERVICES_STATE_CHECKPOINT_CHANGED')
+        model = json.loads(command(['docker', 'compose', '--profile', 'all', 'config', '--format', 'json'],
+                                   'COMPOSE_VALIDATION_FAILED', cwd=root))
+        require(type(state.get('application_start_attempted', False)) is bool, 'SERVICES_STATE_CHECKPOINT_CHANGED')
+        module.verify_restored(root, archive, evidence, model,
+            before_start=not state.get('application_start_attempted', False),
+            runner=lambda args, code: command(args, code, cwd=root))
+    except module.Refused as error:
+        raise Refused(str(error)) from None
+    return {item['id']: item['service'] for item in selected}
+
+
 def stack_preflight(root, state):
-    """Keep the pinned preflight; only explicit manual AIO may defer its import."""
+    """Run the pinned renderer, accepting only independently verified state."""
     if state.get('runtime_profile') is not None:
         policy = load_module(Path(__file__).with_name('runtime_profile.py'), 'recovery_runtime_policy')
         policy.validate(root, root.parent/'.local/share/streams-aio-recovery', state)
+    service_resources = verify_service_snapshot(root, state)
     snapshot = state.get('aio_mode') == 'snapshot'
+    manual = state.get('aio_recovery') == 'MANUAL_PENDING'
     if snapshot:
         verify_aio_snapshot(root, state)
-    if state.get('aio_recovery') != 'MANUAL_PENDING' and not snapshot:
+    if not manual and not snapshot and not service_resources:
         command([sys.executable, '-B', root / 'scripts/dr.py', 'preflight',
                  '--target', root, '--mode', 'fresh'], 'FRESH_RENDERER_REFUSED', cwd=root)
         return
-    require(state.get('aio_mode') in ('manual', 'snapshot') and state.get('target') == str(root)
-            and state.get('machine_id') == Path('/etc/machine-id').read_text().strip()
-            and 'NPM' in state.get('completed', []) and 'AIO' in state.get('completed', []),
-            'MANUAL_AIO_CHECKPOINT_REQUIRED')
-    require(not safe_path(root / '.generated/aio-import-complete.json').exists(),
-            'MANUAL_AIO_IMPORT_CONFLICT')
-    dr = load_module(root / 'scripts/dr.py', 'manual_aio_preflight')
+    if manual or snapshot:
+        require(state.get('aio_mode') in ('manual', 'snapshot') and state.get('target') == str(root)
+                and state.get('machine_id') == Path('/etc/machine-id').read_text().strip()
+                and 'NPM' in state.get('completed', []) and 'AIO' in state.get('completed', []),
+                'MANUAL_AIO_CHECKPOINT_REQUIRED')
+        require(not safe_path(root / '.generated/aio-import-complete.json').exists(),
+                'MANUAL_AIO_IMPORT_CONFLICT')
+    dr = load_module(root / 'scripts/dr.py', 'verified_state_preflight')
     manifest = json.loads(safe_path(root / 'config/dr-manifest.yaml').read_bytes())
-    allowed = {'aio PRIVATE_DR_PAYLOAD_IMPORT_REQUIRED'}
-    # A mixed unit (e.g. AIO and NPM) must still pass the ordinary check.
-    for unit in (() if snapshot else manifest['state_units']):
-        services = set(unit.get('services', []))
-        if services and services <= {'aiostreams', 'aiometadata'} and unit.get('classification') in (
-                'REQUIRED_IDENTITY_STATE', 'REQUIRED_USER_STATE'):
-            allowed.add(','.join(unit['services']) + ' ' + unit['id']
+    units = manifest.get('state_units')
+    require(isinstance(units, list) and all(isinstance(unit, dict) and isinstance(unit.get('id'), str)
+            for unit in units) and len({unit['id'] for unit in units}) == len(units), 'FRESH_RENDERER_REFUSED')
+    allowed = {'aio PRIVATE_DR_PAYLOAD_IMPORT_REQUIRED'} if manual or snapshot else set()
+    for unit in units:
+        services = unit.get('services', [])
+        identifier = unit.get('resource_id')
+        if (identifier in service_resources and unit.get('id') == 'service-' + identifier
+                and unit.get('recovery_asset') == SERVICES_ASSET
+                and unit.get('classification') == 'REQUIRED_USER_STATE'
+                and services == [service_resources[identifier]]):
+            allowed.add(','.join(services) + ' ' + unit['id']
+                        + ':REQUIRED_USER_CONFIGURATION_NOT_RECONSTRUCTED')
+        # A mixed AIO/legacy unit must still pass its ordinary check.
+        if (manual and not snapshot and not unit.get('resource_id') and not unit['id'].startswith('service-')
+                and unit.get('recovery_asset') != SERVICES_ASSET
+                and services and set(services) <= {'aiostreams', 'aiometadata'} and unit.get('classification') in (
+                'REQUIRED_IDENTITY_STATE', 'REQUIRED_USER_STATE')):
+            allowed.add(','.join(services) + ' ' + unit['id']
                         + ':REQUIRED_USER_CONFIGURATION_NOT_RECONSTRUCTED')
     captured = io.StringIO()
     args = argparse.Namespace(target=str(root), mode='fresh', synthetic=False)
@@ -676,8 +752,9 @@ def stack_preflight(root, state):
         require(str(error) == 'DR_PREFLIGHT_BLOCKED' and bool(failures)
                 and all(line in allowed for line in failures), 'FRESH_RENDERER_REFUSED')
     else:
-        # The pinned preflight must report the missing AIO import marker.
-        raise Refused('MANUAL_AIO_IMPORT_CONFLICT')
+        if manual or snapshot:
+            # Native/manual AIO still requires the pinned missing-import check.
+            raise Refused('MANUAL_AIO_IMPORT_CONFLICT')
 
 
 def verify_aio_snapshot(root, state):
@@ -1110,6 +1187,48 @@ class Recovery:
         self.run_script('aio-dr.py', 'validate', '--payload', path)
         self.run_script('aio-dr.py', 'import', '--payload', path, root=True)
 
+    def services(self):
+        path = self.root / 'config/service-resources.json'
+        archive = self.private / SERVICES_PLAINTEXT
+        if not path.exists():
+            require(not archive.exists(), 'SERVICES_STATE_INVENTORY_REQUIRED')
+            return
+        module = load_module(self.tooling / 'service_snapshot.py', 'generic_services_restorer')
+        try:
+            value = module.inventory(self.root)
+            for item in value.get('configuration_files', []):
+                require(isinstance(item,dict) and set(item) == {'path','mode','sha256'}
+                        and isinstance(item['path'],str) and re.fullmatch(r'data/[a-z][a-z0-9_-]*/public/.+',item['path'])
+                        and '..' not in PurePosixPath(item['path']).parts and type(item['mode']) is int
+                        and 0 <= item['mode'] <= 0o777 and isinstance(item['sha256'],str),
+                        'SERVICES_STATE_CONFIGURATION_INVALID')
+                target = safe_path(self.root / item['path'])
+                require(target.is_file() and digest(target) == item['sha256'], 'SERVICES_STATE_CONFIGURATION_CHANGED')
+                os.chmod(target,item['mode'])
+            if not module.selected(value):
+                require(not archive.exists(), 'SERVICES_STATE_UNEXPECTED_ARCHIVE')
+                return
+            require(archive.exists(), 'SERVICES_STATE_BACKUP_REQUIRED')
+            model = json.loads(command(['docker', 'compose', '--profile', 'all', 'config', '--format', 'json'],
+                                       'COMPOSE_VALIDATION_FAILED', cwd=self.root))
+            previous = self.state.get('services_snapshot')
+            expected = dict(schema=1,run=self.state['tag'][3:],stack_commit=self.state['public_commit'],
+                            inventory_sha256=module.digest(path),
+                            archive_sha256=module.digest(archive),resources=sorted(item['id'] for item in module.selected(value)))
+            if previous:
+                require(previous == expected, 'SERVICES_STATE_CHECKPOINT_CHANGED')
+                return
+            evidence = module.restore(private_file(archive, (self.root,self.manager,self.tooling)),self.root,
+                run_id=self.state['tag'][3:],source_commit=self.state['public_commit'],model=model,
+                runner=lambda args,code: command(args,code,cwd=self.root))
+            require(isinstance(evidence,dict) and {key:value for key,value in evidence.items() if key != 'checkpoint'} == expected,
+                    'SERVICES_STATE_CHECKPOINT_CHANGED')
+            evidence.pop('checkpoint',None)
+            self.state['services_snapshot'] = evidence
+            save(self.state_path,self.state)
+        except module.Refused as error:
+            raise Refused(str(error)) from None
+
     def validate_resume(self):
         if self.state.get('lab_deployment') is not None:
             require(self.config.get('onboarding_lab') is True
@@ -1322,6 +1441,7 @@ class Recovery:
         event('RUNTIME_PROFILE')
         self.step('NPM', self.npm)
         self.step('AIO', self.aio)
+        self.step('SERVICES', self.services)
         if self.config.get('operational_profile') is True:
             event('NPM_TOPOLOGY','RUNNING')
         self.prepare_topology()

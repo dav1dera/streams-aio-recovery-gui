@@ -5,7 +5,7 @@ import unittest
 import yaml
 
 from recovery_gui.service_plan import (PlanFailure, analyze_inputs, append_service,
-                                      inspect_inputs)
+                                      inspect_inputs, inspect_resources)
 
 
 class ServicePlanTests(unittest.TestCase):
@@ -127,8 +127,7 @@ class ServicePlanTests(unittest.TestCase):
             self.assertIn('# restart comment', result.plan.compose_fragment)
 
     def test_ambiguous_or_executable_yaml_is_closed_without_input_excerpt(self):
-        cases = ('services:\n  first:\n    image: one\n  second:\n    image: two\n',
-                 'services:\n  demo:\n    image: one\ninclude: ./other.yml\n',
+        cases = ('services:\n  demo:\n    image: one\ninclude: ./other.yml\n',
                  'demo:\n  image: one\n  extends: ../elsewhere\n',
                  'demo: &demo\n  image: one\n',
                  'demo:\n  image: !!python/object/apply:os.system [canary-private-value]\n',
@@ -148,16 +147,18 @@ class ServicePlanTests(unittest.TestCase):
                                f'demo:\n  image: example/demo:latest\n  env_file: {path}\n')
         self.fail_with('SERVICE_IMAGE_INVALID', 'demo:\n  image: username:canary-secret@registry/app\n')
 
-    def test_persistent_mounts_require_explicit_backup_restore_coverage(self):
-        for source in ('./data/demo/config', '../data/demo', './data/demo/../../other', '/etc',
-                       './data/other', 'my-volume'):
+    def test_persistent_mounts_include_explicit_backup_restore_coverage(self):
+        for source in ('./data/demo/config', './data/other', 'my-volume'):
             with self.subTest(source=source):
-                self.fail_with('SERVICE_PERSISTENT_DATA_COVERAGE_REQUIRED',
-                               'demo:\n  image: example/demo:latest\n  volumes:\n'
-                               f'    - {source}:/config:ro\n')
-        self.fail_with('SERVICE_PERSISTENT_DATA_COVERAGE_REQUIRED',
-                       'demo:\n  image: example/demo:latest\n  volumes:\n'
-                       '    - type: bind\n      source: ./data/demo/config\n      target: /config\n')
+                result = analyze_inputs('demo:\n  image: example/demo:latest\n  volumes:\n'
+                                        f'    - {source}:/config\n')
+                self.assertEqual(result.plan.schema, 2)
+                self.assertEqual(result.plan.resources[0]['recovery']['method'], 'stopped_archive')
+        for source in ('../data/demo', './data/demo/../../other'):
+            self.fail_with('SERVICE_RESOURCE_PATH_INVALID',
+                           'demo:\n  image: example/demo:latest\n  volumes:\n' + f'    - {source}:/config\n')
+        self.fail_with('SERVICE_DATA_RESOURCE_OUTSIDE_STACK',
+                       'demo:\n  image: example/demo:latest\n  volumes: ["/srv/state:/config"]\n')
 
     def test_tmpfs_is_not_mistaken_for_persistent_data(self):
         result = analyze_inputs('demo:\n  image: example/demo:latest\n  tmpfs:\n    - /tmp\n')
@@ -223,6 +224,110 @@ class ServicePlanTests(unittest.TestCase):
                                 '    API_KEY: canary-$$literal\n', private_names=['API_KEY'])
         self.assertEqual(result.sensitive['API_KEY'], 'canary-$literal')
         self.assertNotIn('canary', json.dumps(result.plan.deployment_payload()))
+
+
+class ServiceBundleTests(unittest.TestCase):
+    COMPOSE = ("services:\n  web:\n    image: example/web:latest\n"
+               "    environment:\n      API_KEY: ${API_KEY:?required}\n"
+               "    volumes: [./data/web/public/config:/app/config:ro]\n"
+               "    networks: [monitoring]\n"
+               "  metrics:\n    image: example/metrics:latest\n"
+               "    environment:\n      API_KEY: ${API_KEY:?required}\n"
+               "    volumes: [/var/run/docker.sock:/socket:ro, metrics-state:/state]\n"
+               "    networks: [monitoring]\n"
+               "volumes:\n  metrics-state: {}\n"
+               "networks:\n  monitoring: {}\n")
+
+    def test_multi_service_credentials_are_global_unique_and_value_free(self):
+        rows = inspect_inputs(self.COMPOSE)
+        self.assertEqual([row.name for row in rows], ['WEB__API_KEY', 'METRICS__API_KEY'])
+        resources = inspect_resources(self.COMPOSE)
+        self.assertEqual(len(resources), 3)
+        result = analyze_inputs(self.COMPOSE, private_names=[row.name for row in rows],
+                                private_values={'WEB__API_KEY': 'canary-web', 'METRICS__API_KEY': 'canary-metrics'},
+                                configuration_files=[{'path': 'data/web/public/config/settings.yaml', 'content': 'title: Dashboard'}])
+        self.assertEqual(result.plan.schema, 2)
+        self.assertEqual(result.plan.service_names, ('web', 'metrics'))
+        self.assertEqual(result.plan.components[1]['value_names'], {'API_KEY': 'METRICS__API_KEY'})
+        self.assertEqual(result.plan.private_bindings['WEB__API_KEY'], {'folder': '/web', 'key': 'API_KEY'})
+        self.assertEqual(result.plan.components[1]['private_bindings']['API_KEY'], {'folder': '/metrics', 'key': 'API_KEY'})
+        self.assertEqual(result.sensitive['WEB__API_KEY'], 'canary-web')
+        for text in (repr(result), repr(result.plan), json.dumps(result.plan.to_public_dict()),
+                     json.dumps(result.plan.deployment_payload())):
+            self.assertNotIn('canary-', text)
+        self.assertNotIn('title: Dashboard', json.dumps(result.plan.to_public_dict()))
+        self.assertIn('title: Dashboard', json.dumps(result.plan.deployment_payload()))
+        self.assertEqual(result.plan.service_name, 'web')
+        self.assertEqual(result.plan.images['metrics'], 'example/metrics:latest')
+
+    def test_compose_resources_append_preserves_existing_bytes_and_is_idempotent(self):
+        source = self.COMPOSE.replace('      API_KEY: ${API_KEY:?required}\n', '      PORT: 8080\n')
+        result = analyze_inputs(source)
+        existing = ('# Stack header\r\nname: original\r\nservices:\r\n    old:\r\n'
+                    '        image: example/old # keep\r\nnetworks:\r\n    default:\r\n'
+                    '        name: keep-me # comment\r\nvolumes:\r\n    old-data: # keep\r\n')
+        rendered = result.plan.render_compose(existing)
+        self.assertIn('        image: example/old # keep\r\n', rendered)
+        self.assertIn('        name: keep-me # comment\r\n', rendered)
+        self.assertIn('    old-data: # keep\r\n', rendered)
+        self.assertNotIn('\n', rendered.replace('\r\n', ''))
+        parsed = yaml.safe_load(rendered)
+        self.assertEqual(set(parsed['services']), {'old', 'web', 'metrics'})
+        self.assertEqual(set(parsed['networks']), {'default', 'monitoring'})
+        self.assertEqual(set(parsed['volumes']), {'old-data', 'metrics-state'})
+        self.assertEqual(result.plan.render_compose(rendered), rendered)
+        with self.assertRaisesRegex(PlanFailure, '^SERVICE_COMPOSE_RESOURCE_CONFLICT$'):
+            result.plan.render_compose('services:\n  old:\n    image: old\nnetworks:\n  monitoring:\n    external: true\n')
+
+    def test_top_level_configs_and_public_file_privacy(self):
+        compose = ('services:\n  demo:\n    image: example/demo\n'
+                   '    configs: [settings]\n    environment:\n      TOKEN: ${TOKEN}\n'
+                   'configs:\n  settings:\n    file: ./data/demo/public/settings.yaml\n')
+        kwargs = dict(private_names=['TOKEN'], private_values={'TOKEN': 'canary-private'})
+        result = analyze_inputs(compose, configuration_files=[{'path': 'data/demo/public/settings.yaml', 'content': 'public'}], **kwargs)
+        self.assertEqual(result.plan.resources[0]['role'], 'config')
+        existing = 'services:\n  old:\n    image: old\n'
+        rendered = result.plan.render_compose(existing)
+        self.assertEqual(yaml.safe_load(rendered)['configs']['settings']['file'], './data/demo/public/settings.yaml')
+        with self.assertRaisesRegex(PlanFailure, '^SERVICE_PRIVATE_VALUE_OUTSIDE_ENV$'):
+            analyze_inputs(compose, configuration_files=[{'path': 'data/demo/public/settings.yaml', 'content': 'token: canary-private'}], **kwargs)
+
+    def test_global_names_handle_normalized_service_collisions(self):
+        compose = ('services:\n  foo-bar:\n    image: example/demo\n    environment: {API_KEY: public}\n'
+                   '  foo_bar:\n    image: example/demo\n    environment: {API_KEY: public}\n')
+        rows = inspect_inputs(compose)
+        self.assertEqual(len({row.name for row in rows}), 2)
+        self.assertTrue(all(row.name.startswith('FOO_BAR__') for row in rows))
+
+    def test_resource_merge_into_empty_mappings_and_version_header(self):
+        plan = analyze_inputs('version: "3.8"\nservices:\n  demo:\n    image: example/demo\n'
+                              '    volumes: [cache:/cache]\nnetworks:\n  demo-net: {}\n').plan
+        for existing in ('services: {} # retained\nvolumes: {}\nnetworks: {}\n',
+                         'services:\n  old:\n    image: old\nvolumes:\nnetworks:\n'):
+            with self.subTest(existing=existing):
+                rendered = plan.render_compose(existing)
+                self.assertIn('demo', yaml.safe_load(rendered)['services'])
+                self.assertIn('cache', yaml.safe_load(rendered)['volumes'])
+                self.assertIn('demo-net', yaml.safe_load(rendered)['networks'])
+                self.assertEqual(plan.render_compose(rendered), rendered)
+
+    def test_top_level_literal_dollar_is_preserved_for_compose(self):
+        compose = ('services:\n  demo:\n    image: example/demo\n    configs: [settings]\n'
+                   'configs:\n  settings:\n    content: "hello $$HOME"\n')
+        result = analyze_inputs(compose)
+        self.assertEqual(result.plan.compose_resources['configs']['settings']['content'], 'hello $$HOME')
+
+    def test_escaped_private_values_cannot_leak_in_public_configuration(self):
+        compose = 'demo:\n  image: example/demo\n  volumes: [./data/demo/public:/config:ro]\n'
+        with self.assertRaisesRegex(PlanFailure, '^SERVICE_PRIVATE_VALUE_OUTSIDE_ENV$'):
+            analyze_inputs(compose, 'API_KEY=canary\\abc\n', private_names=['API_KEY'],
+                           configuration_files=[{'path': 'data/demo/public/settings.yaml', 'content': 'key: canary\\abc'}])
+
+    def test_schema_one_compatibility(self):
+        plan = analyze_inputs('demo:\n  image: example/demo\n').plan
+        self.assertEqual(plan.schema, 1)
+        self.assertNotIn('components', plan.to_public_dict())
+        self.assertNotIn('resources', plan.deployment_payload())
 
 
 if __name__ == '__main__':

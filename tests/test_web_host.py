@@ -74,9 +74,32 @@ class WebHostTests(unittest.TestCase):
     def test_public_facade_has_no_arbitrary_url_file_or_code_execution_method(self):
         expected = {'initialize', 'update_settings', 'load_backups', 'load_backup', 'prepare_lab', 'recover',
                     'analyze_service', 'prepare_service', 'inspect_service', 'apply_service', 'invalidate_service',
-                    'poll', 'answer_host_key', 'cancel', 'choose_file', 'save_report', 'save_plan', 'open_guide'}
+                    'poll', 'answer_host_key', 'cancel', 'choose_file', 'save_report', 'save_plan', 'open_guide', 'import_service_bundle'}
         actual = {name for name, value in vars(web_host.DesktopAPI).items() if not name.startswith('_') and callable(value)}
         self.assertEqual(actual, expected)
+
+    def test_import_bundle_reads_only_explicit_choice_and_invalidates_old_receipt(self):
+        import json
+        from recovery_gui.web_bridge import WebBridge
+        bridge = WebBridge()
+        api = web_host.DesktopAPI(bridge)
+        api._bind(self.window)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'service.json'
+            path.write_text(json.dumps(dict(compose='demo:\n  image: example/demo:latest\n',env='',service_name='')))
+            self.window.create_file_dialog.return_value = (str(path),)
+            with patch.dict('sys.modules', {'webview': self.webview}):
+                result = api.import_service_bundle()
+            self.assertTrue(result['ok'])
+            self.assertIn('demo:',result['bundle']['compose'])
+            path.write_text(json.dumps(dict(compose='demo:\n  image: example/demo:latest\n',private_values={'PASSWORD':'canary'})))
+            with patch.dict('sys.modules', {'webview': self.webview}):
+                rejected = api.import_service_bundle()
+            self.assertEqual(rejected['code'],'WEB_SERVICE_BUNDLE_INVALID')
+            self.assertNotIn('canary',repr(rejected))
+        self.window.create_file_dialog.return_value = None
+        with patch.dict('sys.modules', {'webview': self.webview}):
+            self.assertEqual(api.import_service_bundle(),dict(ok=True,bundle=None))
 
     def test_explicit_user_help_opens_only_fixed_repository_guide(self):
         with patch.object(web_host.webbrowser, 'open') as open_browser:

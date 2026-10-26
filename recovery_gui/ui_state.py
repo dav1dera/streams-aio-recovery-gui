@@ -7,7 +7,7 @@ resources, edits checkpoints, or treats a successful preparation as a restore.
 PHASES = ('Infisical', 'Stack', 'AIO', 'Agent', 'Domini', 'Servizi')
 PHASE_STAGES = {
     'Infisical': {'INFISICAL_TRANSFER', 'INFISICAL_CONFIG', 'INFISICAL_DATABASE', 'INFISICAL_SERVER'},
-    'Stack': {'INITIALIZE', 'INPUTS', 'RENDER', 'EMPTY_STATE', 'PREFLIGHT',
+    'Stack': {'SERVICES', 'INITIALIZE', 'INPUTS', 'RENDER', 'EMPTY_STATE', 'PREFLIGHT',
               'PREPARED', 'RUNTIME_PROFILE', 'OPERATIONAL_PROFILE', 'STACK_TRANSFER'},
     'AIO': {'AIO', 'AIO_BACKUP', 'AIO_IMPORT', 'AIO_DATABASES'},
     'Agent': {'NATIVE_AGENT'},

@@ -124,6 +124,36 @@ class DesktopAPI:
         finally:
             self._dialog_lock.release()
 
+    def import_service_bundle(self):
+        """Read only the JSON the user explicitly selects, without deploying it."""
+        if self._window is None or self._bridge._is_busy() or not self._dialog_lock.acquire(blocking=False):
+            return _refused('SERVICE_OPERATION_BUSY', 'Attendi il termine dell’operazione in corso.')
+        try:
+            import webview
+            from .service_plan import inspect_inputs, inspect_resources
+            paths = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=False,
+                                                    file_types=('Pacchetto servizio JSON (*.json)',))
+            if not paths:
+                return {'ok': True, 'bundle': None}
+            path = Path(paths[0])
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
+                raise ValueError('invalid bundle')
+            raw = path.read_bytes()
+            if len(raw) > 4 * 1024 * 1024:
+                raise ValueError('invalid bundle')
+            value = json.loads(raw)
+            sources = self._bridge._sources(value)
+            options = self._bridge._resource_inputs(value)
+            inspect_inputs(*sources, **options)
+            inspect_resources(*sources, **options)
+            # No receipt, saved plan, private classification or credentials may be imported.
+            self._bridge.invalidate_service()
+            return {'ok': True, 'bundle': dict(compose=sources[0],env=sources[1],service_name=sources[2],**options)}
+        except Exception:
+            return _refused('WEB_SERVICE_BUNDLE_INVALID', 'Il pacchetto non è valido. Usa un file JSON con Compose, variabili e configurazioni pubbliche del servizio.')
+        finally:
+            self._dialog_lock.release()
+
     def _save(self, kind):
         if self._window is None or self._bridge._is_busy() or not self._dialog_lock.acquire(blocking=False):
             return _refused('SERVICE_OPERATION_BUSY', 'Attendi il termine dell’operazione in corso.')

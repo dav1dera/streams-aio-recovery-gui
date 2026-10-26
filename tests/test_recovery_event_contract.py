@@ -71,7 +71,7 @@ class EventContract(unittest.TestCase):
                               domain_target_address='192.0.2.29')
             actions = []
             for name in ('auth', 'validate_resume', 'clones', 'download', 'decrypt', 'initialize',
-                         'inputs', 'prepare_first_boot', 'npm', 'aio', 'prepare_topology'):
+                         'inputs', 'prepare_first_boot', 'npm', 'aio', 'services', 'prepare_topology'):
                 setattr(job, name, lambda name=name: actions.append(name))
             job.run_script = lambda name, action, *args, **kwargs: actions.append(action)
             policy = N(deployment_record=lambda *args: {'schema': 1})
