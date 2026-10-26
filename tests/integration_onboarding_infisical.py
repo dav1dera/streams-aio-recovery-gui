@@ -270,6 +270,18 @@ class RealInfisicalOnboarding(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='recovery-infisical-e2e-') as temporary:
             base = Path(temporary).resolve()
             base.chmod(0o700)
+
+            def clear_fixture_acls(path):
+                # Hosted runners may install inheritable ACLs on temporary/home
+                # parents. Normalize only directories newly owned by this test;
+                # production private-ACL checks remain unchanged.
+                require(not path.is_symlink() and (path == base or path.is_relative_to(base)
+                        or path == home or path.is_relative_to(home)), 'ONBOARDING_E2E_ACL_SCOPE')
+                for attribute in remote.ACL_ATTRIBUTES & set(os.listxattr(path)):
+                    os.removexattr(path, attribute)
+                require(not remote.ACL_ATTRIBUTES & set(os.listxattr(path)), 'ONBOARDING_E2E_ACL_SETUP_FAILED')
+
+            clear_fixture_acls(base)
             try:
                 backend_image = pinned_image(SERVER_TAG)
                 application_image = pinned_image(APPLICATION_TAG)
@@ -328,6 +340,7 @@ class RealInfisicalOnboarding(unittest.TestCase):
                 invoke(['useradd', '--create-home', '--home-dir', home, '--shell', '/usr/sbin/nologin',
                         '--user-group', username], 'ONBOARDING_E2E_USER_CREATE_FAILED')
                 user_created = True
+                clear_fixture_acls(home)
                 import pwd
                 account = pwd.getpwnam(username)
                 root = home / 'streams-aio'
@@ -337,8 +350,10 @@ class RealInfisicalOnboarding(unittest.TestCase):
                 os.chown(root / 'data', account.pw_uid, account.pw_gid)
                 (root / '.secrets').mkdir(mode=0o750)
                 os.chown(root / '.secrets', 0, account.pw_gid)
+                clear_fixture_acls(root / '.secrets')
                 area = home / '.local/state/streams-aio-onboarding'
                 area.mkdir(mode=0o700, parents=True)
+                clear_fixture_acls(area)
                 marker = dict(schema=1, kind='prepared_onboarding_lab', root=str(root), owner=username,
                     machine_id=Path('/etc/machine-id').read_text().strip(), publications_disabled=True)
                 private_write(area / 'lab.json', json.dumps(marker).encode())
