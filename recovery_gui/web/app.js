@@ -16,7 +16,7 @@
     settings: {}, settingsDirty: false, version: '', errors: {}, labels: {}, progressText: {}, phaseStages: {}, finishedStages: new Set(),
     point: null, stages: {}, phases: {}, phaseLabels: {}, activePhase: null, machines: {}, history: [], activeHostKey: null, hostKeys: [], pollInFlight: false,
     service: { step: 0, analyzed: false, variables: [], privateNames: new Set(), privateValues: Object.create(null),
-      selectedVariable: '', configurationFiles: [], nextConfigurationId: 1, resources: [], sourcePolicies: [], plan: null, inspected: false, completed: false, rootEdited: false, scope: 'full' }
+      selectedVariable: '', configurationFiles: [], nextConfigurationId: 1, resources: [], sourcePolicies: [], plan: null, inspected: false, completed: false, rootEdited: false, resume: false, resumePhase: '', scope: 'full' }
   };
   window.recoveryUI = { ready: false };
 
@@ -59,17 +59,69 @@
     node.className = 'inline-feedback' + (tone ? ' ' + tone : '');
     node.hidden = !message;
   }
+  const SERVICE_DIAGNOSTIC_TEXT = {
+    PRIVATE_VALUE_IN_PUBLIC_FILE: 'Un valore privato compare in un file pubblico. Correggi la configurazione o usa un riferimento alla variabile privata.',
+    PRIVATE_VARIABLE_DEFAULT_REFUSED: 'Una variabile pubblica contiene un valore privato come valore predefinito. Lascia soltanto il riferimento alla variabile.',
+    LITERAL_CREDENTIAL_REFUSED: 'Una credenziale è scritta direttamente nella configurazione pubblica. Spostala nelle variabili private.',
+    SERVICE_CONFIGURATION_MODE_MISMATCH: 'I permessi di un file pubblico non corrispondono a quelli previsti. Il file esistente viene conservato.',
+    SERVICE_CONFIGURATION_HASH_MISMATCH: 'Un file pubblico è cambiato dopo la preparazione del piano. Verifica il contenuto prima di continuare.',
+    SOURCE_FILE_MISSING_OR_OVERSIZED: 'Un file richiesto manca o supera il limite previsto. Controlla i file del servizio.',
+    COMMAND_FAILED: 'Il controllo della VM non è riuscito. Verifica di nuovo per riprendere il lavoro registrato.',
+    COMPOSE_CONFIG_FAILED: 'Docker non accetta ancora la configurazione. Controlla il Compose e i collegamenti indicati.',
+    COMPOSE_PULL_FAILED: 'Non è stato possibile scaricare una delle immagini. Controlla nome, versione e accesso al registro.',
+    COMPOSE_UP_FAILED: 'Docker non ha completato l’avvio. Lo stato è conservato per la verifica successiva.',
+    IMAGE_UNAVAILABLE: 'L’immagine o la versione richiesta non è disponibile per questa VM. Correggi il Compose.',
+    PORT_IN_USE: 'Una porta richiesta è già occupata. Scegli una porta libera prima di aggiungere il servizio.',
+    PUBLIC_BASE_MOVED: 'La configurazione pubblica è cambiata durante il controllo. Verifica di nuovo la VM.',
+    SYNC_ALREADY_RUNNING: 'Una sincronizzazione è già in corso. Attendi e verifica di nuovo la VM.',
+    TOOLING_UPDATE_REQUIRED: 'Prepara gli strumenti della VM da questa schermata, poi verifica di nuovo.',
+    AGENT_SCOPE_UNAVAILABLE: 'Il collegamento Agent non espone il progetto o ambiente richiesto. Controlla le impostazioni Infisical.',
+    COMPOSE_UNSUPPORTED: 'Questa configurazione richiede una funzione Docker non disponibile sulla VM. Correggi il Compose o la destinazione.',
+    RECOVERY_VOLUME_OVERRIDE_REVIEW_REQUIRED: 'Un volume richiede una scelta di conservazione compatibile con il recupero. Controlla i dati del servizio.',
+    MISSING_SERVICE_DEPENDENCY: 'Nel Compose manca un servizio richiesto da un altro componente. Aggiungilo al pacchetto o correggi il collegamento.',
+    CANDIDATE_PUBLIC_ENV_REQUIRES_PRIVATE_CLASSIFICATION: 'Un dato indicato come pubblico richiede una variabile privata. Torna al modulo, seleziona le variabili riservate e verifica di nuovo.',
+    SERVICE_DEPENDENCY_CYCLE: 'I servizi si richiamano in un ciclo di avvio. Correggi le dipendenze nel Compose.',
+    PUBLIC_DECLARATION_INVALID: 'Una dichiarazione pubblica del servizio non è valida. Controlla Compose, file e scelte di conservazione.',
+    PUBLIC_EXPORT_REFUSED: 'La configurazione non supera ancora i controlli di pubblicazione. Il dettaglio identifica il dato da verificare.'
+  };
+  function serviceDiagnostic(value) {
+    if (!value || value.schema !== 1 || !Object.hasOwn(STAGES, value.stage) || !Object.hasOwn(SERVICE_DIAGNOSTIC_TEXT, value.code) || typeof value.retryable !== 'boolean') return null;
+    if (Object.keys(value).some(key => !['schema', 'stage', 'code', 'path', 'lines', 'references', 'retryable'].includes(key))) return null;
+    const paths = new Set(['docker-compose.yml', 'config/service-resources.json']), plan = state.service.plan;
+    if (plan) {
+      if (typeof plan.public_env_path === 'string') paths.add(plan.public_env_path);
+      (plan.components || []).forEach(row => { if (typeof row.public_env_path === 'string') paths.add(row.public_env_path); });
+      (plan.configuration_files || []).forEach(row => { if (typeof row.path === 'string') paths.add(row.path); });
+    }
+    if (value.path !== undefined && (!paths.has(value.path) || typeof value.path !== 'string')) return null;
+    if (value.lines !== undefined && (value.path === undefined || !Array.isArray(value.lines) || value.lines.length > 20 || value.lines.some(line => !Number.isInteger(line) || line < 1 || line > 1000000))) return null;
+    if (value.references !== undefined && (!Array.isArray(value.references) || value.references.length > 20 || value.references.some(ref => typeof ref !== 'string' || !/^\/[A-Za-z0-9_-]{1,64}(?:\/[A-Za-z0-9_-]{1,128}){1,8}$/.test(ref)))) return null;
+    const pieces = [STAGES[value.stage] + ': ' + SERVICE_DIAGNOSTIC_TEXT[value.code]];
+    if (value.path) pieces.push('File: ' + value.path);
+    if (value.lines && value.lines.length) pieces.push((value.lines.length === 1 ? 'Riga: ' : 'Righe: ') + value.lines.join(', '));
+    return { title: STAGES[value.stage] + ' da completare', detail: pieces.join('\n') };
+  }
   function showError(result) {
     const code = text(result && result.code, 'DESKTOP_OPERATION_FAILED');
     const detail = text(result && result.description, state.errors[code] || 'Il controllo non è stato completato. Conserva gli esiti prima di riprovare.');
     const role = result && result.target_role;
     const target = role === 'stack' ? 'VM stack' : role === 'infisical' ? 'VM Infisical' : '';
-    const description = target ? target + ': ' + detail : detail;
-    setGlobal(code, description, 'failed');
+    const diagnostic = state.page === 'service' ? serviceDiagnostic(result && result.diagnostic) : null;
+    const title = diagnostic ? diagnostic.title : code;
+    const description = diagnostic ? diagnostic.detail : target ? target + ': ' + detail : detail;
+    setGlobal(title, description, 'failed');
     if (state.operation === 'lab') feedback('lab-feedback', code + '\n' + description, 'error');
-    if (state.page === 'service' && state.operation !== 'lab') feedback('service-feedback', code + '\n' + description, 'error');
+    if (state.page === 'service' && state.operation !== 'lab') {
+      feedback('service-feedback', description + '\nCodice: ' + code, 'error');
+      if (['ONBOARDING_TOOLING_UPDATE_REQUIRED', 'ONBOARDING_RESOURCE_BACKUP_CAPABILITY_REQUIRED'].includes(code) || (diagnostic && result.diagnostic.code === 'TOOLING_UPDATE_REQUIRED')) {
+        const button = element('button', 'button secondary compact', 'Prepara strumenti VM');
+        button.id = 'prepare-service-tools'; button.type = 'button'; button.disabled = busy();
+        button.addEventListener('click', () => void updateServiceTools());
+        $('#service-feedback').append(document.createElement('br'), button);
+      }
+    }
     if (state.operation === 'service') state.service.inspected = false;
-    addActivity(code, description, 'failed');
+    addActivity(title, description + ' · ' + code, 'failed');
     renderServiceActions();
   }
   async function call(method, args = [], silent = false) {
@@ -187,7 +239,7 @@
 
   function renderBusy() {
     const locked = busy();
-    $$('input,textarea,select,[data-choose],[data-age-mode],#load-backups,#save-settings,#save-advanced,#recover-fresh,#recover-resume,#prepare-lab,#store-private,#add-configuration-file,#import-service-bundle,.remove-configuration-file,.scope-switch button').forEach(node => { node.disabled = locked; });
+    $$('input,textarea,select,[data-choose],[data-age-mode],#load-backups,#save-settings,#save-advanced,#recover-fresh,#recover-resume,#prepare-lab,#prepare-service-tools,#store-private,#add-configuration-file,#import-service-bundle,.remove-configuration-file,.scope-switch button').forEach(node => { node.disabled = locked; });
     $('#cancel-operation').hidden = !locked;
     if (!locked) $('#cancel-operation').disabled = false;
     const loadingButton = state.operation === 'lab' ? $('#prepare-lab') : state.operation === 'backups' ? $('#load-backups') : null;
@@ -271,11 +323,11 @@
   async function startJob(operation, method, args, title, options = {}) {
     if (busy()) { showError(fixedError('SERVICE_OPERATION_BUSY', 'È già in corso un’operazione. Attendi l’esito oppure interrompila prima di avviarne un’altra.')); return; }
     state.operation = operation; state.submitting = true;
-    if (operation === 'service' || operation === 'inspect' || operation === 'lab') resetStages(operation === 'lab' || state.service.scope === 'local_lab');
+    if (operation === 'service' || operation === 'inspect' || operation === 'tools' || operation === 'lab') resetStages(operation === 'lab' || state.service.scope === 'local_lab');
     if (operation === 'recovery') { state.phases = {}; state.phaseLabels = {}; state.activePhase = null; renderPhases(); }
     setGlobal(title, 'Avvio della richiesta. Le credenziali restano in questa sessione.', 'running');
     if (operation === 'lab') feedback('lab-feedback', 'Controllo degli accessi e del backup selezionato in corso.');
-    if (operation === 'service' || operation === 'inspect') feedback('service-feedback', title);
+    if (operation === 'service' || operation === 'inspect' || operation === 'tools') feedback('service-feedback', title);
     renderBusy();
     let result = null;
     // Both the execution payload and SSH settings were captured by the click
@@ -405,7 +457,7 @@
         project_id: $('#service-project-id').value.trim(), environment: $('#service-environment').value.trim(), access_token: $('#service-access-token').value } };
   }
   function clearPlan(resetInventory = false) {
-    state.service.plan = null; state.service.inspected = false; state.service.completed = false;
+    state.service.plan = null; state.service.inspected = false; state.service.completed = false; state.service.resume = false; state.service.resumePhase = '';
     $('#service-reviewed').checked = false;
     if (resetInventory) { state.service.analyzed = false; state.service.variables = []; state.service.resources = []; state.service.privateNames.clear(); state.service.privateValues = Object.create(null); state.service.selectedVariable = ''; $('#private-value').value = ''; }
     // analyze_service and prepare_service invalidate the stored draft before
@@ -450,6 +502,7 @@
     $('#inspect-service').disabled = locked || !state.service.plan;
     $('#apply-service').hidden = step !== 3 || state.service.completed;
     $('#apply-service').disabled = locked || !state.service.inspected;
+    $('#apply-service').replaceChildren(icon(state.service.resume ? 'shield' : 'plus'), document.createTextNode(state.service.resume ? ' Riprendi verifiche' : ' Aggiungi e verifica'));
     $$('.step').forEach(button => { const index = Number(button.dataset.step); button.disabled = locked || (index === 2 && !state.service.analyzed) || (index === 3 && !state.service.plan); });
     const hints = [ 'La destinazione viene verificata prima di qualsiasi aggiunta.', 'L’analisi è locale. Nessuna VM viene modificata.', 'I valori privati non entrano nel piano o negli esiti.', state.service.scope === 'local_lab' ? 'Solo servizio e Agent. Nessuna pubblicazione.' : 'Il completamento include GitHub e backup verificati.' ];
     $('#service-action-hint').textContent = hints[step];
@@ -512,7 +565,7 @@
     if (!$('#service-reviewed').checked) { showError(fixedError('SERVICE_REVIEW_REQUIRED', 'Verifica le variabili e come conservare i dati prima di preparare il piano.')); return; }
     const result = await runSynchronous(() => call('prepare_service', [draftPayload()]));
     if (!result || !result.plan || typeof result.plan !== 'object') return;
-    state.service.plan = publicPlanMetadata(result.plan); state.service.inspected = false; state.service.completed = false;
+    state.service.plan = publicPlanMetadata(result.plan); state.service.inspected = false; state.service.completed = false; state.service.resume = false; state.service.resumePhase = '';
     feedback('service-feedback', ''); resetStages(state.service.scope === 'local_lab'); renderPlan(); selectStep(3);
     setGlobal('Piano pronto', 'Verifica la VM. L’aggiunta richiede poi un tuo comando esplicito.');
   }
@@ -549,7 +602,7 @@
     const plan = state.service.plan, names = plan && Array.isArray(plan.service_names) ? plan.service_names : [];
     $('#plan-service-name').textContent = plan ? (names.length ? names.join(' + ') : text(plan.service_name, 'Servizio')) : 'Piano da preparare';
     $('#plan-image').textContent = plan ? (names.length > 1 ? names.length + ' servizi collegati nello stesso stack' : text(plan.image, plan.images && text(plan.images[names[0]]))) : 'Completa i passaggi precedenti.';
-    $('#plan-scope-badge').textContent = state.service.completed ? 'Verificato' : state.service.inspected ? 'VM verificata' : plan ? (state.service.scope === 'local_lab' ? 'Collaudo locale' : 'Piano pronto') : 'Da verificare';
+    $('#plan-scope-badge').textContent = state.service.completed ? 'Verificato' : state.service.inspected ? (state.service.resume ? 'Operazione riprendibile' : 'VM verificata') : plan ? (state.service.scope === 'local_lab' ? 'Collaudo locale' : 'Piano pronto') : 'Da verificare';
     $('#plan-scope-badge').className = 'badge ' + (state.service.completed ? 'ready' : plan ? 'brand' : 'neutral');
     const files = [], components = [];
     if (plan) {
@@ -589,10 +642,16 @@
     state.service.inspected = false;
     await startJob('inspect', 'inspect_service', [payload], 'Verifica della VM in corso', { syncSettings: true, settings });
   }
+  async function updateServiceTools() {
+    if (busy() || !state.service.plan) return;
+    state.service.inspected = false;
+    const payload = executionPayload(), settings = collectSettings();
+    await startJob('tools', 'update_service_tools', [payload], 'Preparazione degli strumenti VM in corso', { syncSettings: true, settings });
+  }
   async function applyService() {
     if (busy() || !state.service.plan || !state.service.inspected) return;
     const payload = executionPayload(), settings = collectSettings();
-    await startJob('service', 'apply_service', [payload], state.service.scope === 'local_lab' ? 'Aggiunta e collaudo locale in corso' : 'Aggiunta e verifica completa in corso', { syncSettings: true, settings });
+    await startJob('service', 'apply_service', [payload], state.service.resume ? 'Ripresa delle verifiche in corso' : state.service.scope === 'local_lab' ? 'Aggiunta e collaudo locale in corso' : 'Aggiunta e verifica completa in corso', { syncSettings: true, settings });
   }
 
   function showHostKey(event) {
@@ -663,9 +722,23 @@
       if (typeof event.stack_root === 'string') { $('#service-stack-root').value = event.stack_root; state.service.rootEdited = true; }
       const message = 'File e Agent preparati. Stack completo non avviato: puoi aggiungere un servizio di prova. GitHub e backup restano esclusi.';
       feedback('lab-feedback', message, 'success'); setGlobal('VM di collaudo preparate', message, 'pass'); addActivity('Laboratorio preparato', message, 'pass');
+    } else if (event.kind === 'tools_prepared') {
+      state.service.inspected = false;
+      const message = 'Strumenti VM preparati. Premi Verifica VM per controllare o riprendere il servizio.';
+      feedback('service-feedback', message, 'success'); setGlobal('Strumenti VM pronti', message, 'pass');
+      addActivity('Strumenti VM pronti', message, 'pass'); renderServiceActions();
     } else if (event.kind === 'inspected') {
-      state.service.inspected = true; feedback('service-feedback', 'VM verificata. Premi Aggiungi e verifica per applicare questo piano.');
-      setGlobal('VM verificata', 'Il piano può essere applicato con Aggiungi e verifica.'); renderPlan(); renderServiceActions();
+      const phases = ['SERVICE_READY', 'PUBLIC_PUBLISHED', 'BACKUP_RUNNING', 'COMPLETE'];
+      state.service.resume = event.resume === true && phases.includes(event.resume_phase);
+      state.service.resumePhase = state.service.resume ? event.resume_phase : '';
+      state.service.inspected = true;
+      const message = state.service.resume ? 'Il servizio è già presente e corrisponde al piano. Premi Riprendi verifiche per continuare dal lavoro registrato.' : 'VM verificata. Premi Aggiungi e verifica per applicare questo piano.';
+      if (state.service.resume) {
+        ['FILES', 'AGENT', 'SERVICE'].forEach(stage => { state.stages[stage] = 'pass'; });
+        if (event.resume_phase !== 'SERVICE_READY') state.stages.GITHUB = 'pass';
+      }
+      feedback('service-feedback', message); setGlobal(state.service.resume ? 'Operazione precedente trovata' : 'VM verificata', message);
+      renderStages(); renderPlan(); renderServiceActions();
     } else if (event.kind === 'completed') {
       if (event.operation === 'service') completeService(event);
       else {

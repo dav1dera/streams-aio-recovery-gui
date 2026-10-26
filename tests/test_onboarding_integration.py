@@ -136,6 +136,12 @@ class MemoryStore:
                                                device=1, inode=self.serial, mtime=self.serial)
         return self.snapshot(path)
 
+    def journal_paths(self, directory):
+        prefix = str(directory).rstrip('/') + '/'
+        return [PurePosixPath(name) for name in sorted(self.files)
+                if name.startswith(prefix) and name.endswith('.json')
+                and REMOTE.JOB.fullmatch(name[len(prefix):-5])]
+
     def safe(self, path):
         return PurePosixPath(str(path))
 
@@ -194,6 +200,18 @@ class MemoryRunner:
                     InvocationID='new-backup' if self.release else 'old-backup', User='pi',
                     ExecStart='/home/pi/streams-aio-dr/scripts/update-dr.sh')
 
+    def validate_candidate(self, raw):
+        return None
+
+    def check_images(self, plan):
+        return None
+
+    def check_ports(self, plan):
+        return None
+
+    def public_preflight(self, candidate):
+        return dict(schema=1, status='PASS', stage='PUBLIC_EXPORT')
+
     def run(self, args, code, timeout=120, user=False):
         args = [str(value) for value in args]
         self.calls.append(args)
@@ -206,8 +224,8 @@ class MemoryRunner:
                 if row['destination-path'] != str(PRIVATE_PATH):
                     continue
                 lines = []
-                for line in row['template-content'].splitlines():
-                    key = line.split('=', 1)[0]
+                from tests.test_service_onboarding_remote import template_keys
+                for key in template_keys(row['template-content']):
                     value = self.values[key] + ('-wrong' if self.agent_mismatch else '')
                     lines.append(key + "='" + value + "'\n")
                 self.store.seed(PRIVATE_PATH, ''.join(lines).encode(),

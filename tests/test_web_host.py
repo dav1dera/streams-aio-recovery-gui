@@ -71,9 +71,14 @@ class WebHostTests(unittest.TestCase):
         self.bridge._report.assert_not_called()
         self.window.create_file_dialog.assert_not_called()
 
+    def test_tooling_preparation_forwards_only_the_reviewed_payload(self):
+        payload = {'stack_root': '/home/test/streams-aio'}
+        self.api.update_service_tools(payload)
+        self.bridge.update_service_tools.assert_called_once_with(payload)
+
     def test_public_facade_has_no_arbitrary_url_file_or_code_execution_method(self):
         expected = {'initialize', 'update_settings', 'load_backups', 'load_backup', 'prepare_lab', 'recover',
-                    'analyze_service', 'prepare_service', 'inspect_service', 'apply_service', 'invalidate_service',
+                    'analyze_service', 'prepare_service', 'inspect_service', 'apply_service', 'update_service_tools', 'invalidate_service',
                     'poll', 'answer_host_key', 'cancel', 'choose_file', 'save_report', 'save_plan', 'open_guide', 'import_service_bundle'}
         actual = {name for name, value in vars(web_host.DesktopAPI).items() if not name.startswith('_') and callable(value)}
         self.assertEqual(actual, expected)

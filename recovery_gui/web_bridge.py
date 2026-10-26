@@ -17,7 +17,8 @@ import threading
 import uuid
 
 from . import __version__, backend
-from .onboarding import ServiceController
+from .onboarding import (ServiceController, OnboardingError, RESUME_PHASES,
+                         safe_service_diagnostic, service_diagnostic_paths)
 from .age_input import validate_identity_input
 from .lab_prepare import LabFailure
 from .service_plan import inspect_inputs, analyze_inputs, inspect_resources
@@ -36,6 +37,30 @@ SENSITIVE = frozenset(('password', 'key_password', 'sudo_password', 'infisical_p
 DEFAULTS = dict.fromkeys(KEYS, '') | dict(user='test', port='22', infisical_user='test2',
                                        infisical_port='22', routing_mode='parallel_test', age_identity_mode='file')
 WEB_ERRORS = {
+    'ONBOARDING_RESOURCE_BACKUP_CAPABILITY_REQUIRED': 'Il backup della VM deve supportare i dati del nuovo servizio. Usa Prepara strumenti VM e poi verifica di nuovo.',
+    'ONBOARDING_PORT_IN_USE': 'Una porta richiesta dal servizio è già occupata sulla VM. Scegli una porta libera nel Compose e verifica di nuovo.',
+    'ONBOARDING_TOOLING_GIT_FAILED': 'La VM non riesce a controllare gli strumenti esistenti. Verifica la disponibilità di Git e riprova.',
+    'ONBOARDING_TOOLING_LOCK_INVALID': 'Il blocco di sicurezza degli strumenti non è disponibile o non ha i permessi previsti. Lo stato viene conservato.',
+    'ONBOARDING_TOOLING_REPOSITORY_INVALID': 'La cartella degli strumenti non corrisponde all’installazione prevista. Il contenuto esistente viene conservato.',
+    'ONBOARDING_TOOLING_ORIGIN_INVALID': 'Gli strumenti esistenti non puntano al repository previsto. L’aggiornamento si ferma per conservare questa configurazione.',
+    'ONBOARDING_TOOLING_LOCAL_CHANGES': 'Gli strumenti contengono modifiche locali. Conservale prima di aggiornare: la GUI non le sostituisce.',
+    'ONBOARDING_TOOLING_BRANCH_INVALID': 'Gli strumenti di backup devono trovarsi sul ramo main prima dell’aggiornamento.',
+    'ONBOARDING_TOOLING_FETCH_FAILED': 'La VM non riesce a scaricare l’aggiornamento degli strumenti da GitHub. Controlla la connessione e riprova.',
+    'ONBOARDING_TOOLING_DIVERGED': 'La versione locale degli strumenti contiene una cronologia diversa. Viene conservata e richiede una verifica prima dell’aggiornamento.',
+    'ONBOARDING_TOOLING_SOURCE_TOO_OLD': 'GitHub non offre ancora la versione degli strumenti richiesta da questa GUI. Riprova dopo la pubblicazione dell’aggiornamento.',
+    'ONBOARDING_TOOLING_SOURCE_CHANGED': 'Gli strumenti sono cambiati durante il controllo. Verifica di nuovo la VM prima di riprovare.',
+    'ONBOARDING_TOOLING_MERGE_FAILED': 'L’aggiornamento degli strumenti non è stato completato. Lo stato locale resta conservato.',
+    'ONBOARDING_TOOLING_PRODUCER_INVALID': 'Il programma di backup dei nuovi dati non supera i controlli di integrità o permessi.',
+    'ONBOARDING_TOOLING_SCOPE_REFUSED': 'La preparazione degli strumenti è disponibile per la VM principale. Seleziona la verifica completa e riprova.',
+    'ONBOARDING_TOOLING_OWNER_UNSUPPORTED': 'Questa installazione richiede una preparazione del backup adatta al suo utente prima di continuare.',
+    'ONBOARDING_TOOLING_VERIFY_FAILED': 'Gli strumenti aggiornati non superano il controllo di funzionamento. L’aggiunta del servizio resta ferma.',
+    'ONBOARDING_TOOLING_INSTALL_FAILED': 'La preparazione del backup dei nuovi dati non è riuscita. I servizi esistenti restano disponibili.',
+    'ONBOARDING_IMAGE_UNAVAILABLE': 'Una delle immagini o versioni del Compose non è disponibile per la VM. Correggi il riferimento all’immagine e verifica di nuovo.',
+    'ONBOARDING_PREFLIGHT_COMPOSE_FAILED': 'Docker non accetta ancora il piano. Controlla Compose, porte e file indicati prima di aggiungere il servizio.',
+    'ONBOARDING_PUBLIC_PREFLIGHT_FAILED': 'La configurazione non supera ancora i controlli di pubblicazione. Il dettaglio indica il file da correggere prima di aggiungere il servizio.',
+    'ONBOARDING_TOOLING_UPDATE_REQUIRED': 'Gli strumenti della VM richiedono un aggiornamento. Usa Prepara strumenti VM e poi verifica di nuovo.',
+    'ONBOARDING_RESUME_AMBIGUOUS': 'Sulla VM sono presenti più operazioni compatibili. Lo stato è conservato: non viene scelto un tentativo automaticamente.',
+    'ONBOARDING_RESUME_CHANGED': 'Il servizio registrato sulla VM non corrisponde più al piano verificato. Lo stato esistente viene conservato.',
     'WEB_INPUT_INVALID': 'Controlla i campi del modulo e riprova.',
     'WEB_CLOSED': 'La finestra è stata chiusa. Apri di nuovo il programma.',
     'WEB_HOST_KEY_INVALID': 'La richiesta di conferma SSH non è valida o è scaduta.',
@@ -282,6 +307,13 @@ class WebBridge:
             code = 'SERVICE_TOOL_FAILED'
         result = dict(ok=False, code=code, description=self._errors.get(code,
             'Il passaggio si è fermato. Controlla i dati indicati; lo stato remoto resta conservato.'))
+        if isinstance(error, OnboardingError) and error.diagnostic is not None:
+            try:
+                plan = self._analysis.plan.deployment_payload() if self._analysis is not None else {}
+                result['diagnostic'] = safe_service_diagnostic(error.diagnostic,
+                    allowed_paths=service_diagnostic_paths(plan))
+            except Exception:
+                pass
         role = getattr(error, 'target_role', None)
         if isinstance(error, LabFailure) and role in ('stack', 'infisical'):
             result['target_role'] = role
@@ -334,7 +366,7 @@ class WebBridge:
                 worker()
                 succeeded = True
             except Exception as error:
-                if operation in ('inspect_service', 'apply_service'):
+                if operation in ('inspect_service', 'apply_service', 'update_service_tools'):
                     with self._lock:
                         self._receipt, self._service_signature = None, None
                 self._enqueue('error', **{key: value for key, value in self._error(error).items() if key != 'ok'})
@@ -667,8 +699,26 @@ class WebBridge:
                 with self._lock:
                     need(revision == self._revision, 'SERVICE_INPUTS_CHANGED')
                     self._receipt, self._service_signature = receipt, signature
-                self._enqueue('inspected', verification_scope=connection['verification_scope'])
+                self._enqueue('inspected', verification_scope=connection['verification_scope'],
+                    resume=getattr(receipt, 'resume', False) is True,
+                    resume_phase=getattr(receipt, 'resume_phase', '') if getattr(receipt, 'resume_phase', '') in RESUME_PHASES else '')
             return self._start('inspect_service', worker)
+
+    @public
+    def update_service_tools(self, payload):
+        with self._lock:
+            self._guard()
+            analysis, connection, infisical, _ = self._service_inputs(payload)
+            self._receipt, self._service_signature = None, None
+            revision = self._revision
+            def worker():
+                result = self._controller.prepare_tools(analysis, connection, infisical, self._progress)
+                self._active()
+                need(result == {'status': 'TOOLS_READY'}, 'SERVICE_RESPONSE_INVALID')
+                with self._lock:
+                    need(revision == self._revision, 'SERVICE_INPUTS_CHANGED')
+                self._enqueue('tools_prepared')
+            return self._start('update_service_tools', worker)
 
     @public
     def apply_service(self, payload):

@@ -76,6 +76,33 @@ jobs:
           RECOVERY_DOCKER_INTEGRATION: '1'
       - run: python -m compileall -q recovery_gui remote main.py
       - run: bash -n remote/bootstrap.sh
+  onboarding-infisical:
+    name: Real Infisical and Agent service onboarding
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install onboarding test dependencies
+        run: python -m pip install -r requirements.txt 'PyYAML==6.0.3'
+      - name: Add, recover and resume an isolated service with real Infisical and Agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          for executable in docker curl useradd userdel; do
+            command -v "$executable" >/dev/null
+          done
+          docker info --format '{{.ServerVersion}}'
+          docker compose version
+          recovery_python=$(python -c 'import sys; print(sys.executable)')
+          test -x "$recovery_python"
+          root_temp=$(mktemp -d "$RUNNER_TEMP/recovery-onboarding-infisical.XXXXXX")
+          sudo chown root:root "$root_temp"
+          sudo chmod 700 "$root_temp"
+          trap 'sudo rmdir -- "$root_temp"' EXIT
+          sudo env RUN_ONBOARDING_INFISICAL_INTEGRATION=1 TMPDIR="$root_temp" TEMP="$root_temp" TMP="$root_temp" "$recovery_python" -B -m unittest discover -s tests -p integration_onboarding_infisical.py -v
   ubuntu-compatibility:
     runs-on: ubuntu-latest
     strategy:
@@ -153,7 +180,7 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.publish_release && github.ref == 'refs/heads/main') ||
       (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v'))
-    needs: [windows, secret-scan]
+    needs: [windows, secret-scan, onboarding-infisical]
     runs-on: ubuntu-latest
     permissions:
       contents: write

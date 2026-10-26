@@ -5,6 +5,7 @@
 | Versione | Stato e uso |
 | --- | --- |
 | **0.4.19 stabile** | [Programma e checksum della release](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.4.19). |
+| **0.5.0-dev.11 in anteprima** | Verifiche preventive, preparazione strumenti dalla GUI, ripresa delle aggiunte dopo chiusura e verifica dei segreti Agent prima dell’avvio. [Dettagli](docs/RELEASE-NOTES-v0.5.0-dev.11.md). |
 | **0.5.0-dev.10 in anteprima** | Corregge `SERVICE_RESPONSE_INVALID` durante la verifica di gruppi di servizi, conservando il formato delle risposte atteso dalla GUI. |
 | **0.5.0-dev.9 locale, in sviluppo** | Gruppi di servizi, file pubblici, montaggi e dati: [nuova guida](docs/SERVICE-RESOURCES.md). Build di prova, con aggiornamento coordinato dei worker; nessuna nuova prova sulle VM reali attestata. |
 | **0.5.0-dev.8 in anteprima** | [Programma, sorgenti e checksum](https://github.com/dav1dera/streams-aio-recovery-gui/releases/tag/v0.5.0-dev.8). Interfaccia scura e scheda **Aggiungi servizio**; [sorgenti su main](https://github.com/dav1dera/streams-aio-recovery-gui/tree/main). Non è una release stabile. |

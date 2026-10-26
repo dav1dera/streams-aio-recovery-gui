@@ -38,7 +38,16 @@ class FakeSSH:
         if args[-1] == PRIVATE_PROOF:
             return json.dumps({'status': 'PASS' if self.proof else 'REFUSED'}).encode()
         action = request['action']
-        if action == 'inspect':
+        if action == 'discover':
+            result = (dict(schema=1, status='NO_JOB') if self.job is None else
+                      dict(schema=1, status='SERVICE_READY', job_id=self.job, fingerprint=self.preview,
+                           application_verified=True, agent_output=self.agent_output, api_address=self.api_address,
+                           service=request['plan']['service_name'],
+                           services=request['plan'].get('service_names') or [request['plan']['service_name']],
+                           verification_scope=request.get('verification_scope', 'full')))
+        elif action == 'update_tools':
+            result = dict(schema=1, status='TOOLS_READY')
+        elif action == 'inspect':
             result = dict(schema=1, status='PREVIEW', fingerprint=self.preview,
                           agent_output=self.agent_output, api_address=self.api_address)
         else:
@@ -48,7 +57,10 @@ class FakeSSH:
             result = dict(schema=1, status='SERVICE_READY' if action in ('apply', 'status') else 'COMPLETE',
                           job_id=self.job, application_verified=True, backup_integrity_verified=self.complete,
                           public_commit=COMMIT, backup_tag=TAG, agent_output=self.agent_output,
-                          api_address=self.api_address)
+                          api_address=self.api_address, fingerprint=self.preview,
+                          service=request['plan']['service_name'],
+                          services=request['plan'].get('service_names') or [request['plan']['service_name']],
+                          verification_scope=request.get('verification_scope', 'full'))
         return json.dumps(result).encode()
 
     def close(self):
@@ -94,7 +106,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_inspection_has_no_remote_mutation_or_api_write(self):
         receipt = self.inspect()
-        self.assertEqual([x[1]['action'] for x in self.ssh.calls], ['inspect'])
+        self.assertEqual([x[1]['action'] for x in self.ssh.calls], ['discover', 'inspect'])
         self.assertEqual([x[0] for x in self.api.calls], ['inspect'])
         self.assertNotIn(SECRET, repr(receipt))
         self.assertEqual(self.ssh.closed, 1)
@@ -234,7 +246,7 @@ class ControllerTests(unittest.TestCase):
 class RemoteLauncherTests(unittest.TestCase):
     def invoke(self, interpreter, *, exists=True):
         output = io.StringIO()
-        with patch('sys.argv', ['-c', interpreter, 'public engine source']), \
+        with patch('sys.argv', ['-c', interpreter, 'packed-engine', 'packed-tooling']), \
                 patch('os.path.isfile', return_value=exists), patch('os.access', return_value=exists), \
                 patch('os.execv') as execute, patch('sys.stdin') as stdin, redirect_stdout(output):
             exec(compile(REMOTE_LAUNCHER, '<synthetic-launcher>', 'exec'), {})
@@ -249,7 +261,7 @@ class RemoteLauncherTests(unittest.TestCase):
         self.assertEqual(args[0], interpreter)
         self.assertEqual(args[1][:3], [interpreter, '-I', '-c'])
         self.assertIn('import yaml', args[1][3])
-        self.assertEqual(args[1][-1], 'public engine source')
+        self.assertEqual(args[1][-2:], ['packed-engine', 'packed-tooling'])
 
     def test_missing_worker_fails_before_executing_source(self):
         output, execute = self.invoke('/home/pi/.local/share/streams-aio-public-sync/venv/bin/python', exists=False)
