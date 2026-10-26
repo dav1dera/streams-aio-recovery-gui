@@ -17,6 +17,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -641,6 +642,53 @@ def logical_payload(registry, streams, metadata):
     return result
 
 
+def public_configuration_mode_matches(target, declared_mode):
+    """Allow only a widened POSIX ACL mask on an explicit public config file.
+
+    With an extended ACL, stat's group bits represent ACL_MASK, not GROUP_OBJ.
+    The local public-file access watcher may widen that mask after installation;
+    the reviewed portable mode and the file's content hash remain unchanged.
+    """
+    if type(declared_mode) is not int or not 0 <= declared_mode <= 0o777:
+        return False
+    observed = target.stat()
+    current = stat.S_IMODE(observed.st_mode)
+    if not stat.S_ISREG(observed.st_mode):
+        return False
+    if current == declared_mode:
+        return True
+    if current & ~0o070 != declared_mode & ~0o070:
+        return False
+    group, declared_group = (current >> 3) & 7, (declared_mode >> 3) & 7
+    if group & declared_group != declared_group:
+        return False
+    try:
+        raw = os.getxattr(target, 'system.posix_acl_access', follow_symlinks=False)
+    except (AttributeError, OSError, TypeError):
+        return False
+    if (not isinstance(raw, bytes) or len(raw) < 4 or len(raw) > 65536
+            or (len(raw) - 4) % 8 or struct.unpack_from('<I', raw)[0] != 2):
+        return False
+    basic, named = {}, set()
+    for tag, permissions, qualifier in struct.iter_unpack('<HHI', raw[4:]):
+        if permissions & ~7 or tag not in {1, 2, 4, 8, 16, 32}:
+            return False
+        if tag in {2, 8}:
+            identity = tag, qualifier
+            if qualifier == 0xffffffff or identity in named:
+                return False
+            named.add(identity)
+        else:
+            if qualifier != 0xffffffff or tag in basic:
+                return False
+            basic[tag] = permissions
+    return (bool(named) and set(basic) == {1, 4, 16, 32}
+            and basic[1] == (current >> 6) & 7
+            and basic[4] & group & declared_group == declared_group
+            and basic[16] == group and basic[32] == current & 7)
+
+
+
 def verify_service_snapshot(root, state):
     """Return verified resource IDs and owners; a checkpoint never proves data."""
     root = safe_path(root)
@@ -666,7 +714,7 @@ def verify_service_snapshot(root, state):
                     'SERVICES_STATE_CONFIGURATION_INVALID')
             target = safe_path(root / item['path'])
             require(target.is_file() and digest(target) == item['sha256']
-                    and (os.name == 'nt' or stat.S_IMODE(target.stat().st_mode) == item['mode']),
+                    and (os.name == 'nt' or public_configuration_mode_matches(target, item['mode'])),
                     'SERVICES_STATE_CONFIGURATION_CHANGED')
         selected = module.selected(value)
         if not selected:
