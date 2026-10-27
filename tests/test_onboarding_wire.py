@@ -71,7 +71,7 @@ class OnboardingWireTests(unittest.TestCase):
         files[0]['content'] = 'title: ' + PUBLIC_CONTENT + '\n'
         if large:
             files.append(dict(path='data/demo/public/config/custom.css',
-                              content='/* synthetic large stylesheet */\n' + 'x' * 246454, mode=0o644))
+                              content='/* synthetic large stylesheet */\n' + 'x' * (256 * 1024 - 64), mode=0o644))
         document = yaml.safe_load('services:\n' + selected['compose_fragment'])
         # The shared fixture is a deployment plan; let the source planner add
         # its managed env_file references just as for a newly imported bundle.
@@ -123,7 +123,7 @@ class OnboardingWireTests(unittest.TestCase):
         analysis = self.analysis(large=True)
         receipt = self.inspect(analysis)
         request_bytes = ONBOARDING_FRAME + json.dumps(self.ssh.requests[-1], ensure_ascii=False).encode() + b'\n'
-        self.assertGreater(len(request_bytes), 246454)
+        self.assertGreater(len(request_bytes), 256 * 1024)
         self.assertLess(len(request_bytes), 2 * remote.MAX_FILE)
         self.assertLess(len(self.ssh.raw_responses[-1]), 256 * 1024)
         self.assertEqual(len(receipt.fingerprint), 64)

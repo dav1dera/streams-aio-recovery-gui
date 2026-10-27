@@ -5,6 +5,7 @@ inspection receipt, creates/verifies secrets, then invokes the bounded remote
 transaction. Credentials and secret values never enter its request or journal.
 """
 from dataclasses import dataclass, field
+import base64
 import hashlib
 import hmac
 import json
@@ -13,6 +14,7 @@ import secrets
 import threading
 import time
 import uuid
+import zlib
 
 from .backend import Failure, Host, SSH, resources
 from .onboarding_infisical import InfisicalClient, InfisicalFailure, validate_private_values
@@ -21,23 +23,63 @@ from .service_plan import ServiceAnalysis
 ONBOARDING_FRAME = b'STREAMS_ONBOARDING_V1\n'
 PRIVATE_PROOF_FRAME = b'STREAMS_PRIVATE_PROOF_V1\n'
 
-# Recovery installs PyYAML in its virtual environment, not in Ubuntu's system
-# Python. Select only the already installed recovery/worker interpreter and keep
-# stdin untouched, including the framing needed when sudo leaves its input line.
+# Both modules travel compressed so Linux never receives a source-sized argv
+# entry. The worker expands bounded trusted sources after its own exec, while
+# stdin remains reserved for the request and sudo framing.
+MAX_REMOTE_SOURCE = 512 * 1024
+MAX_REMOTE_ARGUMENT = 120 * 1024
+REMOTE_WORKER = r'''
+import base64, json, sys, types, zlib
+try:
+    import yaml
+except Exception:
+    print(json.dumps({'schema':1,'status':'REFUSED','code':'ONBOARDING_PYTHON_ENVIRONMENT_REQUIRED'}))
+    sys.exit(0)
+try:
+    assert len(sys.argv) == 3
+    def unpack(value):
+        assert len(value) <= 120 * 1024
+        compressed = base64.b64decode(value, validate=True)
+        decoder = zlib.decompressobj()
+        source = decoder.decompress(compressed, 512 * 1024 + 1)
+        assert len(source) <= 512 * 1024 and decoder.eof
+        assert not decoder.unused_data and not decoder.unconsumed_tail
+        return source.decode('utf-8')
+    source, helper = unpack(sys.argv[1]), unpack(sys.argv[2])
+    module = types.ModuleType('service_tooling')
+    module.__file__ = '<service-tooling>'
+    sys.modules[module.__name__] = module
+    exec(compile(helper, module.__file__, 'exec'), module.__dict__)
+    exec(compile(source, '<service-onboarding>', 'exec'), globals())
+except Exception:
+    print(json.dumps({'schema':1,'status':'REFUSED','code':'ONBOARDING_PYTHON_ENVIRONMENT_REQUIRED'}))
+'''
+
+# Recovery installs PyYAML in its virtual environment, not Ubuntu's system
+# Python. Select only an already installed recovery/worker interpreter.
 REMOTE_LAUNCHER = r'''
 import json, os, re, sys
 try:
     interpreter = sys.argv[1]
+    assert len(sys.argv) == 4
+    assert all(len(value) <= 120 * 1024 for value in sys.argv[2:])
     assert re.fullmatch(r'/home/[A-Za-z_][A-Za-z0-9_-]*/\.local/share/streams-aio-(?:recovery|public-sync)/venv/bin/python', interpreter)
     if not os.path.isfile(interpreter) or not os.access(interpreter, os.X_OK):
         code = 'ONBOARDING_LAB_NOT_PREPARED' if '/streams-aio-recovery/' in interpreter else 'ONBOARDING_BACKUP_PIPELINE_NOT_READY'
         print(json.dumps({'schema': 1, 'status': 'REFUSED', 'code': code}))
     else:
-        guard = "import json,sys\ntry:\n import yaml\nexcept Exception:\n print(json.dumps({'schema':1,'status':'REFUSED','code':'ONBOARDING_PYTHON_ENVIRONMENT_REQUIRED'}));sys.exit(0)\nexec(compile(sys.argv[1], '<service-onboarding>', 'exec'), globals())"
-        os.execv(interpreter, [interpreter, '-I', '-c', guard, sys.argv[2]])
+        os.execv(interpreter, [interpreter, '-I', '-c', __WORKER__, sys.argv[2], sys.argv[3]])
 except Exception:
     print('{"schema":1,"status":"REFUSED","code":"ONBOARDING_PYTHON_ENVIRONMENT_REQUIRED"}')
-'''
+'''.replace('__WORKER__', repr(REMOTE_WORKER))
+
+
+def packed_remote_source(path):
+    raw = path.read_bytes()
+    need(len(raw) <= MAX_REMOTE_SOURCE, 'SERVICE_TRANSPORT_FAILED')
+    packed = base64.b64encode(zlib.compress(raw, level=9)).decode('ascii')
+    need(len(packed) <= MAX_REMOTE_ARGUMENT, 'SERVICE_TRANSPORT_FAILED')
+    return packed
 
 # Independent, memory-only proof of the exact Agent output. The request carries
 # a fresh challenge and keyed digests, never plaintext secret values. Neither
@@ -88,12 +130,98 @@ except Exception:
 
 
 class OnboardingError(ValueError):
-    """Closed error code for presentation, never arbitrary transport output."""
+    """Closed error code and reviewed metadata, never transport output."""
+    def __init__(self, code, *, diagnostic=None):
+        super().__init__(code)
+        self.diagnostic = safe_service_diagnostic(diagnostic) if diagnostic is not None else None
 
 
 def need(condition, code):
     if not condition:
         raise OnboardingError(code)
+
+
+RESUME_PHASES = frozenset({'SERVICE_READY', 'PUBLIC_PUBLISHED', 'BACKUP_RUNNING', 'COMPLETE'})
+SERVICE_DIAGNOSTIC_STAGES = frozenset({'HOST', 'INFISICAL', 'FILES', 'AGENT', 'SERVICE', 'GITHUB', 'BACKUP'})
+SERVICE_DIAGNOSTIC_REASONS = frozenset({
+    'PRIVATE_VALUE_IN_PUBLIC_FILE', 'PRIVATE_VARIABLE_DEFAULT_REFUSED', 'LITERAL_CREDENTIAL_REFUSED',
+    'SERVICE_CONFIGURATION_MODE_MISMATCH', 'SERVICE_CONFIGURATION_HASH_MISMATCH',
+    'SOURCE_FILE_MISSING_OR_OVERSIZED', 'COMMAND_FAILED', 'COMPOSE_CONFIG_FAILED',
+    'COMPOSE_PULL_FAILED', 'COMPOSE_UP_FAILED', 'IMAGE_UNAVAILABLE', 'PORT_IN_USE',
+    'PUBLIC_BASE_MOVED', 'SYNC_ALREADY_RUNNING', 'TOOLING_UPDATE_REQUIRED',
+    'AGENT_SCOPE_UNAVAILABLE', 'COMPOSE_UNSUPPORTED', 'PUBLIC_DECLARATION_INVALID', 'PUBLIC_EXPORT_REFUSED',
+    'RECOVERY_VOLUME_OVERRIDE_REVIEW_REQUIRED', 'MISSING_SERVICE_DEPENDENCY', 'SERVICE_DEPENDENCY_CYCLE',
+    'CANDIDATE_PUBLIC_ENV_REQUIRES_PRIVATE_CLASSIFICATION',
+})
+
+
+def service_diagnostic_paths(plan):
+    """Only paths explicitly reviewed as public can reach a service report."""
+    result = {'docker-compose.yml', 'config/service-resources.json'}
+    for child in plan.get('components') or (plan,):
+        if isinstance(child, dict) and isinstance(child.get('public_env_path'), str):
+            result.add(child['public_env_path'])
+    for row in plan.get('configuration_files', ()):
+        if isinstance(row, dict) and isinstance(row.get('path'), str): result.add(row['path'])
+    return result
+
+
+def safe_service_diagnostic(value, *, allowed_paths=None):
+    """Copy a closed, bounded diagnostic; application output is never accepted."""
+    need(isinstance(value, dict) and set(value) <= {
+        'schema', 'stage', 'code', 'path', 'lines', 'references', 'retryable'}
+        and {'schema', 'stage', 'code', 'retryable'} <= set(value), 'SERVICE_RESPONSE_INVALID')
+    need(type(value['schema']) is int and value['schema'] == 1
+         and isinstance(value['stage'], str) and value['stage'] in SERVICE_DIAGNOSTIC_STAGES
+         and isinstance(value['code'], str) and re.fullmatch(r'[A-Z][A-Z0-9_]{1,100}', value['code'])
+         and type(value['retryable']) is bool, 'SERVICE_RESPONSE_INVALID')
+    result = dict(schema=1, stage=value['stage'],
+                  code=value['code'] if value['code'] in SERVICE_DIAGNOSTIC_REASONS else 'PUBLIC_EXPORT_REFUSED',
+                  retryable=value['retryable'])
+    if 'path' in value:
+        path = value['path']
+        need(isinstance(path, str) and 0 < len(path) <= 4096 and not path.startswith('/')
+             and '\\' not in path and '..' not in path.split('/') and not any(ord(c) < 32 or ord(c) == 127 for c in path)
+             and (allowed_paths is None or path in allowed_paths), 'SERVICE_RESPONSE_INVALID')
+        result['path'] = path
+    if 'lines' in value:
+        lines = value['lines']
+        need('path' in result and isinstance(lines, list) and len(lines) <= 20
+             and all(type(line) is int and 1 <= line <= 1000000 for line in lines)
+             and len(set(lines)) == len(lines), 'SERVICE_RESPONSE_INVALID')
+        result['lines'] = sorted(lines)
+    if 'references' in value:
+        references = value['references']
+        need(isinstance(references, list) and len(references) <= 20
+             and all(isinstance(ref, str) and re.fullmatch(r'/[A-Za-z0-9_-]{1,64}(?:/[A-Za-z0-9_-]{1,128}){1,8}', ref)
+                     for ref in references) and len(set(references)) == len(references), 'SERVICE_RESPONSE_INVALID')
+        result['references'] = sorted(references)
+    return result
+
+
+def verify_public_private_separation(plan, values):
+    """Recheck new private inputs locally before any connection or transport."""
+    if not values: return
+    children = plan.get('components') or (plan,)
+    rows = [('docker-compose.yml', plan.get('compose_fragment', ''))]
+    rows += [(child['public_env_path'], child.get('public_env_text', '')) for child in children]
+    rows += [(row['path'], row['content']) for row in plan.get('configuration_files', ())]
+    names = set(values)
+    for child in children: names.update(child.get('private_bindings', {}))
+    escaped = '|'.join(re.escape(name) for name in sorted(names, key=len, reverse=True))
+    key_pattern = re.compile(r'(?m)^(\s*(?:-\s*)?)(?:export\s+)?[\"\']?(?:' + escaped + r')[\"\']?\s*[:=]')
+    reference = re.compile(r'\$\{[A-Za-z_][A-Za-z0-9_]*(?::?[-+?])?\}|\{\{\s*(?:[A-Za-z_][A-Za-z0-9_]*|\.[A-Za-z_][A-Za-z0-9_.]*)\s*\}\}')
+    for path, text in rows:
+        public = key_pattern.sub(r'\1', reference.sub('', text))
+        lines = set()
+        for private in values.values():
+            if len(private) < 8: continue
+            for match in re.finditer(re.escape(private), public):
+                lines.add(public.count('\n', 0, match.start()) + 1)
+        if lines:
+            raise OnboardingError('ONBOARDING_PUBLIC_PREFLIGHT_FAILED', diagnostic=dict(
+                schema=1, stage='FILES', code='PRIVATE_VALUE_IN_PUBLIC_FILE', path=path,
+                lines=sorted(lines)[:20], retryable=True))
 
 
 @dataclass(frozen=True, repr=False)
@@ -104,6 +232,7 @@ class InspectionReceipt:
     resume: bool = False
     agent_output: tuple = ()
     api_address: str = ''
+    resume_phase: str = ''
 
     def __repr__(self):
         return '<InspectionReceipt values=redacted>'
@@ -119,7 +248,7 @@ class ServiceController:
         self._resources = resource_dir
         self._sleep, self._clock, self._backup_timeout = sleeper, clock, backup_timeout
         self.__binding_key = secrets.token_bytes(32)
-        self.__jobs = {}  # Safe job IDs only, scoped to this desktop session.
+        self.__jobs = {}  # Session cache; durable jobs are discovered and verified on the VM.
 
     def _check_cancel(self):
         need(not self.cancelled.is_set(), 'SERVICE_OPERATION_STOPPED')
@@ -130,6 +259,7 @@ class ServiceController:
         values = analysis.sensitive.as_dict()
         need(set(values) == set(analysis.plan.private_bindings), 'SERVICE_PRIVATE_VALUES_INVALID')
         validate_private_values(values)
+        verify_public_private_separation(analysis.plan.deployment_payload(), values)
         root = connection.get('stack_root', '')
         need(isinstance(root, str) and re.fullmatch(r'/home/[A-Za-z_][A-Za-z0-9_-]*/streams-aio', root),
              'SERVICE_STACK_ROOT_REQUIRED')
@@ -190,6 +320,13 @@ class ServiceController:
                        verification_scope=connection.get('verification_scope', 'full'))
         if receipt:
             request.update(fingerprint=receipt.fingerprint, job_id=receipt.job_id)
+        if action == 'apply' and analysis.plan.private_bindings:
+            proof = {}
+            for service, _, values in self._component_values(analysis, analysis.sensitive.as_dict()):
+                challenge = secrets.token_bytes(32)
+                proof[service] = dict(challenge=challenge.hex(), expected={name: hmac.digest(challenge,
+                    (name + '\0' + value).encode('utf-8'), 'sha256').hex() for name, value in values.items()})
+            request['private_proof'] = proof
         return request
 
     @staticmethod
@@ -252,10 +389,11 @@ class ServiceController:
         self._check_cancel()
         folder = self._resources if self._resources is not None else resources()
         try:
-            source = (folder / 'service_onboarding.py').read_text(encoding='utf-8')
+            source = packed_remote_source(folder / 'service_onboarding.py')
+            tooling = packed_remote_source(folder / 'service_tooling.py')
             area = 'streams-aio-recovery' if request.get('verification_scope') == 'local_lab' else 'streams-aio-public-sync'
             interpreter = request['root'].rsplit('/', 1)[0] + '/.local/share/' + area + '/venv/bin/python'
-            raw = ssh.run(['python3', '-I', '-c', REMOTE_LAUNCHER, interpreter, source], sudo=True,
+            raw = ssh.run(['python3', '-I', '-c', REMOTE_LAUNCHER, interpreter, source, tooling], sudo=True,
                           input=ONBOARDING_FRAME + json.dumps(request, ensure_ascii=False).encode('utf-8') + b'\n',
                           timeout=1200)
             need(len(raw) <= 256 * 1024, 'SERVICE_RESPONSE_INVALID')
@@ -266,15 +404,38 @@ class ServiceController:
                 code = result.get('code', '')
                 need(isinstance(code, str) and re.fullmatch(r'ONBOARDING_[A-Z0-9_]{1,100}', code),
                      'SERVICE_RESPONSE_INVALID')
-                raise OnboardingError(code)
-            need(result.get('status') in ('PREVIEW', 'SERVICE_READY', 'PUBLIC_PUBLISHED',
-                                          'BACKUP_RUNNING', 'COMPLETE', 'ROLLED_BACK', 'REVIEW_REQUIRED'),
-                 'SERVICE_RESPONSE_INVALID')
+                diagnostic = result.get('diagnostic')
+                if diagnostic is not None:
+                    diagnostic = safe_service_diagnostic(diagnostic,
+                        allowed_paths=service_diagnostic_paths(request.get('plan', {})))
+                raise OnboardingError(code, diagnostic=diagnostic)
+            allowed = ({'NO_JOB'} | RESUME_PHASES if request['action'] == 'discover' else
+                       {'TOOLS_READY'} if request['action'] == 'update_tools' else
+                       {'PREVIEW', 'ROLLED_BACK', 'REVIEW_REQUIRED'} | RESUME_PHASES)
+            need(result.get('status') in allowed, 'SERVICE_RESPONSE_INVALID')
             return result
         except (OnboardingError, Failure):
             raise
         except Exception:
             raise OnboardingError('SERVICE_TRANSPORT_FAILED') from None
+
+    def _resumed_receipt(self, state, binding, private_required, plan, expected_scope, previous=None):
+        need(state.get('status') in RESUME_PHASES and state.get('application_verified') is True,
+             'SERVICE_RESPONSE_INVALID')
+        job = state.get('job_id')
+        fingerprint = state.get('fingerprint', previous.fingerprint if previous else None)
+        need(isinstance(job, str) and re.fullmatch(r'[0-9a-f]{32}', job)
+             and isinstance(fingerprint, str) and re.fullmatch(r'[0-9a-f]{64}', fingerprint),
+             'SERVICE_RESPONSE_INVALID')
+        names = plan.get('service_names') or [plan['service_name']]
+        need(state.get('service') == plan['service_name'] and state.get('services') == list(names)
+             and state.get('verification_scope') == expected_scope, 'SERVICE_RESPONSE_INVALID')
+        output, address = self._agent_output(state, private_required), self._agent_api(state)
+        if previous:
+            need(job == previous.job_id and fingerprint == previous.fingerprint, 'ONBOARDING_RESUME_CHANGED')
+            need(output == previous.agent_output and address == previous.api_address, 'ONBOARDING_AGENT_PROFILE_CHANGED')
+        return InspectionReceipt(fingerprint, job, binding, resume=True, agent_output=output,
+                                 api_address=address, resume_phase=state['status'])
 
     def inspect(self, analysis, connection, infisical, progress_callback=None):
         values, binding, key = self._validate(analysis, connection, infisical)
@@ -282,28 +443,35 @@ class ServiceController:
         ssh = self._connect(connection)
         try:
             previous = self.__jobs.get(key)
+            receipt = None
             if previous:
                 state = self._remote(ssh, self._request('status', analysis, connection, infisical, previous))
                 need(state.get('job_id') == previous.job_id, 'SERVICE_RESPONSE_INVALID')
-                if state['status'] in ('SERVICE_READY', 'PUBLIC_PUBLISHED', 'BACKUP_RUNNING', 'COMPLETE'):
-                    output = self._agent_output(state, bool(values))
-                    address = self._agent_api(state)
-                    need(output == previous.agent_output and address == previous.api_address,
-                         'ONBOARDING_AGENT_PROFILE_CHANGED')
-                    receipt = InspectionReceipt(previous.fingerprint, previous.job_id, binding,
-                                                resume=True, agent_output=output, api_address=address)
+                if state['status'] in RESUME_PHASES:
+                    receipt = self._resumed_receipt(state, binding, bool(values), analysis.plan.deployment_payload(),
+                        connection.get('verification_scope', 'full'), previous)
                 elif state['status'] == 'ROLLED_BACK':
                     self.__jobs.pop(key, None)
                     previous = None
                 else:
                     raise OnboardingError('ONBOARDING_INTERRUPTED_REVIEW_REQUIRED')
             if not previous:
+                state = self._remote(ssh, self._request('discover', analysis, connection, infisical))
+                if state['status'] != 'NO_JOB':
+                    receipt = self._resumed_receipt(state, binding, bool(values), analysis.plan.deployment_payload(),
+                        connection.get('verification_scope', 'full'))
+            if receipt is None:
                 result = self._remote(ssh, self._request('inspect', analysis, connection, infisical))
                 fingerprint = result.get('fingerprint')
                 need(result['status'] == 'PREVIEW' and isinstance(fingerprint, str)
                      and re.fullmatch(r'[0-9a-f]{64}', fingerprint), 'SERVICE_RESPONSE_INVALID')
                 receipt = InspectionReceipt(fingerprint, uuid.uuid4().hex, binding,
                     agent_output=self._agent_output(result, bool(values)), api_address=self._agent_api(result))
+            if receipt.resume:
+                # A new desktop process must prove the current private output
+                # before it may create anything missing in Infisical.
+                self._verify_private(ssh, analysis, connection, values, receipt.agent_output)
+                self.__jobs[key] = receipt
             self._progress(progress_callback, 'HOST', 'PASS')
             if values:
                 self._progress(progress_callback, 'INFISICAL', 'RUNNING')
@@ -312,6 +480,18 @@ class ServiceController:
                     api.inspect(service, local_values)
                 self._progress(progress_callback, 'INFISICAL', 'PASS')
             return receipt
+        finally:
+            ssh.close()
+
+    def prepare_tools(self, analysis, connection, infisical, progress_callback=None):
+        self._validate(analysis, connection, infisical)
+        self._progress(progress_callback, 'HOST', 'RUNNING')
+        ssh = self._connect(connection)
+        try:
+            result = self._remote(ssh, self._request('update_tools', analysis, connection, infisical))
+            need(result['status'] == 'TOOLS_READY', 'SERVICE_RESPONSE_INVALID')
+            self._progress(progress_callback, 'HOST', 'PASS')
+            return dict(status='TOOLS_READY')
         finally:
             ssh.close()
 

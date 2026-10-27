@@ -5,6 +5,8 @@ import copy
 import datetime as dt
 import json
 import io
+import hmac
+import re
 from pathlib import PurePosixPath
 import threading
 import unittest
@@ -13,6 +15,20 @@ from unittest.mock import patch
 import yaml
 
 from remote import service_onboarding as remote
+
+
+def template_keys(text):
+    keys = re.findall(r"(?:^|\}\})([A-Za-z_][A-Za-z0-9_]*)='", text, re.M)
+    return list(dict.fromkeys(keys))
+
+
+def private_proof(selected, value='offline-example-token'):
+    normalized, _ = remote.plan_document(selected)
+    challenge = bytes.fromhex('12' * 32)
+    return {child['service_name']: dict(challenge=challenge.hex(), expected={key:
+            hmac.digest(challenge, (key + '\0' + value).encode(), 'sha256').hex()
+            for key in child['private_bindings']})
+            for child in remote.components(normalized) if child['private_bindings']}
 
 
 ROOT = PurePosixPath('/home/operator/streams-aio')
@@ -85,6 +101,12 @@ class MemoryStore(remote.Store):
         remote.need(actual[:2] == (uid, gid) and (public or actual[2:] == (mode, {})),
                     'ONBOARDING_DIRECTORY_PERMISSIONS_INVALID')
 
+    def journal_paths(self, directory):
+        prefix = str(directory).rstrip('/') + '/'
+        return [remote.PurePosixPath(name) for name in sorted(self.files)
+                if name.startswith(prefix) and remote.JOB.fullmatch(name[len(prefix):].removesuffix('.json'))
+                and name.endswith('.json')]
+
     def write(self, path, raw, uid, gid, mode, previous=None, public=False):
         if previous is None:
             remote.need(not self.exists(path), 'ONBOARDING_OUTPUT_EXISTS')
@@ -126,6 +148,19 @@ class FakeRunner:
         self.agent_config = LAYOUT.agent
         self.dr_load_state = 'loaded'
 
+    def validate_candidate(self, raw):
+        self.calls.append((['candidate-compose-validation'], False))
+
+    def check_images(self, plan):
+        self.calls.append((['candidate-image-validation'], False))
+
+    def check_ports(self, plan):
+        self.calls.append((['candidate-port-validation'], False))
+
+    def public_preflight(self, candidate):
+        self.calls.append((['candidate-public-validation'], False))
+        return dict(schema=1, status='PASS', stage='PUBLIC_EXPORT')
+
     def props(self, unit):
         if unit == remote.AGENT_UNIT:
             return dict(ActiveState='active', User='operator' if self.agent_kind == 'recovered_json' else 'root',
@@ -156,7 +191,7 @@ class FakeRunner:
         if args[:3] == ['systemctl', 'restart', remote.AGENT_UNIT]:
             rows = yaml.safe_load(self.store.read(self.agent_config))['templates']
             row = rows[-1]
-            keys = [line.split('=', 1)[0] for line in row['template-content'].splitlines()]
+            keys = template_keys(row['template-content'])
             value = '' if self.empty_private else 'offline-example-token'
             self.store.put(row['destination-path'], ''.join(key + "='" + value + "'\n" for key in keys).encode(),
                            1001 if self.agent_kind == 'recovered_json' else 0, 1001,
@@ -258,6 +293,7 @@ class RemoteOnboardingTests(unittest.TestCase):
 
     def preview(self):
         self.request['fingerprint'] = self.engine.inspect(self.request)['fingerprint']
+        self.request['private_proof'] = private_proof(self.request['plan'])
         return self.request
 
     def apply(self):
@@ -325,8 +361,12 @@ class RemoteOnboardingTests(unittest.TestCase):
         self.assertTrue(result.startswith(AGENT))
         rows = yaml.safe_load(result)['templates']
         self.assertEqual(rows[-1]['destination-path'], str(ROOT / '.secrets/demo.env'))
-        self.assertEqual(rows[-1]['template-content'],
-                         'ApiToken=\'{{ with getSecretByName "example-project" "prod" "/demo" "ApiToken" }}{{ .Value }}{{ end }}\'\n')
+        template = rows[-1]['template-content']
+        self.assertIn('range listSecrets "example-project" "prod" "/demo"', template)
+        self.assertIn('expandSecretReferences', template)
+        self.assertIn('false', template)
+        self.assertEqual(template_keys(template), ['ApiToken'])
+        self.assertFalse(template.endswith('\n'))
         self.assertNotIn(b'offline-example-token', result)
 
     def test_agent_hooks_and_existing_destination_are_refused(self):

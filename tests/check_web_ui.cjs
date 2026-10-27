@@ -75,7 +75,11 @@ async function main() {
           });
           return {ok: true, plan};
         },
-        inspect_service: async () => job('inspect_service', [{kind: 'inspected', verification_scope: 'local_lab'}]),
+        inspect_service: async () => {
+          if (window.__testInspectError) { const failure = window.__testInspectError; window.__testInspectError = null; return job('inspect_service', [{kind: 'error', ...failure}]); }
+          return job('inspect_service', [{kind: 'inspected', verification_scope: 'local_lab', resume: window.__testResume === true, resume_phase: window.__testResume ? 'SERVICE_READY' : ''}]);
+        },
+        update_service_tools: async () => { calls.push('update_service_tools'); return job('update_service_tools', [{kind: 'tools_prepared'}]); },
         apply_service: async () => {calls.push('apply_service'); return job('apply_service', [{kind: 'completed', operation: 'service', status: 'PASS_LOCAL', checks: {service: true, agent: true, github: false, backup: false}}]);},
         cancel: async () => ({ok: true}),
         answer_host_key: async () => ({ok: true}),
@@ -190,15 +194,44 @@ async function main() {
     await page.setViewportSize({width: 980, height: 740});
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Service recap must fit the compact window');
     await page.setViewportSize({width: 1360, height: 930});
+    await page.evaluate(() => { window.__testInspectError = {
+      code: 'ONBOARDING_PUBLIC_PREFLIGHT_FAILED', description: 'UNAPPROVED_TRANSPORT_DESCRIPTION',
+      diagnostic: {schema: 1, stage: 'GITHUB', code: 'PRIVATE_VALUE_IN_PUBLIC_FILE', path: 'data/demo/public/settings.yaml', lines: [1, 3], references: ['/demo/PASSWORD'], retryable: true}
+    }; });
+    await page.locator('#inspect-service').click();
+    await page.waitForFunction(() => document.querySelector('#service-feedback').textContent.includes('Righe: 1, 3') && !document.querySelector('#inspect-service').disabled);
+    assert((await page.locator('#service-feedback').textContent()).includes('data/demo/public/settings.yaml'));
+    assert(!(await page.locator('body').textContent()).includes('UNAPPROVED_TRANSPORT_DESCRIPTION'), 'Fixed diagnostic text must replace unapproved transport prose');
+    assert(await page.locator('#apply-service').isDisabled(), 'A diagnostic failure never unlocks apply');
+    await page.evaluate(() => { window.__testInspectError = {
+      code: 'ONBOARDING_RESOURCE_BACKUP_CAPABILITY_REQUIRED'
+    }; });
+    await page.locator('#inspect-service').click();
+    await page.waitForFunction(() => document.querySelector('#prepare-service-tools') && !document.querySelector('#prepare-service-tools').disabled);
+    assert(!(await page.evaluate(() => window.__testCalls)).includes('update_service_tools'), 'Legacy backup capability preparation also requires an explicit click');
+    await page.evaluate(() => { window.__testInspectError = {
+      code: 'ONBOARDING_TOOLING_UPDATE_REQUIRED',
+      diagnostic: {schema: 1, stage: 'HOST', code: 'TOOLING_UPDATE_REQUIRED', retryable: true}
+    }; });
+    await page.locator('#inspect-service').click();
+    await page.waitForFunction(() => document.querySelector('#prepare-service-tools') && !document.querySelector('#prepare-service-tools').disabled);
+    assert(!(await page.evaluate(() => window.__testCalls)).includes('update_service_tools'), 'Preparation requires its own explicit click');
+    await page.locator('#prepare-service-tools').click();
+    await page.waitForFunction(() => document.querySelector('#service-feedback').textContent.includes('Strumenti VM preparati') && !document.querySelector('#inspect-service').disabled);
+    assert(await page.locator('#apply-service').isDisabled(), 'Preparing tooling requires a fresh VM check');
+    await page.evaluate(() => { window.__testResume = true; });
     await page.locator('#inspect-service').click();
     await page.waitForFunction(() => !document.querySelector('#apply-service').disabled);
+    assert((await page.locator('#apply-service').textContent()).includes('Riprendi verifiche'));
+    assert((await page.locator('#service-feedback').textContent()).includes('già presente'));
+    await page.screenshot({path: path.join(output, '04d-ripresa-verifiche.png')});
     await page.locator('#apply-service').click();
     await page.waitForFunction(() => document.querySelector('#statusbar').classList.contains('success') && document.querySelector('#global-status-title').textContent.toLowerCase().includes('collaudo'));
     assert(await page.locator('#global-status-detail').textContent().then(text => /GitHub|backup/i.test(text)), 'Local completion must disclose publication exclusions');
     await page.screenshot({path: path.join(output, '05-verifica-locale.png')});
     assert.deepEqual(errors, [], 'No browser exception may hide a clicked action');
     assert(!(await page.locator('body').textContent()).includes(syntheticIdentity), 'The identity must not appear in status or diagnostics');
-    assert.deepEqual(await page.evaluate(() => window.__testCalls), ['recover', 'prepare_lab', 'apply_service']);
+    assert.deepEqual(await page.evaluate(() => window.__testCalls), ['recover', 'prepare_lab', 'update_service_tools', 'apply_service']);
     await page.setViewportSize({width: 980, height: 740});
     await page.locator('[data-page="connections"]').click();
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'No horizontal document overflow at minimum window size');

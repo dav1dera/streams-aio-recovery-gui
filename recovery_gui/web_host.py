@@ -94,6 +94,9 @@ class DesktopAPI:
     def inspect_service(self, payload):
         return self._bridge.inspect_service(payload)
 
+    def update_service_tools(self, payload):
+        return self._bridge.update_service_tools(payload)
+
     def apply_service(self, payload):
         return self._bridge.apply_service(payload)
 
@@ -201,7 +204,7 @@ def run(*, self_test=False):
                 return _refused('SERVICE_LAB_PREPARATION_INCOMPLETE',
                     'Controllo grafico automatico: nessuna connessione alle VM.')
             load_backups = load_backup = prepare_lab = recover = _refuse_remote
-            inspect_service = apply_service = _refuse_remote
+            inspect_service = apply_service = update_service_tools = _refuse_remote
         bridge = OfflineBridge()
     else:
         bridge = WebBridge()

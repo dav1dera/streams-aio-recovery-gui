@@ -10,12 +10,14 @@ from dataclasses import dataclass, field
 import base64
 import datetime as dt
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -27,6 +29,11 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
 
 import yaml
+
+try:
+    from service_tooling import prepare_tooling, ToolingFailure
+except ModuleNotFoundError:
+    from remote.service_tooling import prepare_tooling, ToolingFailure
 
 
 PUBLIC = 'dav1dera/streams-aio-sanitized'
@@ -51,7 +58,67 @@ REQUEST_FRAME = b'STREAMS_ONBOARDING_V1\n'
 
 
 class Refused(Exception):
-    pass
+    def __init__(self, code, diagnostic=None):
+        super().__init__(code)
+        self.diagnostic = diagnostic
+
+
+DIAGNOSTIC_STAGES = frozenset({'HOST', 'FILES', 'AGENT', 'SERVICE', 'GITHUB', 'BACKUP'})
+DIAGNOSTIC_REASONS = frozenset({'PRIVATE_VALUE_IN_PUBLIC_FILE', 'PRIVATE_VARIABLE_DEFAULT_REFUSED',
+    'LITERAL_CREDENTIAL_REFUSED', 'SERVICE_CONFIGURATION_MODE_MISMATCH',
+    'SERVICE_CONFIGURATION_HASH_MISMATCH', 'SOURCE_FILE_MISSING_OR_OVERSIZED',
+    'COMMAND_FAILED', 'COMPOSE_CONFIG_FAILED', 'COMPOSE_PULL_FAILED', 'COMPOSE_UP_FAILED',
+    'IMAGE_UNAVAILABLE', 'PORT_IN_USE', 'PUBLIC_BASE_MOVED', 'SYNC_ALREADY_RUNNING',
+    'TOOLING_UPDATE_REQUIRED', 'AGENT_SCOPE_UNAVAILABLE', 'COMPOSE_UNSUPPORTED',
+    'PUBLIC_DECLARATION_INVALID', 'PUBLIC_EXPORT_REFUSED',
+    'RECOVERY_VOLUME_OVERRIDE_REVIEW_REQUIRED', 'MISSING_SERVICE_DEPENDENCY', 'SERVICE_DEPENDENCY_CYCLE',
+    'CANDIDATE_PUBLIC_ENV_REQUIRES_PRIVATE_CLASSIFICATION'})
+
+
+def public_plan_paths(plan):
+    paths = {'docker-compose.yml', 'config/service-resources.json'}
+    if isinstance(plan, dict):
+        for row in plan.get('components', [plan]):
+            if isinstance(row, dict) and isinstance(row.get('public_env_path'), str):
+                paths.add(row['public_env_path'])
+        for row in plan.get('configuration_files', []):
+            if isinstance(row, dict) and isinstance(row.get('path'), str):
+                paths.add(row['path'])
+    return paths
+
+
+def safe_diagnostic(value, plan=None, stage='HOST'):
+    if not isinstance(value, dict):
+        return None
+    result = dict(schema=1, stage=value.get('stage') if value.get('stage') in DIAGNOSTIC_STAGES else stage,
+                  code=value.get('code') if value.get('code') in DIAGNOSTIC_REASONS else 'COMMAND_FAILED',
+                  retryable=value.get('retryable') is True)
+    path = value.get('path')
+    if isinstance(path, str) and path in public_plan_paths(plan):
+        result['path'] = path
+        lines = value.get('lines', [])
+        if isinstance(lines, list) and all(type(n) is int and 1 <= n <= 1000000 for n in lines):
+            result['lines'] = sorted(set(lines))[:20]
+    refs = value.get('references', [])
+    if isinstance(refs, list):
+        result['references'] = sorted({ref for ref in refs if isinstance(ref, str) and re.fullmatch(
+            r'/[A-Za-z0-9_-]{1,64}(?:/[A-Za-z0-9_-]{1,128}){1,8}', ref)})[:20]
+    return result
+
+
+def refused_result(error, request=None, *, stage='HOST', base=None):
+    code = str(error) if isinstance(error, Refused) else 'ONBOARDING_OPERATION_FAILED'
+    if not re.fullmatch(r'ONBOARDING_[A-Z0-9_]{1,100}', code):
+        code = 'ONBOARDING_OPERATION_FAILED'
+    result = dict(base or {}, schema=1, status='REFUSED', code=code)
+    request = request if isinstance(request, dict) else {}
+    job = request.get('job_id')
+    if isinstance(job, str) and JOB.fullmatch(job):
+        result['job_id'] = job
+    diagnostic = safe_diagnostic(getattr(error, 'diagnostic', None), request.get('plan'), stage)
+    if diagnostic:
+        result['diagnostic'] = diagnostic
+    return result
 
 
 def need(value, code):
@@ -448,14 +515,21 @@ def agent_template(root, plan, project, environment):
     need(isinstance(project, str) and IDENTIFIER.fullmatch(project)
          and isinstance(environment, str) and IDENTIFIER.fullmatch(environment),
          'ONBOARDING_INFISICAL_SCOPE_INVALID')
-    lines = []
+    groups = {}
     for key, source in sorted(plan['private_bindings'].items()):
-        # Legacy .Value emission is understood by the installed DR verifier.
-        # The desktop must reject apostrophes, line breaks and final backslash
-        # in NEW values before writing them to Infisical; values never arrive here.
-        getter = ' '.join(json.dumps(x) for x in (project, environment, source['folder'], source['key']))
-        lines.append(key + "='{{ with getSecretByName " + getter + ' }}{{ .Value }}{{ end }}\'')
-    return '\n'.join(lines) + '\n'
+        groups.setdefault(source['folder'], []).append((key, source['key']))
+    blocks = []
+    options = json.dumps(json.dumps({'expandSecretReferences': False}, separators=(',', ':')))
+    for folder, keys in sorted(groups.items()):
+        args = ' '.join(json.dumps(value) for value in (project, environment, folder))
+        block = '{{ range listSecrets ' + args + ' ' + options + ' }}'
+        for key, source_key in keys:
+            block += '{{ if eq .Key ' + json.dumps(source_key) + ' }}' + key + "='{{ .Value }}'\n{{ end }}"
+        blocks.append(block + '{{ end }}')
+    # Only selected assignments contain a literal newline. Extra folder keys
+    # must not emit blank rows or be exposed to the application's environment.
+    return ''.join(blocks)
+
 
 
 def extend_agent(raw, root, plan, project, environment, kind='production_yaml'):
@@ -661,6 +735,19 @@ class Store:
         need(digest(self.read(path)) == expected_hash, 'ONBOARDING_OUTPUT_CHANGED')
         self.safe(path).unlink()
 
+    def journal_paths(self, directory):
+        directory = self.safe(directory)
+        if not directory.exists():
+            return []
+        self.directory(directory, 0, 0, 0o700)
+        paths = []
+        for entry in os.scandir(directory):
+            if re.fullmatch(r'[0-9a-f]{32}\.json', entry.name):
+                need(entry.is_file(follow_symlinks=False), 'ONBOARDING_JOURNAL_PERMISSIONS_INVALID')
+                paths.append(PurePosixPath(entry.path))
+                need(len(paths) <= 500, 'ONBOARDING_RESUME_AMBIGUOUS')
+        return sorted(paths, key=str)
+
     def json(self, path):
         snap = self.snapshot(path, 16 * MAX_FILE)
         need(snap.uid == 0 and snap.mode == 0o600, 'ONBOARDING_JOURNAL_PERMISSIONS_INVALID')
@@ -674,6 +761,43 @@ class Store:
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+PUBLIC_PREFLIGHT_PROGRAM = r"""
+import base64, json, sys, types
+from pathlib import Path
+baseline = {}
+files = {}
+try:
+    scripts, root = Path(sys.argv[1]), Path(sys.argv[2])
+    sys.path.insert(0, str(scripts))
+    import public_export as export
+    if getattr(export, 'PUBLIC_ONBOARDING_PREFLIGHT', 0) != 1:
+        print(json.dumps({'schema':1,'status':'REFUSED','code':'TOOLING_UPDATE_REQUIRED',
+            'diagnostic':{'schema':1,'stage':'HOST','code':'TOOLING_UPDATE_REQUIRED','retryable':True}}))
+        sys.exit(0)
+    sync = types.ModuleType('onboarding_sync'); sync.__file__ = str(scripts / 'sync-public-stack.py')
+    sys.modules[sync.__name__] = sync
+    exec(compile(Path(sync.__file__).read_bytes(), sync.__file__, 'exec'), sync.__dict__)
+    request = json.loads(sys.stdin.buffer.read(8*1024*1024+1))
+    files = {name:base64.b64decode(data, validate=True) for name,data in request.get('files',{}).items()}
+    github = sync.GitHub(); github.preflight(); commit = github.head()
+    baseline = github.baseline(commit, include_all=True)
+    result = export.preflight(root, baseline, sync, files=files,
+        directories=request.get('directories',{}), private_keys=request.get('private_keys',{}))
+    sync.require(github.head() == commit, 'PUBLIC_BASE_MOVED')
+    print(json.dumps(result, sort_keys=True))
+except SystemExit:
+    raise
+except Exception as error:
+    diagnostic = {'schema':1,'stage':'GITHUB','code':'COMMAND_FAILED','retryable':True}
+    try:
+        if isinstance(error, sync.Refused):
+            diagnostic = export.safe_preflight_diagnostic(error, prospective_paths=files, baseline=baseline)
+    except Exception:
+        pass
+    print(json.dumps({'schema':1,'status':'REFUSED','code':'PUBLIC_PREFLIGHT_FAILED','diagnostic':diagnostic}))
+"""
 
 
 class Runner:
@@ -690,12 +814,124 @@ class Runner:
                     'GH_CONFIG_DIR=' + str(self.layout.home / '.config/gh'), *map(str, args)]
         return list(map(str, args)), env
 
-    def run(self, args, code, timeout=120, user=False):
+    def run(self, args, code, timeout=120, user=False, input_data=None):
         args, env = self.command(args, user)
-        result = subprocess.run(args, cwd=str(self.layout.root), env=env,
-                                stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
-        need(result.returncode == 0, code)
+        try:
+            result = subprocess.run(args, cwd=str(self.layout.root), env=env,
+                                    stdin=subprocess.DEVNULL if input_data is None else None,
+                                    input=input_data, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise Refused(code, dict(schema=1, stage='HOST', code='COMMAND_FAILED', retryable=True)) from None
+        if result.returncode:
+            reason = 'COMMAND_FAILED'
+            # Classify fixed Docker failure signatures; never expose stderr.
+            text = result.stderr.decode('utf-8', errors='replace').lower()
+            if 'port is already allocated' in text or 'address already in use' in text:
+                reason = 'PORT_IN_USE'
+            elif any(marker in text for marker in ('manifest unknown', 'manifest not found',
+                     'pull access denied', 'no matching manifest', 'not found in repository')):
+                reason = 'IMAGE_UNAVAILABLE'
+            raise Refused(code, dict(schema=1, stage='HOST', code=reason, retryable=False))
         return result.stdout
+
+    def validate_candidate(self, raw):
+        # --services loads the complete typed project with environment-file
+        # resolution disabled. --no-env-resolution on the normal config path
+        # skips only a later pass in Compose versions such as 2.38.2.
+        document = yaml_document(raw)
+        need(isinstance(document, dict) and isinstance(document.get('services'), dict),
+             'ONBOARDING_PREFLIGHT_COMPOSE_FAILED')
+        names = set()
+        for service in document['services'].values():
+            if not isinstance(service, dict):
+                continue  # Docker validates the complete service schema below.
+            name = service.get('container_name')
+            if isinstance(name, str) and name and '$' not in name:
+                # Docker's ordinary render path performs this extra check.
+                # Existing interpolated names are checked by runtime config;
+                # the new-service planner resolves explicit public inputs.
+                if name in names:
+                    raise Refused('ONBOARDING_PREFLIGHT_COMPOSE_FAILED', dict(schema=1,
+                        stage='HOST', code='COMPOSE_CONFIG_FAILED', path='docker-compose.yml', retryable=False))
+                names.add(name)
+        self.run(['docker', 'compose', '--project-directory', self.layout.root, '-f', '-',
+                  'config', '--services', '--quiet'], 'ONBOARDING_PREFLIGHT_COMPOSE_FAILED',
+                 input_data=raw)
+
+    def check_images(self, plan):
+        for child in components(plan):
+            image = child['image']
+            # Cached images have already been pulled and can be inspected offline.
+            try:
+                self.run(['docker', 'image', 'inspect', image], 'ONBOARDING_IMAGE_UNAVAILABLE', timeout=30)
+            except Refused:
+                try:
+                    self.run(['docker', 'manifest', 'inspect', image], 'ONBOARDING_IMAGE_UNAVAILABLE', timeout=120)
+                except Refused:
+                    raise Refused('ONBOARDING_IMAGE_UNAVAILABLE', dict(schema=1, stage='SERVICE',
+                        code='IMAGE_UNAVAILABLE', path='docker-compose.yml', retryable=True)) from None
+
+    def check_ports(self, plan):
+        count = 0
+        for child in components(plan):
+            service = yaml_document('services:\n' + child['compose_fragment'])['services'][child['service_name']]
+            if service.get('network_mode') == 'host':
+                continue
+            for row in service.get('ports', []):
+                if isinstance(row, dict):
+                    published, host, protocol = row.get('published'), row.get('host_ip', '0.0.0.0'), row.get('protocol', 'tcp')
+                    if published is None:
+                        continue
+                else:
+                    text, _, protocol = str(row).partition('/')
+                    protocol = protocol or 'tcp'
+                    pieces = text.rsplit(':', 2)
+                    if len(pieces) < 2:
+                        continue
+                    published, host = pieces[-2], pieces[0].strip('[]') if len(pieces) == 3 else '0.0.0.0'
+                if protocol not in ('tcp', 'udp'):
+                    continue
+                span = str(published).split('-', 1)
+                need(all(value.isdigit() for value in span), 'ONBOARDING_PREFLIGHT_COMPOSE_FAILED')
+                first, last = int(span[0]), int(span[-1])
+                if first == 0:
+                    continue
+                need(1 <= first <= last <= 65535 and count + last - first + 1 <= 4096,
+                     'ONBOARDING_PREFLIGHT_COMPOSE_FAILED')
+                count += last - first + 1
+                for port in range(first, last + 1):
+                    family = socket.AF_INET6 if ':' in host else socket.AF_INET
+                    sock = socket.socket(family, socket.SOCK_DGRAM if protocol == 'udp' else socket.SOCK_STREAM)
+                    try:
+                        if protocol == 'tcp':
+                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        sock.bind((host, port))
+                        if protocol == 'tcp':
+                            sock.listen(1)
+                    except OSError:
+                        raise Refused('ONBOARDING_PORT_IN_USE', dict(schema=1, stage='SERVICE', code='PORT_IN_USE',
+                            path='docker-compose.yml', retryable=True)) from None
+                    finally:
+                        sock.close()
+
+    def public_preflight(self, candidate):
+        scripts = self.layout.home / '.local/share/streams-aio-public-sync/tooling/scripts'
+        interpreter = self.layout.home / '.local/share/streams-aio-public-sync/venv/bin/python'
+        program = PUBLIC_PREFLIGHT_PROGRAM
+        raw = self.run([interpreter, '-B', '-c', program, scripts, self.layout.root],
+                       'ONBOARDING_PUBLIC_PREFLIGHT_FAILED', timeout=900, user=True,
+                       input_data=canonical_json(candidate))
+        try:
+            result = load_json(raw)
+        except Exception:
+            raise Refused('ONBOARDING_PUBLIC_PREFLIGHT_FAILED') from None
+        need(isinstance(result, dict) and type(result.get('schema')) is int and result['schema'] == 1, 'ONBOARDING_PUBLIC_PREFLIGHT_FAILED')
+        if result.get('status') == 'REFUSED':
+            code = ('ONBOARDING_TOOLING_UPDATE_REQUIRED' if result.get('code') == 'TOOLING_UPDATE_REQUIRED'
+                    else 'ONBOARDING_PUBLIC_PREFLIGHT_FAILED')
+            raise Refused(code, result.get('diagnostic'))
+        need(result.get('status') == 'PASS', 'ONBOARDING_PUBLIC_PREFLIGHT_FAILED')
+        return result
 
     def props(self, unit):
         raw = self.run(['systemctl', 'show', unit, '--property=LoadState,ActiveState,Result,ExecMainStatus,InvocationID,User,Group,UMask,ExecStart,KillMode,ExecStartPre,ExecStartPost,ExecStop,ExecStopPost'],
@@ -1061,6 +1297,52 @@ class Engine:
             else:
                 self.store.safe(directory)
 
+    def readiness(self, preview):
+        """Validate the complete candidate before any live output is written."""
+        plan = preview['_plan']
+        self.runner.validate_candidate(preview['_compose_result'])
+        self.runner.check_images(plan)
+        self.runner.check_ports(plan)
+        if self.verification_scope == 'local_lab':
+            return
+        files = {'docker-compose.yml': preview['_compose_result']}
+        for child in components(plan):
+            files[child['public_env_path']] = child['public_env_text'].encode()
+        for row in plan.get('configuration_files', []):
+            files[row['path']] = row['content'].encode()
+        if preview.get('_inventory_raw') is not None:
+            files['config/service-resources.json'] = preview['_inventory_raw']
+        directories = {}
+        for row in plan.get('resources', []):
+            if row['type'] == 'bind' and row['role'] == 'data':
+                source = row['source'].removeprefix('./')
+                if not source.startswith('/'):
+                    directories[source] = dict(uid=self.layout.uid, gid=self.layout.gid, mode=0o750)
+        candidate = dict(files={name:base64.b64encode(raw).decode() for name,raw in files.items()},
+            directories=directories, private_keys={child['private_env_path']:sorted(child['private_bindings'])
+                for child in components(plan) if child['private_bindings']})
+        self.runner.public_preflight(candidate)
+
+    def operation_matches(self, journal, request, *, discovering=False):
+        if not discovering and request.get('fingerprint') != journal.get('fingerprint'):
+            return False
+        expected = self.request_identity(dict(request, fingerprint=journal['fingerprint']))
+        if journal.get('request_identity') == expected:
+            return True
+        # Older public-only journals included unused Infisical UI defaults in
+        # their identity. They never select an Agent project/environment.
+        try:
+            before, _ = plan_document(journal.get('plan'))
+            after, _ = plan_document(request.get('plan'))
+            return (not before['private_bindings'] and not after['private_bindings']
+                    and canonical_json(before) == canonical_json(after)
+                    and journal.get('verification_scope') == request.get('verification_scope', 'full')
+                    and journal.get('probe_url', '') == request.get('probe_url', '')
+                    and journal.get('root') == request.get('root')
+                    and journal.get('owner') == self.layout.user)
+        except Exception:
+            return False
+
     def inspect_bundle(self, request, plan, service):
         self.pipeline_readiness()
         root = self.layout.root
@@ -1089,7 +1371,7 @@ class Engine:
                       verification_scope=self.verification_scope,
                       machine=digest(self.store.read(PurePosixPath('/etc/machine-id'), 256)))
         # The transport envelope stays v1; only the nested service plan is v2.
-        return dict(schema=1, status='PREVIEW', fingerprint=digest(canonical_json(source)),
+        preview = dict(schema=1, status='PREVIEW', fingerprint=digest(canonical_json(source)),
                     verification_scope=self.verification_scope, service=plan['service_name'],
                     services=plan['service_names'], image=plan['image'], images=plan['images'], stack_root=str(root),
                     public_files=[child['public_env_path'] for child in components(plan)] +
@@ -1103,6 +1385,8 @@ class Engine:
                     _plan=plan, _service=service, _compose=compose, _compose_result=result,
                     _agent=agent, _agent_result=agent_result, _agent_profile=profile,
                     _inventory_target=inventory_target, _inventory_raw=inventory_raw, _inventory_before=inventory_before)
+        self.readiness(preview)
+        return preview
 
     def inspect(self, request):
         self.configure_scope(request)
@@ -1129,7 +1413,7 @@ class Engine:
                       agent=agent.identity() if agent else None, agent_profile=profile,
                       verification_scope=self.verification_scope,
                       machine=digest(self.store.read(PurePosixPath('/etc/machine-id'), 256)))
-        return dict(schema=1, status='PREVIEW', fingerprint=digest(canonical_json(source)),
+        preview = dict(schema=1, status='PREVIEW', fingerprint=digest(canonical_json(source)),
                     verification_scope=self.verification_scope,
                     service=plan['service_name'], image=plan['image'], stack_root=str(root),
                     public_files=[plan['public_env_path'], 'docker-compose.yml'],
@@ -1140,6 +1424,8 @@ class Engine:
                     application_probe=health_probe or 'Docker HEALTHCHECK required',
                     _plan=plan, _service=service, _compose=compose, _compose_result=result,
                     _agent=agent, _agent_result=agent_result, _agent_profile=profile)
+        self.readiness(preview)
+        return preview
 
     def journal_path(self, job):
         need(isinstance(job, str) and JOB.fullmatch(job), 'ONBOARDING_JOB_INVALID')
@@ -1157,6 +1443,46 @@ class Engine:
                     api_address=journal['agent_profile']['api_address'],
                     verification_scope=journal['verification_scope'],
                     agent_archive_contents_verified=False)
+
+    def update_tools(self, request):
+        self.configure_scope(request)
+        try:
+            return prepare_tooling(self.layout, self.runner, self.store, request)
+        except ToolingFailure as error:
+            raise Refused(str(error), dict(schema=1, stage='HOST', code='TOOLING_UPDATE_REQUIRED', retryable=True)) from None
+
+    def discover(self, request):
+        """Adopt only one exact durable operation; credentials stay on desktop."""
+        self.configure_scope(request)
+        plan_document(request.get('plan'))
+        matches = []
+        for path in self.store.journal_paths(self.layout.state):
+            journal = self.store.json(path)
+            if (journal.get('root') != str(self.layout.root) or journal.get('owner') != self.layout.user
+                    or journal.get('verification_scope') != self.verification_scope
+                    or journal.get('phase') == 'ROLLED_BACK'):
+                continue
+            fingerprint = journal.get('fingerprint')
+            if not isinstance(fingerprint, str) or not HASH.fullmatch(fingerprint):
+                continue
+            if self.operation_matches(journal, request, discovering=True):
+                matches.append(journal)
+        need(len(matches) <= 1, 'ONBOARDING_RESUME_AMBIGUOUS')
+        if not matches:
+            return dict(schema=1, status='NO_JOB')
+        journal = matches[0]
+        need(journal.get('phase') in ('SERVICE_READY', 'PUBLIC_PUBLISHED', 'BACKUP_RUNNING', 'COMPLETE'),
+             'ONBOARDING_INTERRUPTED_REVIEW_REQUIRED')
+        try:
+            self.unchanged(journal)
+            self.health(journal)
+            if journal['phase'] == 'SERVICE_READY' and self.verification_scope == 'full':
+                self.runner.public_preflight(dict(files={}, directories={}, private_keys={}))
+        except Refused as error:
+            if str(error) in {'ONBOARDING_TOOLING_UPDATE_REQUIRED', 'ONBOARDING_PUBLIC_PREFLIGHT_FAILED'}:
+                raise
+            raise Refused('ONBOARDING_RESUME_CHANGED', getattr(error, 'diagnostic', None)) from None
+        return dict(self.safe_result(journal), fingerprint=journal['fingerprint'])
 
     def save(self, journal):
         self.store.save(self.journal_path(journal['job_id']), journal)
@@ -1290,7 +1616,7 @@ class Engine:
             journal = self.store.json(path)
             need(journal.get('root') == str(self.layout.root) and journal.get('owner') == self.layout.user,
                  'ONBOARDING_JOB_SCOPE_MISMATCH')
-            need(journal.get('request_identity') == self.request_identity(request),
+            need(self.operation_matches(journal, request),
                  'ONBOARDING_JOB_PLAN_MISMATCH')
             need(journal['phase'] in ('SERVICE_READY', 'PUBLIC_PUBLISHED', 'BACKUP_RUNNING', 'COMPLETE'),
                  'ONBOARDING_INTERRUPTED_REVIEW_REQUIRED')
@@ -1319,6 +1645,8 @@ class Engine:
                     journal['outputs'][name] = dict(path=str(target), expected=digest(raw), before=before.saved() if before else None)
             self.save(journal)
             try:
+                self.prepare_images(plan)
+                self.prepare_agent(preview, journal, request)
                 data = self.layout.root / 'data'
                 # Never change permissions of existing application data directories.
                 need(self.store.exists(data), 'ONBOARDING_DATA_DIRECTORY_MISSING')
@@ -1331,23 +1659,9 @@ class Engine:
                 item = self.store.write(self.layout.root / 'docker-compose.yml', preview['_compose_result'],
                                         old.uid, old.gid, old.mode, old, public=True)
                 journal['outputs']['compose']['after'] = item.identity()
-                if preview['_agent_result'] is not None:
-                    journal['agent_changed'] = True
-                    self.save(journal)
-                    old = preview['_agent']
-                    item = self.store.write(PurePosixPath(old.path), preview['_agent_result'], old.uid, old.gid, old.mode, old)
-                    journal['outputs']['agent']['after'] = item.identity()
-                    self.runner.run(['systemctl', 'restart', AGENT_UNIT], 'ONBOARDING_AGENT_RESTART_FAILED')
-                    item = self.generated_env(plan, profile=journal['agent_profile'])
-                    journal['private_output'] = dict(path=item.path, sha256=digest(item.raw))
                 journal['phase'] = 'FILES_WRITTEN'
                 self.save(journal)
                 self.compose('config', '--quiet')
-                self.compose('pull', '--', plan['service_name'])
-                volumes = load_json(self.runner.run(['docker', 'image', 'inspect', '--format',
-                                                      '{{json .Config.Volumes}}', plan['image']],
-                                                     'ONBOARDING_IMAGE_METADATA_FAILED'))
-                need(volumes in (None, {}), 'ONBOARDING_PERSISTENT_DATA_COVERAGE_REQUIRED')
                 journal['phase'] = 'START_ATTEMPTED'
                 self.save(journal)
                 self.compose('up', '-d', '--no-deps', '--pull', 'missing', '--', plan['service_name'])
@@ -1363,7 +1677,75 @@ class Engine:
                     journal['phase'] = 'REVIEW_REQUIRED'
                 journal['failure_code'] = code
                 self.save(journal)
-                return dict(self.safe_result(journal, 'REFUSED'), code=code)
+                return refused_result(error, request, stage='FILES', base=self.safe_result(journal, 'REFUSED'))
+
+    def prepare_images(self, plan):
+        """Pull/check only new images before touching live service files."""
+        checked = set()
+        for child in components(plan):
+            service = yaml_document('services:\n' + child['compose_fragment'])['services'][child['service_name']]
+            image = child['image']
+            if image not in checked:
+                try:
+                    self.runner.run(['docker', 'image', 'inspect', image], 'ONBOARDING_IMAGE_UNAVAILABLE', timeout=30)
+                except Refused:
+                    args = ['docker', 'pull']
+                    if service.get('platform'):
+                        args += ['--platform', service['platform']]
+                    self.runner.run([*args, image], 'ONBOARDING_IMAGE_UNAVAILABLE', timeout=300)
+                checked.add(image)
+            volumes = load_json(self.runner.run(['docker', 'image', 'inspect', '--format',
+                '{{json .Config.Volumes}}', image], 'ONBOARDING_IMAGE_METADATA_FAILED'))
+            need(volumes is None or isinstance(volumes, dict), 'ONBOARDING_IMAGE_METADATA_FAILED')
+            targets = [row['target'].rstrip('/') or '/' for row in plan.get('resources', [])
+                       if row['service'] == child['service_name'] and row['type'] in ('bind', 'volume', 'tmpfs')]
+            if plan.get('schema') != 2:
+                need(not volumes, 'ONBOARDING_PERSISTENT_DATA_COVERAGE_REQUIRED')
+            else:
+                need(all(any(target == '/' or declared == target or declared.startswith(target + '/')
+                             for target in targets) for declared in (volumes or {})),
+                     'ONBOARDING_ANONYMOUS_VOLUME_MAPPING_REQUIRED')
+
+    def prepare_agent(self, preview, journal, request):
+        """Prove newly rendered secrets before writing app files or starting it."""
+        if preview['_agent_result'] is None:
+            return
+        plan = journal['plan']
+        proofs = request.get('private_proof')
+        expected_services = {child['service_name'] for child in components(plan) if child['private_bindings']}
+        need(isinstance(proofs, dict) and set(proofs) == expected_services,
+             'ONBOARDING_AGENT_VALUE_READBACK_FAILED')
+        old = preview['_agent']
+        journal['agent_changed'] = True
+        journal.setdefault('private_outputs', [])
+        self.save(journal)
+        item = self.store.write(PurePosixPath(old.path), preview['_agent_result'], old.uid, old.gid, old.mode, old)
+        journal['outputs']['agent']['after'] = item.identity()
+        self.save(journal)
+        try:
+            self.runner.run(['systemctl', 'restart', AGENT_UNIT], 'ONBOARDING_AGENT_RESTART_FAILED')
+            for child in components(plan):
+                if not child['private_bindings']:
+                    continue
+                item = self.generated_env(child, profile=journal['agent_profile'])
+                journal['private_outputs'].append(dict(path=item.path, sha256=digest(item.raw)))
+                self.save(journal)
+                proof = proofs[child['service_name']]
+                need(isinstance(proof, dict) and set(proof) == {'challenge', 'expected'}
+                     and isinstance(proof['challenge'], str) and HASH.fullmatch(proof['challenge'])
+                     and isinstance(proof['expected'], dict) and set(proof['expected']) == set(child['private_bindings'])
+                     and all(isinstance(value, str) and HASH.fullmatch(value) for value in proof['expected'].values()),
+                     'ONBOARDING_AGENT_VALUE_READBACK_FAILED')
+                challenge = bytes.fromhex(proof['challenge'])
+                found = {}
+                for line in item.raw.decode('utf-8').splitlines():
+                    key, _, value = line.partition('=')
+                    found[key] = hmac.digest(challenge, (key + '\0' + value[1:-1]).encode(), 'sha256').hex()
+                need(all(hmac.compare_digest(found[key], value) for key, value in proof['expected'].items()),
+                     'ONBOARDING_AGENT_VALUE_READBACK_FAILED')
+        except Refused as error:
+            error.diagnostic = dict(schema=1, stage='AGENT', code='AGENT_SCOPE_UNAVAILABLE', retryable=True)
+            raise
 
     def apply_bundle(self, request, job, preview):
         plan, root = preview['_plan'], self.layout.root
@@ -1384,6 +1766,8 @@ class Engine:
             journal['outputs'][name] = dict(path=str(target), expected=digest(raw), before=before.saved() if before else None)
         self.save(journal)
         try:
+            self.prepare_images(plan)
+            self.prepare_agent(preview, journal, request)
             need(self.store.exists(root / 'data'), 'ONBOARDING_DATA_DIRECTORY_MISSING')
             for row in plan['resources']:
                 if row['type'] == 'bind' and row['role'] == 'data':
@@ -1391,33 +1775,15 @@ class Engine:
                     self.ensure_public_parents(target / '.onboarding-directory')
             for name, target, raw, before, mode in files:
                 if name == 'agent':
-                    journal['agent_changed'] = True
-                    self.save(journal)
+                    continue  # Already rendered and proven before app outputs.
                 self.ensure_public_parents(target) if name != 'agent' else None
                 uid, gid = (before.uid, before.gid) if before else (self.layout.uid, self.layout.gid)
                 item = self.store.write(target, raw, uid, gid, mode, before, public=name != 'agent')
                 journal['outputs'][name]['after'] = item.identity()
                 self.save(journal)
-            if preview['_agent_result'] is not None:
-                self.runner.run(['systemctl', 'restart', AGENT_UNIT], 'ONBOARDING_AGENT_RESTART_FAILED')
-                for child in components(plan):
-                    if child['private_bindings']:
-                        item = self.generated_env(child, profile=journal['agent_profile'])
-                        journal['private_outputs'].append(dict(path=item.path, sha256=digest(item.raw)))
-                        self.save(journal)
             journal['phase'] = 'FILES_WRITTEN'; self.save(journal)
             self.compose('config', '--quiet')
             names = plan['service_names']
-            self.compose('pull', '--', *names)
-            for child in components(plan):
-                volumes = load_json(self.runner.run(['docker', 'image', 'inspect', '--format', '{{json .Config.Volumes}}',
-                                                     child['image']], 'ONBOARDING_IMAGE_METADATA_FAILED'))
-                need(volumes is None or isinstance(volumes, dict), 'ONBOARDING_IMAGE_METADATA_FAILED')
-                targets = [row['target'].rstrip('/') or '/' for row in plan['resources']
-                           if row['service'] == child['service_name'] and row['type'] in ('bind', 'volume', 'tmpfs')]
-                need(all(any(target == '/' or declared == target or declared.startswith(target + '/')
-                             for target in targets) for declared in (volumes or {})),
-                     'ONBOARDING_ANONYMOUS_VOLUME_MAPPING_REQUIRED')
             journal['phase'] = 'START_ATTEMPTED'; self.save(journal)
             self.compose('up', '-d', '--no-deps', '--pull', 'missing', '--', *names)
             self.health(journal)
@@ -1427,7 +1793,7 @@ class Engine:
             code = str(error) if isinstance(error, Refused) else 'ONBOARDING_APPLY_FAILED'
             journal['phase'] = ('ROLLED_BACK' if self.rollback(journal) else 'REVIEW_REQUIRED') if journal['phase'] != 'START_ATTEMPTED' else 'REVIEW_REQUIRED'
             journal['failure_code'] = code; self.save(journal)
-            return dict(self.safe_result(journal, 'REFUSED'), code=code)
+            return refused_result(error, request, stage='FILES', base=self.safe_result(journal, 'REFUSED'))
 
     def unchanged(self, journal):
         for name, output in journal['outputs'].items():
@@ -1666,12 +2032,18 @@ class Engine:
 def handle(request, runner=None, store=None, layout=None):
     job = request.get('job_id') if isinstance(request, dict) else None
     try:
-        need(isinstance(request, dict) and request.get('action') in ('inspect', 'apply', 'finalize', 'status'),
+        need(isinstance(request, dict) and request.get('action') in ('inspect', 'discover', 'apply', 'finalize', 'status', 'update_tools'),
              'ONBOARDING_REQUEST_INVALID')
         layout = layout or Layout.production(request.get('root'))
         engine = Engine(layout, runner, store)
         engine.configure_scope(request)
         action = request['action']
+        if action == 'update_tools':
+            with engine.operation():
+                return engine.update_tools(request)
+        if action == 'discover':
+            with engine.operation():
+                return engine.discover(request)
         if action == 'inspect':
             with engine.locks():
                 result = engine.inspect(request)
@@ -1684,8 +2056,7 @@ def handle(request, runner=None, store=None, layout=None):
             return engine.safe_result(journal)
         return engine.finalize(request)
     except Exception as error:
-        code = str(error) if isinstance(error, Refused) else 'ONBOARDING_OPERATION_FAILED'
-        return dict(schema=1, status='REFUSED', code=code, **({'job_id': job} if isinstance(job, str) and JOB.fullmatch(job) else {}))
+        return refused_result(error, request)
 
 
 def framed_request(raw):

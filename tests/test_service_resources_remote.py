@@ -7,7 +7,7 @@ from unittest.mock import patch
 import yaml
 
 from remote import service_onboarding as remote
-from tests.test_service_onboarding_remote import FakeEngine, FakeRunner, LAYOUT, MemoryStore, ROOT, COMPOSE, plan
+from tests.test_service_onboarding_remote import FakeEngine, FakeRunner, LAYOUT, MemoryStore, ROOT, COMPOSE, plan, template_keys, private_proof
 
 
 def bundle():
@@ -42,8 +42,7 @@ class BundleRunner(FakeRunner):
         result = super().run(args, code, timeout, user)
         if list(map(str, args))[:3] == ['systemctl', 'restart', remote.AGENT_UNIT]:
             for row in yaml.safe_load(self.store.read(self.agent_config))['templates']:
-                lines = row['template-content'].splitlines()
-                keys = [line.split('=', 1)[0] for line in lines if 'getSecretByName' in line]
+                keys = template_keys(row['template-content'])
                 if keys:
                     self.store.put(row['destination-path'], ''.join(key + "='offline-example-token'\n" for key in keys).encode(),
                                    0, 1001, 0o640)
@@ -77,6 +76,7 @@ class BundleRemoteTests(unittest.TestCase):
 
     def apply(self):
         self.request['fingerprint'] = self.engine.inspect(self.request)['fingerprint']
+        self.request['private_proof'] = private_proof(self.request['plan'])
         return self.engine.apply(self.request)
 
     def test_bundle_merged_with_existing_services_and_top_level_resources(self):

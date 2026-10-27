@@ -13,7 +13,7 @@ a = Analysis(
         'native_agent.py', 'local_config.py', 'runtime_profile.py', 'test_reset.py', 'aio_snapshot.py',
         'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
         'npm-route-probe.mjs', 'tailscale_recovery.py', 'headplane_recovery.py', 'host_dns.py', 'local_endpoints.py',
-        'service_onboarding.py', 'service_snapshot.py')] + [('recovery_gui/web', 'recovery_gui/web')] + collect_data_files('webview', subdir='js'),
+        'service_onboarding.py', 'service_tooling.py', 'service_snapshot.py')] + [('recovery_gui/web', 'recovery_gui/web')] + collect_data_files('webview', subdir='js'),
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
