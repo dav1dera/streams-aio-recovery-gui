@@ -53,6 +53,91 @@ def _worker_locks(engine):
             os.close(fd)
 
 
+def _managed_journals(engine):
+    """All managed generations share one physical resource inventory."""
+    for path in engine.store.journal_paths(engine.layout.state):
+        journal = engine.store.json(path)
+        if (journal.get('root') == str(engine.layout.root)
+                and journal.get('owner') == engine.layout.user):
+            yield journal
+
+
+def _configuration_journals(engine):
+    for journal in _managed_journals(engine):
+        if journal.get('kind') == KIND:
+            yield journal
+
+
+def _completed_proof(journal):
+    if journal.get('kind') == KIND and journal.get('configuration_updated') is not True:
+        return False
+    return (journal.get('phase') == 'COMPLETE' or
+            (journal.get('verification_scope') == 'local_lab'
+             and journal.get('phase') == 'SERVICE_READY'
+             and journal.get('application_verified') is True))
+
+
+def _settled(journal):
+    # A successful local-lab operation intentionally has no publication or
+    # backup phase. The desktop exposes its SERVICE_READY result as PASS_LOCAL.
+    return (journal.get('phase') in ('COMPLETE', 'ROLLED_BACK') or
+            (journal.get('verification_scope') == 'local_lab'
+             and journal.get('phase') == 'SERVICE_READY'
+             and journal.get('application_verified') is True
+             and journal.get('configuration_updated') is True))
+
+
+def _unresolved(engine):
+    return [journal for journal in _configuration_journals(engine) if not _settled(journal)]
+
+
+def _require_no_unresolved(engine, permitted_job=None):
+    r = _remote(engine)
+    pending = _unresolved(engine)
+    r.need(not pending or (permitted_job is not None and len(pending) == 1
+           and pending[0].get('job_id') == permitted_job),
+           'ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED')
+    return pending
+
+
+def require_idle_configuration(engine):
+    """Guard other inventory writers without blocking legacy addition journals."""
+    _require_no_unresolved(engine)
+
+
+def _generation_claimed_by_complete(engine, pending):
+    """Never undo bytes subsequently proven by another managed completion.
+
+    Old releases could create an equivalent second job after an interrupted
+    first job. A completed journal's inventory inode/mtime/content identifies
+    its actual current generation even when ACL masks are recalculated. This
+    guard also covers a later no-op verification of the first job's bytes.
+    """
+    r = _remote(engine)
+    mutation_needed = False
+    for output in pending['outputs'].values():
+        if not output.get('changed'):
+            continue
+        current = engine.store.snapshot(PurePosixPath(output['path']))
+        if (r.digest(current.raw) == output['expected']
+                and output.get('before', {}).get('sha256') != output['expected']):
+            mutation_needed = True
+            break
+    if not mutation_needed:
+        return False
+    inventory = engine.store.snapshot(engine.layout.root / 'config/service-resources.json').identity()
+    fields = ('path', 'sha256', 'uid', 'gid', 'device', 'inode', 'mtime')
+    for prior in _managed_journals(engine):
+        if not _completed_proof(prior) or prior.get('job_id') == pending.get('job_id'):
+            continue
+        output = prior.get('outputs', {}).get('inventory', {})
+        after = output.get('after')
+        if (isinstance(after, dict) and output.get('expected') == inventory['sha256']
+                and all(after.get(key) == inventory[key] for key in fields)):
+            return True
+    return False
+
+
 def _head(engine):
     if engine.verification_scope == 'local_lab':
         return None
@@ -158,6 +243,7 @@ def _result(engine, journal, status=None):
 def inspect_configuration(engine, request):
     r = _remote(engine)
     plan, service = _plan(engine, request)
+    _require_no_unresolved(engine)
     engine.pipeline_readiness()
     before, inventory_raw = _snapshot_scope(engine, plan)
     probe = r.probe_url(request.get('probe_url', ''), service)
@@ -192,31 +278,41 @@ def _validate_existing(engine, journal, request):
 
 
 def _restore_changed(engine, journal):
-    r, complete = _remote(engine), True
-    for name, output in reversed(list(journal['outputs'].items())):
-        if not output.get('changed'):
-            continue
-        try:
+    r, checked, restores = _remote(engine), [], []
+    try:
+        # Establish ownership of the WHOLE changed set before restoring any
+        # member. A foreign edit to one file must not cause the inventory or
+        # other owned files to be rolled back around that retained foreign file.
+        for output in reversed(list(journal['outputs'].values())):
+            if not output.get('changed'):
+                continue
             before = r.Snapshot.restore(output['before'])
             current = engine.store.snapshot(PurePosixPath(output['path']))
-            if r.digest(current.raw) == r.digest(before.raw):
-                r.need((current.uid, current.gid) == (before.uid, before.gid)
-                       and r.metadata_matches(current, before.mode, before.attributes, public=True),
-                       'ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED')
-                continue
-            r.need(r.digest(current.raw) == output['expected']
+            current_hash = r.digest(current.raw)
+            r.need(current_hash in (r.digest(before.raw), output['expected'])
                    and (current.uid, current.gid) == (before.uid, before.gid)
                    and r.metadata_matches(current, before.mode, before.attributes, public=True),
                    'ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED')
-            engine.store.write(PurePosixPath(output['path']), before.raw, before.uid, before.gid,
+            checked.append(current)
+            if current_hash != r.digest(before.raw):
+                restores.append((before, current))
+        for current in checked:
+            r.need(engine.store.snapshot(PurePosixPath(current.path)).identity() == current.identity(),
+                   'ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED')
+        for before, current in restores:
+            engine.store.write(PurePosixPath(current.path), before.raw, before.uid, before.gid,
                                before.mode, current, public=True)
-        except Exception:
-            complete = False
-    return complete
+        return True
+    except Exception:
+        return False
 
 
 def _recover(engine, journal):
+    r = _remote(engine)
+    _require_no_unresolved(engine, journal['job_id'])
     with _worker_locks(engine):
+        r.need(not _generation_claimed_by_complete(engine, journal),
+               'ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED')
         restored = _restore_changed(engine, journal)
         journal['phase'] = 'ROLLED_BACK' if restored else 'REVIEW_REQUIRED'
         journal['configuration_updated'] = False
@@ -228,20 +324,20 @@ def discover_configuration(engine, request):
     r = _remote(engine)
     _plan(engine, request)
     with engine.operation():
+        global_pending = _unresolved(engine)
         matches = []
-        for path in engine.store.journal_paths(engine.layout.state):
-            journal = engine.store.json(path)
-            if journal.get('kind') != KIND or journal.get('phase') == 'ROLLED_BACK':
-                continue
-            if (journal.get('root') != str(engine.layout.root) or journal.get('owner') != engine.layout.user
+        for journal in _configuration_journals(engine):
+            if (journal.get('phase') == 'ROLLED_BACK'
                     or journal.get('verification_scope') != engine.verification_scope):
                 continue
             fingerprint = journal.get('fingerprint')
             if isinstance(fingerprint, str) and r.HASH.fullmatch(fingerprint) \
                     and engine.operation_matches(journal, request, discovering=True):
                 matches.append(journal)
-        pending = [journal for journal in matches if journal.get('phase') != 'COMPLETE']
-        r.need(len(pending) <= 1, 'ONBOARDING_RESUME_AMBIGUOUS')
+        pending = [journal for journal in matches if not _settled(journal)]
+        r.need(not global_pending or (len(global_pending) == len(pending) == 1
+               and global_pending[0].get('job_id') == pending[0].get('job_id')),
+               'ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED')
         completed = []
         if not pending:
             for prior in matches:
@@ -277,6 +373,7 @@ def apply_configuration(engine, request):
         if engine.store.exists(path):
             journal = engine.store.json(path)
             _validate_existing(engine, journal, request)
+            _require_no_unresolved(engine, job)
             if journal.get('phase') in PARTIAL:
                 _recover(engine, journal)
                 raise r.Refused('ONBOARDING_CONFIGURATION_RETRY_REQUIRED')

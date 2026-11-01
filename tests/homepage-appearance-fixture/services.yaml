@@ -137,7 +137,7 @@
       server: docker-locale
       container: aiomanager
       showStats: false
-  - AMP Servers:
+  - AMP:
       icon: mdi-server-network
       href: https://example.invalid/service/20
 - Rete e proxy:

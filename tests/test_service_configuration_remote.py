@@ -290,6 +290,36 @@ class ConfigurationUpdateTests(unittest.TestCase):
         self.assertEqual(self.journal()['phase'], 'REVIEW_REQUIRED')
         self.assertEqual(self.store.read(ROOT/'data/demo/public/config/settings.yaml'), b'foreign-after-crash\n')
 
+    def test_foreign_configuration_prevents_any_owned_inventory_rollback(self):
+        observed = {}
+        self.runner.fail_config = True
+        def foreign():
+            self.store.put(ROOT/'data/demo/public/config/settings.yaml', b'foreign-after-write\n', 1001, 1001, 0o644)
+            observed['inventory'] = self.store.snapshot(ROOT/'config/service-resources.json')
+        self.runner.before_config_failure = foreign
+        result = self.apply()
+        self.assertEqual(result['status'], 'REFUSED')
+        self.assertEqual(self.journal()['phase'], 'REVIEW_REQUIRED')
+        self.assertEqual(self.store.snapshot(ROOT/'config/service-resources.json'), observed['inventory'])
+        self.assertEqual(sum(path == str(ROOT/'config/service-resources.json') for path, _ in self.store.writes), 1)
+        self.assertEqual(self.store.read(ROOT/'data/demo/public/config/settings.yaml'), b'foreign-after-write\n')
+
+    def test_foreign_inventory_prevents_any_owned_configuration_rollback(self):
+        observed = {}
+        self.runner.fail_config = True
+        def foreign():
+            path = ROOT/'config/service-resources.json'
+            self.store.put(path, self.store.read(path)+b' ', 1001, 1001, 0o640)
+            observed['inventory'] = self.store.snapshot(path)
+            observed['configuration'] = self.store.snapshot(ROOT/'data/demo/public/config/settings.yaml')
+        self.runner.before_config_failure = foreign
+        result = self.apply()
+        self.assertEqual(result['status'], 'REFUSED')
+        self.assertEqual(self.journal()['phase'], 'REVIEW_REQUIRED')
+        self.assertEqual(self.store.snapshot(ROOT/'config/service-resources.json'), observed['inventory'])
+        self.assertEqual(self.store.snapshot(ROOT/'data/demo/public/config/settings.yaml'), observed['configuration'])
+        self.assertEqual(sum(path == str(ROOT/'data/demo/public/config/settings.yaml') for path, _ in self.store.writes), 1)
+
     def test_managed_theme_a_b_a_keeps_history_and_can_resume_latest_equivalent_job(self):
         self.apply()
         first_path = self.engine.journal_path(self.request['job_id'])
@@ -341,6 +371,177 @@ class ConfigurationUpdateTests(unittest.TestCase):
         self.assert_code('ONBOARDING_CONFIGURATION_SCOPE_REQUIRED', self.inspect)
         self.assertFalse(self.runner.preflights)
         self.assertFalse(self.store.writes)
+
+    def _add_second_configuration(self):
+        row = dict(path='data/demo/public/config/custom.css', content='.theme { color: blue; }\n', mode=0o644)
+        self.original['configuration_files'].append(copy.deepcopy(row))
+        self.next['configuration_files'].append(copy.deepcopy(row))
+        normalized, _ = remote.plan_document(self.original)
+        selected = normalized['configuration_files'][-1]
+        self.store.put(ROOT/selected['path'], selected['content'].encode(), 1001, 1001, 0o644)
+        self.inventory['configuration_files'].append({key: selected[key] for key in ('path','mode','sha256')})
+        self.store.put(ROOT/'config/service-resources.json', remote.canonical_json(self.inventory)+b'\n', 1001, 1001, 0o640)
+
+    def _crash_after_settings_write(self):
+        self.inspect()
+        original_write = self.store.write
+        def interrupted(path, raw, *args, **kwargs):
+            result = original_write(path, raw, *args, **kwargs)
+            if str(path) == str(ROOT/'data/demo/public/config/settings.yaml'): raise SystemExit()
+            return result
+        with patch.object(self.store, 'write', interrupted):
+            with self.assertRaises(SystemExit): self.apply()
+        self.assertEqual(self.journal()['phase'], 'PREPARED')
+
+    def _assert_changed_identity_cannot_bypass_pending(self, reorder):
+        self._crash_after_settings_write()
+        current = copy.deepcopy(self.store.files)
+        alternate = dict(self.request, job_id='9'*32, plan=copy.deepcopy(self.next))
+        alternate.pop('fingerprint')
+        reorder(alternate['plan'])
+        for call in (lambda: update.discover_configuration(self.engine, alternate),
+                     lambda: update.inspect_configuration(self.engine, alternate),
+                     lambda: update.apply_configuration(self.engine, dict(alternate, fingerprint='9'*64))):
+            self.assert_code('ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED', call)
+            self.assertEqual(self.store.files, current)
+        original = dict(self.request)
+        original.pop('fingerprint')
+        self.assertEqual(update.discover_configuration(self.engine, original)['status'], 'NO_JOB')
+        self.assertEqual(self.journal()['phase'], 'ROLLED_BACK')
+        self.assertEqual(self.store.read(ROOT/'data/demo/public/config/settings.yaml'), b'title: Example\n')
+        self.assert_no_lifecycle()
+
+    def test_reversed_resources_cannot_bypass_interrupted_shared_inventory_update(self):
+        self._assert_changed_identity_cannot_bypass_pending(lambda plan: plan['resources'].reverse())
+
+    def test_reordered_configuration_files_cannot_bypass_interrupted_update(self):
+        self._add_second_configuration()
+        self._assert_changed_identity_cannot_bypass_pending(lambda plan: plan['configuration_files'].reverse())
+
+    def test_different_verification_scope_cannot_bypass_global_pending_update(self):
+        self._crash_after_settings_write()
+        self.store.directory(LAYOUT.state, 0, 0, 0o700, create=True)
+        marker = dict(schema=1, kind='prepared_onboarding_lab', root=str(ROOT), owner=LAYOUT.user,
+            machine_id=self.store.read('/etc/machine-id').decode().strip(), publications_disabled=True)
+        self.store.put(LAYOUT.state/'lab.json', remote.canonical_json(marker))
+        alternate = dict(self.request, verification_scope='local_lab', job_id='9'*32)
+        alternate.pop('fingerprint')
+        current = copy.deepcopy(self.store.files)
+        for call in (lambda: update.discover_configuration(self.engine, alternate),
+                     lambda: update.inspect_configuration(self.engine, alternate),
+                     lambda: update.apply_configuration(self.engine, dict(alternate, fingerprint='9'*64))):
+            self.assert_code('ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED', call)
+            self.assertEqual(self.store.files, current)
+
+    def test_ready_unpublished_update_must_finish_before_a_different_update(self):
+        self.apply()
+        alternate = dict(self.request, job_id='9'*32, plan=copy.deepcopy(self.next))
+        alternate['plan']['configuration_files'][0]['content'] = 'title: Next unverified update\n'
+        alternate.pop('fingerprint')
+        current = copy.deepcopy(self.store.files)
+        for call in (lambda: update.discover_configuration(self.engine, alternate),
+                     lambda: update.inspect_configuration(self.engine, alternate),
+                     lambda: update.apply_configuration(self.engine, dict(alternate, fingerprint='9'*64))):
+            self.assert_code('ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED', call)
+            self.assertEqual(self.store.files, current)
+        original = dict(self.request)
+        original.pop('fingerprint')
+        self.assertEqual(update.discover_configuration(self.engine, original)['status'], 'SERVICE_READY')
+
+    def test_successful_local_configuration_update_does_not_block_later_local_themes(self):
+        self.request['verification_scope'] = 'local_lab'
+        self.store.directory(LAYOUT.state, 0, 0, 0o700, create=True)
+        marker = dict(schema=1, kind='prepared_onboarding_lab', root=str(ROOT), owner=LAYOUT.user,
+            machine_id=self.store.read('/etc/machine-id').decode().strip(), publications_disabled=True)
+        self.store.put(LAYOUT.state/'lab.json', remote.canonical_json(marker))
+        self.apply()
+        theme_a = copy.deepcopy(self.request['plan'])
+        first_path = self.engine.journal_path(self.request['job_id'])
+        original_history = self.store.read(first_path)
+        self.request.update(job_id='9'*32, plan=copy.deepcopy(theme_a))
+        self.request['plan']['configuration_files'][0]['content'] = 'title: Second local theme\n'
+        self.request.pop('fingerprint')
+        self.assertEqual(update.discover_configuration(self.engine, self.request)['status'], 'NO_JOB')
+        self.assertEqual(self.apply()['status'], 'SERVICE_READY')
+        self.request.update(job_id='a'*32, plan=theme_a)
+        self.request.pop('fingerprint')
+        self.assertEqual(update.discover_configuration(self.engine, self.request)['status'], 'NO_JOB')
+        self.assertEqual(self.apply()['status'], 'SERVICE_READY')
+        self.request.pop('fingerprint')
+        resumed = update.discover_configuration(self.engine, self.request)
+        self.assertEqual(resumed['job_id'], 'a'*32)
+        self.assertEqual(resumed['status'], 'SERVICE_READY')
+        self.assertEqual(self.store.read(first_path), original_history)
+        self.assertFalse(self.runner.preflights)
+        self.assert_no_lifecycle()
+
+    def test_legacy_pending_recovery_preserves_generation_claimed_by_newer_complete_job(self):
+        self._crash_after_settings_write()
+        pending = self.journal()
+        newer = copy.deepcopy(pending)
+        newer.update(job_id='9'*32, phase='COMPLETE', fingerprint='9'*64,
+            application_verified=True, configuration_updated=True, backup_integrity_verified=True,
+            backup_tag='dr-20261020T120009Z')
+        newer['plan']['resources'].reverse()
+        newer['request_identity'] = self.engine.request_identity(dict(self.request,
+            plan=newer['plan'], fingerprint=newer['fingerprint']))
+        # Represents an equivalent no-op update verified by an older release:
+        # it claims the actual current generation, including the shared inventory.
+        for output in newer['outputs'].values():
+            item = self.store.snapshot(output['path'])
+            output.update(expected=remote.digest(item.raw), before=item.saved(), after=item.identity(), changed=False)
+        self.engine.save(newer)
+        current = copy.deepcopy(self.store.files)
+        original = dict(self.request)
+        original.pop('fingerprint')
+        self.assert_code('ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED',
+            lambda: update.discover_configuration(self.engine, original))
+        self.assertEqual(self.store.files, current)
+        self.assertEqual(self.journal()['phase'], 'PREPARED')
+        self.assertEqual(self.store.json(self.engine.journal_path('9'*32))['phase'], 'COMPLETE')
+        self.assertEqual(self.store.read(ROOT/'data/demo/public/config/settings.yaml'),
+                         self.next['configuration_files'][0]['content'].encode())
+        self.assert_no_lifecycle()
+
+    def _assert_newer_addition_generation_preserved(self, phase, scope):
+        self._crash_after_settings_write()
+        inventory_path = ROOT/'config/service-resources.json'
+        current_inventory = json.loads(self.store.read(inventory_path))
+        current_inventory['resources'].append(dict(id='6'*20, service='newapp', type='volume',
+            source='newapp-data', target='/state', read_only=False, role='data',
+            recovery={'method':'stopped_archive'}))
+        self.store.put(inventory_path, remote.canonical_json(current_inventory)+b'\n', 1001, 1001, 0o640)
+        item = self.store.snapshot(inventory_path)
+        addition = dict(schema=2, job_id='9'*32, root=str(ROOT), owner=LAYOUT.user,
+            verification_scope=scope, phase=phase, application_verified=True,
+            outputs={'inventory':dict(path=item.path, expected=remote.digest(item.raw), after=item.identity())})
+        self.engine.save(addition)
+        current = copy.deepcopy(self.store.files)
+        original = dict(self.request)
+        original.pop('fingerprint')
+        self.assert_code('ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED',
+            lambda: update.discover_configuration(self.engine, original))
+        self.assertEqual(self.store.files, current)
+        self.assertEqual(self.journal()['phase'], 'PREPARED')
+        self.assertEqual(self.store.read(ROOT/'data/demo/public/config/settings.yaml'),
+                         self.next['configuration_files'][0]['content'].encode())
+        self.assert_no_lifecycle()
+
+    def test_newer_completed_addition_protects_shared_inventory_generation_from_recovery(self):
+        self._assert_newer_addition_generation_preserved('COMPLETE', 'full')
+
+    def test_newer_successful_local_addition_protects_current_inventory_generation(self):
+        self._assert_newer_addition_generation_preserved('SERVICE_READY', 'local_lab')
+
+    def test_idle_configuration_guard_does_not_block_legacy_unresolved_addition(self):
+        addition = dict(schema=2, job_id='9'*32, root=str(ROOT), owner=LAYOUT.user,
+            verification_scope='full', phase='REVIEW_REQUIRED', application_verified=False, outputs={})
+        self.engine.save(addition)
+        update.require_idle_configuration(self.engine)
+        self.assertEqual(self.inspect()['status'], 'PREVIEW')
+        self.apply()
+        self.assert_code('ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED',
+                         lambda: update.require_idle_configuration(self.engine))
 
     def test_full_public_readback_and_new_backup_can_finalize_same_journal(self):
         self.apply()

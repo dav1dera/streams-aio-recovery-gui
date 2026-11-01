@@ -1396,6 +1396,7 @@ class Engine:
 
     def inspect(self, request):
         self.configure_scope(request)
+        configuration_updates.require_idle_configuration(self)
         plan, service = plan_document(request.get('plan'))
         if plan.get('schema') == 2:
             return self.inspect_bundle(request, plan, service)
@@ -1628,6 +1629,7 @@ class Engine:
                                          probe_url=request.get('probe_url', ''))))
 
     def _apply(self, request):
+        configuration_updates.require_idle_configuration(self)
         job = request.get('job_id') or uuid.uuid4().hex
         path = self.journal_path(job)
         if self.store.exists(path):

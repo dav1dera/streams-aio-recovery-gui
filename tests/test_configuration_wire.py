@@ -128,6 +128,75 @@ class ConfigurationWireTests(unittest.TestCase):
         self.assertNotIn('synthetic-ssh-password', b''.join(self.ssh.raw_responses).decode())
         self.assertNotIn('synthetic-api-token', b''.join(self.ssh.raw_responses).decode())
 
+    def additional_analysis(self):
+        return analyze_inputs('newapp:\n  image: example/newapp:1\n  volumes:\n    - ./data/newapp/public:/config:ro\n',
+            'PORT=8080\n', configuration_files=[dict(path='data/newapp/public/settings.yaml',
+                content='title: New application\n', mode=0o644)])
+
+    def test_unresolved_configuration_blocks_new_addition_preview_and_apply_without_writes(self):
+        addition = self.additional_analysis()
+        adder = self.new_controller()
+        earlier = adder.inspect(addition, self.connection, self.infisical)
+        updater = self.new_controller()
+        update_receipt = updater.inspect_configuration(self.updated, self.connection, self.infisical)
+        original_write = self.store.write
+        def interrupted(path, raw, *args, **kwargs):
+            item = original_write(path, raw, *args, **kwargs)
+            if str(path) == str(ROOT/'data/demo/public/config/settings.yaml'):
+                raise SystemExit('synthetic process termination')
+            return item
+        with patch.object(self.store, 'write', interrupted):
+            with self.assertRaises(SystemExit):
+                updater._remote(self.ssh, updater._request('apply_configuration', self.updated,
+                    self.connection, self.infisical, update_receipt))
+        self.assertEqual(self.store.json(self.engine.journal_path(update_receipt.job_id))['phase'], 'PREPARED')
+        current = copy.deepcopy(self.store.files)
+        writes, calls = len(self.store.writes), len(self.runner.calls)
+        with self.assertRaisesRegex(OnboardingError, '^ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED$'):
+            self.new_controller().inspect(addition, self.connection, self.infisical)
+        # Exercise Engine._apply itself with a preview issued before the crash,
+        # so a caller cannot bypass the guard by retaining an older add receipt.
+        with self.assertRaisesRegex(OnboardingError, '^ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED$'):
+            adder._remote(self.ssh, adder._request('apply', addition, self.connection, self.infisical, earlier))
+        self.assertEqual(self.store.files, current)
+        self.assertEqual(len(self.store.writes), writes)
+        self.assertFalse(self.store.exists(LAYOUT.state/(earlier.job_id+'.json')))
+        self.assertFalse(self.store.exists(ROOT/'data/newapp/public/settings.yaml'))
+        self.assertEqual(self.api.calls, [])
+        for args, _ in self.runner.calls[calls:]:
+            self.assertFalse(args[:2] == ['systemctl', 'restart'])
+            if args[:2] == ['docker', 'compose']:
+                self.assertNotIn(args[6], ('up', 'pull', 'stop', 'down', 'restart'))
+
+    def test_successful_local_configuration_allows_a_real_subsequent_addition(self):
+        self.enable_local_scope()
+        updater = self.new_controller()
+        update_receipt = updater.inspect_configuration(self.updated, self.connection, self.infisical)
+        updated = updater.apply_configuration(self.updated, self.connection, self.infisical, update_receipt)
+        self.assertEqual(updated['status'], 'PASS_LOCAL')
+        update_path = self.engine.journal_path(update_receipt.job_id)
+        journal = self.store.json(update_path)
+        self.assertEqual(journal['phase'], 'SERVICE_READY')
+        self.assertIs(journal['application_verified'], True)
+        self.assertIs(journal['configuration_updated'], True)
+        history = self.store.read(update_path)
+        agent_before = self.store.read(LAYOUT.agent)
+        addition, adder = self.additional_analysis(), self.new_controller()
+        receipt = adder.inspect(addition, self.connection, self.infisical)
+        self.assertEqual(receipt.kind, 'add')
+        result = adder.apply(addition, self.connection, self.infisical, receipt)
+        self.assertEqual(result['status'], 'PASS_LOCAL')
+        self.assertEqual(result['checks'], dict(service=True, agent=True, github=False, backup=False))
+        self.assertIn('newapp', remote.yaml_document(self.store.read(ROOT/'docker-compose.yml'))['services'])
+        self.assertEqual(self.store.read(ROOT/'data/newapp/public/settings.yaml'), b'title: New application\n')
+        self.assertEqual(self.store.read(update_path), history)
+        self.assertEqual(self.store.read(LAYOUT.agent), agent_before)
+        self.assertEqual(self.api.calls, [])
+        inventory = remote.load_json(self.store.read(ROOT/'config/service-resources.json'))
+        hashes = {row['path']: row['sha256'] for row in inventory['configuration_files']}
+        for path in ('data/demo/public/config/settings.yaml', 'data/newapp/public/settings.yaml'):
+            self.assertEqual(hashes[path], remote.digest(self.store.read(ROOT/path)))
+
     def test_add_mode_does_not_adopt_configuration_journal(self):
         self.enable_local_scope()
         updater = self.new_controller()
