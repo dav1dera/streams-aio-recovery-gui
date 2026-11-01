@@ -75,12 +75,13 @@ async function main() {
           });
           return {ok: true, plan};
         },
-        inspect_service: async () => {
+        inspect_service: async input => {
+          window.__testExecutionPayload = input;
           if (window.__testInspectError) { const failure = window.__testInspectError; window.__testInspectError = null; return job('inspect_service', [{kind: 'error', ...failure}]); }
-          return job('inspect_service', [{kind: 'inspected', verification_scope: 'local_lab', resume: window.__testResume === true, resume_phase: window.__testResume ? 'SERVICE_READY' : ''}]);
+          return job('inspect_service', [{kind: 'inspected', mode: input.mode || 'add', verification_scope: 'local_lab', resume: window.__testResume === true, resume_phase: window.__testResume ? 'SERVICE_READY' : ''}]);
         },
         update_service_tools: async () => { calls.push('update_service_tools'); return job('update_service_tools', [{kind: 'tools_prepared'}]); },
-        apply_service: async () => {calls.push('apply_service'); return job('apply_service', [{kind: 'completed', operation: 'service', status: 'PASS_LOCAL', checks: {service: true, agent: true, github: false, backup: false}}]);},
+        apply_service: async input => {window.__testApplyPayload = input; calls.push('apply_service'); return job('apply_service', [{kind: 'completed', operation: 'service', mode: input.mode || 'add', status: 'PASS_LOCAL', checks: {service: true, agent: true, github: false, backup: false}}]);},
         cancel: async () => ({ok: true}),
         answer_host_key: async () => ({ok: true}),
         choose_file: async () => ({ok: true, path: ''}),
@@ -232,6 +233,23 @@ async function main() {
     assert.deepEqual(errors, [], 'No browser exception may hide a clicked action');
     assert(!(await page.locator('body').textContent()).includes(syntheticIdentity), 'The identity must not appear in status or diagnostics');
     assert.deepEqual(await page.evaluate(() => window.__testCalls), ['recover', 'prepare_lab', 'update_service_tools', 'apply_service']);
+    await page.locator('#service-configuration-update').check();
+    assert(await page.locator('#apply-service').isDisabled(), 'Switching to update requires a new inspection');
+    await page.evaluate(() => { window.__testResume = false; });
+    await page.locator('#inspect-service').click();
+    await page.waitForFunction(() => !document.querySelector('#apply-service').disabled);
+    assert.equal(await page.evaluate(() => window.__testExecutionPayload.mode), 'configuration');
+    assert((await page.locator('#apply-service').textContent()).includes('Aggiorna e verifica'));
+    assert.equal(await page.locator('#plan-files .plan-file').count(), 1, 'Update recap lists only the public configuration files');
+    assert(await page.locator('#plan-resources').isHidden());
+    await page.setViewportSize({width: 980, height: 740});
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Configuration update must fit the compact window');
+    await page.setViewportSize({width: 1360, height: 930});
+    await page.screenshot({path: path.join(output, '07-aggiorna-configurazione.png')});
+    await page.locator('#apply-service').click();
+    await page.waitForFunction(() => document.querySelector('#global-status-title').textContent.includes('Configurazione aggiornata'));
+    assert.equal(await page.evaluate(() => window.__testApplyPayload.mode), 'configuration');
+    assert.deepEqual(errors, [], 'No browser error in configuration update mode');
     await page.setViewportSize({width: 980, height: 740});
     await page.locator('[data-page="connections"]').click();
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'No horizontal document overflow at minimum window size');

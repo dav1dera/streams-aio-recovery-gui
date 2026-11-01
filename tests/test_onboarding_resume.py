@@ -160,7 +160,7 @@ class ServiceDiagnosticTests(unittest.TestCase):
         from recovery_gui.web_bridge import DIAGNOSTIC_CODES, WEB_ERRORS
         from recovery_gui.ui_onboarding import ERROR_TEXT
         source = '\n'.join((RESOURCE / name).read_text(encoding='utf-8')
-                           for name in ('service_onboarding.py', 'service_tooling.py'))
+                           for name in ('service_onboarding.py', 'service_tooling.py', 'service_configuration.py'))
         codes = {node.value for node in ast.walk(ast.parse(source))
                  if isinstance(node, ast.Constant) and isinstance(node.value, str)
                  and re.fullmatch(r'ONBOARDING_[A-Z0-9]+(?:_[A-Z0-9]+)*', node.value)}

@@ -103,6 +103,42 @@ jobs:
           sudo chmod 700 "$root_temp"
           trap 'sudo rmdir -- "$root_temp"' EXIT
           sudo env RUN_ONBOARDING_INFISICAL_INTEGRATION=1 TMPDIR="$root_temp" TEMP="$root_temp" TMP="$root_temp" "$recovery_python" -B -m unittest discover -s tests -p integration_onboarding_infisical.py -v
+  homepage-appearance:
+    name: Real Homepage appearance and responsive layout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install native appearance test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install 'PyYAML==6.0.3'
+          npm --prefix "$RUNNER_TEMP/homepage-browser" install --no-package-lock --no-save 'playwright@1.56.1'
+          "$RUNNER_TEMP/homepage-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Verify the actual Homepage image and capture four viewport sizes
+        shell: bash
+        env:
+          RUN_HOMEPAGE_APPEARANCE_INTEGRATION: '1'
+          RECOVERY_APPEARANCE_ARTIFACT_DIR: ${{ github.workspace }}/.artifacts/homepage-appearance
+        run: |
+          set -euo pipefail
+          export NODE_PATH="$RUNNER_TEMP/homepage-browser/node_modules"
+          python -B -m unittest discover -s tests -p integration_homepage_appearance.py -v
+      - name: Keep native Homepage screenshots and safe diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Homepage-native-appearance
+          path: .artifacts/homepage-appearance/
+          if-no-files-found: warn
+          retention-days: 30
   ubuntu-compatibility:
     runs-on: ubuntu-latest
     strategy:
@@ -180,7 +216,7 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.publish_release && github.ref == 'refs/heads/main') ||
       (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v'))
-    needs: [windows, secret-scan, onboarding-infisical]
+    needs: [windows, secret-scan, onboarding-infisical, homepage-appearance]
     runs-on: ubuntu-latest
     permissions:
       contents: write

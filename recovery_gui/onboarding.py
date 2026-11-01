@@ -36,7 +36,7 @@ except Exception:
     print(json.dumps({'schema':1,'status':'REFUSED','code':'ONBOARDING_PYTHON_ENVIRONMENT_REQUIRED'}))
     sys.exit(0)
 try:
-    assert len(sys.argv) == 3
+    assert len(sys.argv) == 4
     def unpack(value):
         assert len(value) <= 120 * 1024
         compressed = base64.b64decode(value, validate=True)
@@ -45,11 +45,15 @@ try:
         assert len(source) <= 512 * 1024 and decoder.eof
         assert not decoder.unused_data and not decoder.unconsumed_tail
         return source.decode('utf-8')
-    source, helper = unpack(sys.argv[1]), unpack(sys.argv[2])
+    source, helper, configuration = unpack(sys.argv[1]), unpack(sys.argv[2]), unpack(sys.argv[3])
     module = types.ModuleType('service_tooling')
     module.__file__ = '<service-tooling>'
     sys.modules[module.__name__] = module
     exec(compile(helper, module.__file__, 'exec'), module.__dict__)
+    module = types.ModuleType('service_configuration')
+    module.__file__ = '<service-configuration>'
+    sys.modules[module.__name__] = module
+    exec(compile(configuration, module.__file__, 'exec'), module.__dict__)
     exec(compile(source, '<service-onboarding>', 'exec'), globals())
 except Exception:
     print(json.dumps({'schema':1,'status':'REFUSED','code':'ONBOARDING_PYTHON_ENVIRONMENT_REQUIRED'}))
@@ -61,14 +65,14 @@ REMOTE_LAUNCHER = r'''
 import json, os, re, sys
 try:
     interpreter = sys.argv[1]
-    assert len(sys.argv) == 4
+    assert len(sys.argv) == 5
     assert all(len(value) <= 120 * 1024 for value in sys.argv[2:])
     assert re.fullmatch(r'/home/[A-Za-z_][A-Za-z0-9_-]*/\.local/share/streams-aio-(?:recovery|public-sync)/venv/bin/python', interpreter)
     if not os.path.isfile(interpreter) or not os.access(interpreter, os.X_OK):
         code = 'ONBOARDING_LAB_NOT_PREPARED' if '/streams-aio-recovery/' in interpreter else 'ONBOARDING_BACKUP_PIPELINE_NOT_READY'
         print(json.dumps({'schema': 1, 'status': 'REFUSED', 'code': code}))
     else:
-        os.execv(interpreter, [interpreter, '-I', '-c', __WORKER__, sys.argv[2], sys.argv[3]])
+        os.execv(interpreter, [interpreter, '-I', '-c', __WORKER__, sys.argv[2], sys.argv[3], sys.argv[4]])
 except Exception:
     print('{"schema":1,"status":"REFUSED","code":"ONBOARDING_PYTHON_ENVIRONMENT_REQUIRED"}')
 '''.replace('__WORKER__', repr(REMOTE_WORKER))
@@ -233,6 +237,7 @@ class InspectionReceipt:
     agent_output: tuple = ()
     api_address: str = ''
     resume_phase: str = ''
+    kind: str = 'add'
 
     def __repr__(self):
         return '<InspectionReceipt values=redacted>'
@@ -318,6 +323,8 @@ class ServiceController:
                        project_id=infisical.get('project_id', ''), environment=infisical.get('environment', ''),
                        probe_url=connection.get('probe_url', ''),
                        verification_scope=connection.get('verification_scope', 'full'))
+        if action in ('configuration_discover', 'inspect_configuration', 'apply_configuration') or (receipt and receipt.kind == 'configuration'):
+            request.update(project_id='', environment='')
         if receipt:
             request.update(fingerprint=receipt.fingerprint, job_id=receipt.job_id)
         if action == 'apply' and analysis.plan.private_bindings:
@@ -391,9 +398,10 @@ class ServiceController:
         try:
             source = packed_remote_source(folder / 'service_onboarding.py')
             tooling = packed_remote_source(folder / 'service_tooling.py')
+            configuration = packed_remote_source(folder / 'service_configuration.py')
             area = 'streams-aio-recovery' if request.get('verification_scope') == 'local_lab' else 'streams-aio-public-sync'
             interpreter = request['root'].rsplit('/', 1)[0] + '/.local/share/' + area + '/venv/bin/python'
-            raw = ssh.run(['python3', '-I', '-c', REMOTE_LAUNCHER, interpreter, source, tooling], sudo=True,
+            raw = ssh.run(['python3', '-I', '-c', REMOTE_LAUNCHER, interpreter, source, tooling, configuration], sudo=True,
                           input=ONBOARDING_FRAME + json.dumps(request, ensure_ascii=False).encode('utf-8') + b'\n',
                           timeout=1200)
             need(len(raw) <= 256 * 1024, 'SERVICE_RESPONSE_INVALID')
@@ -409,7 +417,7 @@ class ServiceController:
                     diagnostic = safe_service_diagnostic(diagnostic,
                         allowed_paths=service_diagnostic_paths(request.get('plan', {})))
                 raise OnboardingError(code, diagnostic=diagnostic)
-            allowed = ({'NO_JOB'} | RESUME_PHASES if request['action'] == 'discover' else
+            allowed = ({'NO_JOB'} | RESUME_PHASES if request['action'] in ('discover', 'configuration_discover') else
                        {'TOOLS_READY'} if request['action'] == 'update_tools' else
                        {'PREVIEW', 'ROLLED_BACK', 'REVIEW_REQUIRED'} | RESUME_PHASES)
             need(result.get('status') in allowed, 'SERVICE_RESPONSE_INVALID')
@@ -419,7 +427,8 @@ class ServiceController:
         except Exception:
             raise OnboardingError('SERVICE_TRANSPORT_FAILED') from None
 
-    def _resumed_receipt(self, state, binding, private_required, plan, expected_scope, previous=None):
+    def _resumed_receipt(self, state, binding, private_required, plan, expected_scope, previous=None, kind='add'):
+        need(state.get('operation_kind', 'add') == kind, 'SERVICE_RESPONSE_INVALID')
         need(state.get('status') in RESUME_PHASES and state.get('application_verified') is True,
              'SERVICE_RESPONSE_INVALID')
         job = state.get('job_id')
@@ -435,7 +444,7 @@ class ServiceController:
             need(job == previous.job_id and fingerprint == previous.fingerprint, 'ONBOARDING_RESUME_CHANGED')
             need(output == previous.agent_output and address == previous.api_address, 'ONBOARDING_AGENT_PROFILE_CHANGED')
         return InspectionReceipt(fingerprint, job, binding, resume=True, agent_output=output,
-                                 api_address=address, resume_phase=state['status'])
+                                 api_address=address, resume_phase=state['status'], kind=kind)
 
     def inspect(self, analysis, connection, infisical, progress_callback=None):
         values, binding, key = self._validate(analysis, connection, infisical)
@@ -462,6 +471,7 @@ class ServiceController:
                         connection.get('verification_scope', 'full'))
             if receipt is None:
                 result = self._remote(ssh, self._request('inspect', analysis, connection, infisical))
+                need(result.get('operation_kind', 'add') == 'add', 'SERVICE_RESPONSE_INVALID')
                 fingerprint = result.get('fingerprint')
                 need(result['status'] == 'PREVIEW' and isinstance(fingerprint, str)
                      and re.fullmatch(r'[0-9a-f]{64}', fingerprint), 'SERVICE_RESPONSE_INVALID')
@@ -497,7 +507,7 @@ class ServiceController:
 
     def apply(self, analysis, connection, infisical, receipt, progress_callback=None):
         values, binding, key = self._validate(analysis, connection, infisical)
-        need(isinstance(receipt, InspectionReceipt)
+        need(isinstance(receipt, InspectionReceipt) and receipt.kind == 'add'
              and hmac.compare_digest(receipt.binding, binding), 'SERVICE_INPUTS_CHANGED')
         ssh = self._connect(connection)
         try:
@@ -563,5 +573,88 @@ class ServiceController:
             raise
         except Exception:
             raise OnboardingError('SERVICE_TOOL_FAILED') from None
+        finally:
+            ssh.close()
+
+
+    def _configuration_binding(self, analysis, connection, infisical):
+        _, signature, _ = self._validate(analysis, connection, infisical)
+        plan = analysis.plan.deployment_payload()
+        need(plan.get('schema') == 2 and plan.get('configuration_files')
+             and not plan.get('private_bindings'), 'SERVICE_CONFIGURATION_UPDATE_SCOPE_REQUIRED')
+        return hmac.digest(self.__binding_key, b'configuration\0' + signature, 'sha256')
+
+    def inspect_configuration(self, analysis, connection, infisical, progress_callback=None):
+        binding = self._configuration_binding(analysis, connection, infisical)
+        self._progress(progress_callback, 'HOST', 'RUNNING')
+        ssh = self._connect(connection)
+        try:
+            state = self._remote(ssh, self._request('configuration_discover', analysis, connection, infisical))
+            if state['status'] != 'NO_JOB':
+                need(state.get('configuration_updated') is True, 'SERVICE_RESPONSE_INVALID')
+                receipt = self._resumed_receipt(state, binding, False, analysis.plan.deployment_payload(),
+                    connection.get('verification_scope', 'full'), kind='configuration')
+            else:
+                result = self._remote(ssh, self._request('inspect_configuration', analysis, connection, infisical))
+                fingerprint = result.get('fingerprint')
+                need(result['status'] == 'PREVIEW' and result.get('operation_kind') == 'configuration'
+                     and isinstance(fingerprint, str) and re.fullmatch(r'[0-9a-f]{64}', fingerprint),
+                     'SERVICE_RESPONSE_INVALID')
+                receipt = InspectionReceipt(fingerprint, uuid.uuid4().hex, binding, kind='configuration')
+            self._progress(progress_callback, 'HOST', 'PASS')
+            for stage in ('INFISICAL', 'AGENT'):
+                self._progress(progress_callback, stage, 'SKIPPED')
+            return receipt
+        finally:
+            ssh.close()
+
+    def apply_configuration(self, analysis, connection, infisical, receipt, progress_callback=None):
+        binding = self._configuration_binding(analysis, connection, infisical)
+        need(isinstance(receipt, InspectionReceipt) and receipt.kind == 'configuration'
+             and hmac.compare_digest(receipt.binding, binding), 'SERVICE_INPUTS_CHANGED')
+        ssh = self._connect(connection)
+        try:
+            if not receipt.resume:
+                fresh = self._remote(ssh, self._request('inspect_configuration', analysis, connection, infisical))
+                need(fresh.get('status') == 'PREVIEW' and fresh.get('operation_kind') == 'configuration' and fresh.get('fingerprint') == receipt.fingerprint,
+                     'ONBOARDING_PREVIEW_STALE')
+            self._progress(progress_callback, 'FILES', 'RUNNING')
+            result = self._remote(ssh, self._request('apply_configuration', analysis, connection, infisical, receipt))
+            def checked(value):
+                need(value.get('operation_kind') == 'configuration' and value.get('job_id') == receipt.job_id
+                     and value.get('status') in RESUME_PHASES and value.get('application_verified') is True
+                     and value.get('configuration_updated') is True,
+                     'SERVICE_OPERATION_INCOMPLETE')
+            checked(result)
+            for stage in ('FILES', 'SERVICE'):
+                self._progress(progress_callback, stage, 'PASS')
+            for stage in ('INFISICAL', 'AGENT'):
+                self._progress(progress_callback, stage, 'SKIPPED')
+            if connection.get('verification_scope') == 'local_lab':
+                for stage in ('GITHUB', 'BACKUP'):
+                    self._progress(progress_callback, stage, 'SKIPPED')
+                return dict(status='PASS_LOCAL', operation_kind='configuration',
+                    checks=dict(service=True, agent=True, github=False, backup=False), job_id=receipt.job_id)
+            self._progress(progress_callback, 'GITHUB', 'RUNNING')
+            deadline = self._clock() + self._backup_timeout
+            # Finalization rechecks a previously completed operation too.
+            while True:
+                self._check_cancel()
+                need(self._clock() < deadline, 'ONBOARDING_BACKUP_PENDING')
+                result = self._remote(ssh, self._request('finalize', analysis, connection, infisical, receipt))
+                checked(result)
+                if result['status'] in ('BACKUP_RUNNING', 'COMPLETE'):
+                    self._progress(progress_callback, 'GITHUB', 'PASS')
+                    self._progress(progress_callback, 'BACKUP', 'RUNNING')
+                if result['status'] == 'COMPLETE': break
+                self._sleep(3)
+            need(result.get('backup_integrity_verified') is True
+                 and isinstance(result.get('public_commit'), str) and re.fullmatch(r'[0-9a-f]{40}', result['public_commit'])
+                 and isinstance(result.get('backup_tag'), str) and re.fullmatch(r'dr-[0-9]{8}T[0-9]{6}Z', result['backup_tag']),
+                 'SERVICE_OPERATION_INCOMPLETE')
+            self._progress(progress_callback, 'BACKUP', 'PASS')
+            return dict(status='PASS', operation_kind='configuration',
+                checks=dict(service=True, agent=True, github=True, backup=True),
+                public_commit=result['public_commit'], backup_tag=result['backup_tag'])
         finally:
             ssh.close()

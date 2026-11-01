@@ -1,0 +1,167 @@
+- Sistema:
+  - CPU della VM:
+      widget:
+        type: glances
+        url: http://glances-fixture:61208
+        version: 4
+        metric: cpu
+        chart: true
+        refreshInterval: 5000
+        pointsLimit: 20
+  - Memoria della VM:
+      widget:
+        type: glances
+        url: http://glances-fixture:61208
+        version: 4
+        metric: memory
+        chart: true
+        refreshInterval: 5000
+        pointsLimit: 20
+  - Disco dello stack:
+      widget:
+        type: glances
+        url: http://glances-fixture:61208
+        version: 4
+        metric: fs:/
+        chart: false
+        refreshInterval: 5000
+        pointsLimit: 20
+- Streaming e cataloghi:
+  - AIOStreams:
+      icon: mdi-play-circle
+      href: https://example.invalid/service/1
+      server: docker-locale
+      container: aiostreams
+      showStats: false
+  - AIOMetadata:
+      icon: mdi-movie-search
+      href: https://example.invalid/service/2
+      server: docker-locale
+      container: aiometadata
+      showStats: false
+  - Comet:
+      icon: mdi-meteor
+      href: https://example.invalid/service/3
+      server: docker-locale
+      container: comet
+      showStats: false
+  - Jackett:
+      icon: mdi-magnify
+      href: https://example.invalid/service/4
+      server: docker-locale
+      container: jackett
+      showStats: false
+  - MediaFlow Proxy:
+      icon: mdi-play-network
+      href: https://example.invalid/service/5
+      server: docker-locale
+      container: mediaflow-proxy-light
+      showStats: false
+  - EasyProxy:
+      icon: mdi-transit-connection-variant
+      href: https://example.invalid/service/6
+      server: docker-locale
+      container: easyproxy
+      showStats: false
+  - StremThru:
+      icon: mdi-play-box-multiple
+      href: https://example.invalid/service/7
+      server: docker-locale
+      container: stremthru
+      showStats: false
+  - StreamViX:
+      icon: mdi-television-play
+      href: https://example.invalid/service/8
+      server: docker-locale
+      container: streamvix
+      showStats: false
+  - Tvvoo:
+      icon: mdi-television-classic
+      href: https://example.invalid/service/9
+      server: docker-locale
+      container: tvvoo
+      showStats: false
+  - Anime:
+    - Seanime:
+        icon: mdi-animation-play
+        href: https://example.invalid/service/10
+        server: docker-locale
+        container: seanime
+        showStats: false
+        description: Collegamento da completare
+    - Seanime Shared:
+        icon: mdi-account-group
+        href: https://example.invalid/service/11
+        server: docker-locale
+        container: seanime-shared
+        showStats: false
+        description: Collegamento da completare
+- Infrastruttura:
+  - Proxmox:
+      icon: mdi-server
+      href: https://example.invalid/service/12
+  - Proxmox Backup Server:
+      icon: mdi-backup-restore
+      href: https://example.invalid/service/13
+  - WUD:
+      icon: mdi-update
+      href: https://example.invalid/service/14
+      server: docker-locale
+      container: wud
+      showStats: false
+  - Infisical:
+      icon: mdi-key-chain
+      href: https://example.invalid/service/15
+      description: Collegamento da completare
+  - Portainer:
+      icon: mdi-docker
+      href: https://example.invalid/service/16
+      server: docker-locale
+      container: portainer
+      showStats: false
+  - Headplane:
+      icon: mdi-lan-connect
+      href: https://example.invalid/service/17
+      server: docker-locale
+      container: headplane
+      showStats: false
+  - Nginx Proxy Manager:
+      icon: mdi-routes
+      href: https://example.invalid/service/18
+      server: docker-locale
+      container: nginx-proxy-manager
+      showStats: false
+  - AIOManager:
+      icon: mdi-view-dashboard
+      href: https://example.invalid/service/19
+      server: docker-locale
+      container: aiomanager
+      showStats: false
+  - AMP Servers:
+      icon: mdi-server-network
+      href: https://example.invalid/service/20
+- Rete e proxy:
+  - AdGuard Home:
+      icon: mdi-shield-check
+      href: https://example.invalid/service/21
+  - DNSCrypt Proxy:
+      icon: mdi-dns
+      href: https://example.invalid/service/22
+      server: docker-locale
+      container: dnscrypt-proxy
+      showStats: false
+  - Consumo container:
+    - Container · CPU e RAM:
+        widget:
+          type: glances
+          url: http://glances-fixture:61208
+          version: 4
+          metric: containers
+          chart: true
+          refreshInterval: 5000
+          pointsLimit: 20
+  - Da completare:
+    - Link Honey 22:
+        icon: mdi-link-variant
+        href: https://example.invalid/service/23
+        description: Nome originale Honey da confermare

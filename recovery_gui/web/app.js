@@ -16,7 +16,7 @@
     settings: {}, settingsDirty: false, version: '', errors: {}, labels: {}, progressText: {}, phaseStages: {}, finishedStages: new Set(),
     point: null, stages: {}, phases: {}, phaseLabels: {}, activePhase: null, machines: {}, history: [], activeHostKey: null, hostKeys: [], pollInFlight: false,
     service: { step: 0, analyzed: false, variables: [], privateNames: new Set(), privateValues: Object.create(null),
-      selectedVariable: '', configurationFiles: [], nextConfigurationId: 1, resources: [], sourcePolicies: [], plan: null, inspected: false, completed: false, rootEdited: false, resume: false, resumePhase: '', scope: 'full' }
+      selectedVariable: '', configurationFiles: [], nextConfigurationId: 1, resources: [], sourcePolicies: [], plan: null, inspected: false, completed: false, rootEdited: false, mode: 'add', resume: false, resumePhase: '', scope: 'full' }
   };
   window.recoveryUI = { ready: false };
 
@@ -453,7 +453,7 @@
   }
   function executionPayload() {
     return { stack_root: $('#service-stack-root').value.trim(), probe_url: $('#service-probe-url').value.trim(),
-      verification_scope: state.service.scope, infisical: { endpoint: $('#service-infisical-endpoint').value.trim(),
+      verification_scope: state.service.scope, mode: state.service.mode, infisical: { endpoint: $('#service-infisical-endpoint').value.trim(),
         project_id: $('#service-project-id').value.trim(), environment: $('#service-environment').value.trim(), access_token: $('#service-access-token').value } };
   }
   function clearPlan(resetInventory = false) {
@@ -463,6 +463,19 @@
     // analyze_service and prepare_service invalidate the stored draft before
     // replacing it. A separate background invalidation could race the prepare.
     renderServiceActions();
+  }
+  function mountConfigurationMode() {
+    const label = element('label', 'review-checkbox'), toggle = element('input'), copy = element('span');
+    toggle.id = 'service-configuration-update'; toggle.type = 'checkbox';
+    copy.append(element('strong', '', 'Aggiorna file di configurazione'), document.createElement('br'), element('small', 'muted-text', 'Per un servizio già presente. Compose, variabili, dati e Agent restano invariati.'));
+    label.append(toggle, copy); $('.service-context').after(label);
+    toggle.addEventListener('change', () => {
+      state.service.mode = toggle.checked ? 'configuration' : 'add';
+      state.service.inspected = false; state.service.completed = false;
+      state.service.resume = false; state.service.resumePhase = '';
+      renderPlan(); renderServiceActions(); renderServiceContext();
+      feedback('service-feedback', 'Verifica di nuovo la VM per la modalità selezionata.');
+    });
   }
   function setScope(scope) {
     state.service.scope = scope === 'local_lab' ? 'local_lab' : 'full';
@@ -475,7 +488,7 @@
     renderServiceContext(); renderServiceActions(); renderPlan();
   }
   function renderServiceContext() {
-    $('#service-scope-context').textContent = state.service.scope === 'local_lab' ? 'Collaudo locale · GitHub e backup esclusi' : 'Percorso completo · GitHub e backup inclusi';
+    $('#service-scope-context').textContent = (state.service.mode === 'configuration' ? 'Aggiornamento dei file pubblici · ' : '') + (state.service.scope === 'local_lab' ? 'Collaudo locale · GitHub e backup esclusi' : 'Percorso completo · GitHub e backup inclusi');
   }
   function selectStep(step) {
     if (busy()) return;
@@ -502,10 +515,10 @@
     $('#inspect-service').disabled = locked || !state.service.plan;
     $('#apply-service').hidden = step !== 3 || state.service.completed;
     $('#apply-service').disabled = locked || !state.service.inspected;
-    $('#apply-service').replaceChildren(icon(state.service.resume ? 'shield' : 'plus'), document.createTextNode(state.service.resume ? ' Riprendi verifiche' : ' Aggiungi e verifica'));
+    $('#apply-service').replaceChildren(icon(state.service.resume ? 'shield' : 'plus'), document.createTextNode(state.service.resume ? ' Riprendi verifiche' : state.service.mode === 'configuration' ? ' Aggiorna e verifica' : ' Aggiungi e verifica'));
     $$('.step').forEach(button => { const index = Number(button.dataset.step); button.disabled = locked || (index === 2 && !state.service.analyzed) || (index === 3 && !state.service.plan); });
     const hints = [ 'La destinazione viene verificata prima di qualsiasi aggiunta.', 'L’analisi è locale. Nessuna VM viene modificata.', 'I valori privati non entrano nel piano o negli esiti.', state.service.scope === 'local_lab' ? 'Solo servizio e Agent. Nessuna pubblicazione.' : 'Il completamento include GitHub e backup verificati.' ];
-    $('#service-action-hint').textContent = hints[step];
+    $('#service-action-hint').textContent = state.service.mode === 'configuration' ? 'Aggiorna soltanto i file pubblici del servizio già presente e verifica il risultato.' : hints[step];
   }
   function renderVariables() {
     const variables = state.service.variables;
@@ -604,6 +617,7 @@
     $('#plan-image').textContent = plan ? (names.length > 1 ? names.length + ' servizi collegati nello stesso stack' : text(plan.image, plan.images && text(plan.images[names[0]]))) : 'Completa i passaggi precedenti.';
     $('#plan-scope-badge').textContent = state.service.completed ? 'Verificato' : state.service.inspected ? (state.service.resume ? 'Operazione riprendibile' : 'VM verificata') : plan ? (state.service.scope === 'local_lab' ? 'Collaudo locale' : 'Piano pronto') : 'Da verificare';
     $('#plan-scope-badge').className = 'badge ' + (state.service.completed ? 'ready' : plan ? 'brand' : 'neutral');
+    $('#service-step-3 .panel-heading h2').textContent = state.service.mode === 'configuration' ? 'Controlla i file. Poi aggiorna.' : 'Controlla il piano. Poi aggiungi.';
     const files = [], components = [];
     if (plan) {
       const rows = [];
@@ -618,7 +632,7 @@
         if ((plan.private_names || []).length && plan.private_env_path) rows.push(['lock', 'Variabili private da Agent', plan.private_env_path]);
       }
       (plan.configuration_files || []).forEach(file => rows.push(['file', 'Configurazione pubblica · ' + (typeof file.mode === 'number' ? file.mode.toString(8).padStart(4, '0') : 'permessi standard'), file.path]));
-      rows.forEach(([symbol, label, path]) => {
+      (state.service.mode === 'configuration' ? rows.filter(row => (plan.configuration_files || []).some(file => file.path === row[2])) : rows).forEach(([symbol, label, path]) => {
         const row = element('div', 'plan-file'), content = element('div');
         content.append(element('strong', '', label), element('span', '', text(path)));
         row.append(icon(symbol), content); files.push(row);
@@ -627,7 +641,7 @@
     $('#plan-components').replaceChildren(...components); $('#plan-components').hidden = !components.length;
     $('#plan-files').replaceChildren(...files);
     const resources = plan && Array.isArray(plan.resources) ? plan.resources : [];
-    $('#plan-resources').hidden = !resources.length;
+    $('#plan-resources').hidden = state.service.mode === 'configuration' || !resources.length;
     $('#plan-resource-rows').replaceChildren(...resources.map(resource => resourceRow(resource)));
     $('#plan-json').textContent = plan ? JSON.stringify(plan, null, 2) : 'Nessun piano preparato.';
   }
@@ -651,7 +665,7 @@
   async function applyService() {
     if (busy() || !state.service.plan || !state.service.inspected) return;
     const payload = executionPayload(), settings = collectSettings();
-    await startJob('service', 'apply_service', [payload], state.service.resume ? 'Ripresa delle verifiche in corso' : state.service.scope === 'local_lab' ? 'Aggiunta e collaudo locale in corso' : 'Aggiunta e verifica completa in corso', { syncSettings: true, settings });
+    await startJob('service', 'apply_service', [payload], state.service.resume ? 'Ripresa delle verifiche in corso' : state.service.mode === 'configuration' ? 'Aggiornamento dei file pubblici in corso' : state.service.scope === 'local_lab' ? 'Aggiunta e collaudo locale in corso' : 'Aggiunta e verifica completa in corso', { syncSettings: true, settings });
   }
 
   function showHostKey(event) {
@@ -677,14 +691,16 @@
     displayNextHostKey();
   }
   function completeService(event) {
+    if ((event.mode || 'add') !== state.service.mode) { showError(fixedError('SERVICE_INPUTS_CHANGED', 'La modalità del risultato è cambiata. Verifica di nuovo la VM.')); return; }
     const checks = event.checks || {};
     const local = event.status === 'PASS_LOCAL' && checks.service === true && checks.agent === true && checks.github === false && checks.backup === false;
     const full = event.status === 'PASS' && checks.service === true && checks.agent === true && checks.github === true && checks.backup === true && /^[a-f0-9]{40}$/.test(text(event.public_commit)) && /^dr-\d{8}T\d{6}Z$/.test(text(event.backup_tag));
     if ((state.service.scope === 'local_lab' && !local) || (state.service.scope !== 'local_lab' && !full)) { showError(fixedError('SERVICE_OPERATION_INCOMPLETE', 'L’esito non contiene tutti i controlli richiesti. Conserva gli esiti e verifica di nuovo la VM.')); return; }
     state.service.completed = true; state.service.inspected = false;
     Object.keys(STAGES).forEach(stage => { state.stages[stage] = local && ['GITHUB', 'BACKUP'].includes(stage) ? 'skipped' : 'pass'; });
-    const title = local ? 'Collaudo locale completato' : 'Servizio aggiunto e verificato';
-    const description = local ? 'Servizio e Agent verificati. GitHub e backup non eseguiti.' : 'GitHub aggiornato. Backup cifrato verificato: ' + event.backup_tag + '.';
+    if (state.service.mode === 'configuration') ['INFISICAL', 'AGENT'].forEach(stage => { state.stages[stage] = 'skipped'; });
+    const title = state.service.mode === 'configuration' ? (local ? 'Configurazione aggiornata e collaudata' : 'Configurazione aggiornata e verificata') : local ? 'Collaudo locale completato' : 'Servizio aggiunto e verificato';
+    const description = local ? (state.service.mode === 'configuration' ? 'File pubblici e servizio verificati. GitHub e backup non eseguiti.' : 'Servizio e Agent verificati. GitHub e backup non eseguiti.') : 'GitHub aggiornato. Backup cifrato verificato: ' + event.backup_tag + '.';
     feedback('service-feedback', title + '\n' + description, 'success'); setGlobal(title, description, 'pass'); addActivity(title, description, 'pass');
     state.service.privateValues = Object.create(null); $('#private-value').value = ''; $('#service-access-token').value = '';
     renderStages(); renderPlan(); renderServiceActions();
@@ -728,16 +744,18 @@
       feedback('service-feedback', message, 'success'); setGlobal('Strumenti VM pronti', message, 'pass');
       addActivity('Strumenti VM pronti', message, 'pass'); renderServiceActions();
     } else if (event.kind === 'inspected') {
+      if ((event.mode || 'add') !== state.service.mode) { showError(fixedError('SERVICE_INPUTS_CHANGED', 'La modalità è cambiata. Verifica di nuovo la VM.')); return; }
       const phases = ['SERVICE_READY', 'PUBLIC_PUBLISHED', 'BACKUP_RUNNING', 'COMPLETE'];
       state.service.resume = event.resume === true && phases.includes(event.resume_phase);
       state.service.resumePhase = state.service.resume ? event.resume_phase : '';
       state.service.inspected = true;
-      const message = state.service.resume ? 'Il servizio è già presente e corrisponde al piano. Premi Riprendi verifiche per continuare dal lavoro registrato.' : 'VM verificata. Premi Aggiungi e verifica per applicare questo piano.';
+      const message = state.service.resume ? 'Il servizio è già presente e corrisponde al piano. Premi Riprendi verifiche per continuare dal lavoro registrato.' : state.service.mode === 'configuration' ? 'VM verificata. Premi Aggiorna e verifica per applicare i file pubblici.' : 'VM verificata. Premi Aggiungi e verifica per applicare questo piano.';
       if (state.service.resume) {
         ['FILES', 'AGENT', 'SERVICE'].forEach(stage => { state.stages[stage] = 'pass'; });
         if (event.resume_phase !== 'SERVICE_READY') state.stages.GITHUB = 'pass';
       }
       feedback('service-feedback', message); setGlobal(state.service.resume ? 'Operazione precedente trovata' : 'VM verificata', message);
+      if (state.service.mode === 'configuration') ['INFISICAL', 'AGENT'].forEach(stage => { state.stages[stage] = 'skipped'; });
       renderStages(); renderPlan(); renderServiceActions();
     } else if (event.kind === 'completed') {
       if (event.operation === 'service') completeService(event);
@@ -829,7 +847,7 @@
   }
   function initializeUI() {
     bindEvents(); syncSettings({ user: 'test', infisical_user: 'test2', port: '22', infisical_port: '22', routing_mode: 'parallel_test', age_identity_mode: 'file' });
-    resetStages(); renderConfigurationFiles(); renderVariables(); renderResources(); renderPlan(); renderServiceActions(); window.recoveryUI.ready = true;
+    mountConfigurationMode(); resetStages(); renderConfigurationFiles(); renderVariables(); renderResources(); renderPlan(); renderServiceActions(); window.recoveryUI.ready = true;
     if (api()) void initializeBridge();
     else { document.body.dataset.bridgeState = 'preview'; $('#preview-banner').hidden = false; }
     window.setInterval(() => void poll(), 550);

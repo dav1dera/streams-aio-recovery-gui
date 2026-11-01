@@ -36,6 +36,7 @@ def check_package():
         compile(path.read_bytes(), path.name, 'exec')
     assert (resources() / 'service_onboarding.py').is_file()
     assert (resources() / 'service_tooling.py').is_file()
+    assert (resources() / 'service_configuration.py').is_file()
     assert (resources() / 'service_snapshot.py').is_file()
     plan = analyze_inputs('demo:\n  image: example/demo:latest\n', 'PORT=8080\n').plan
     assert plan.service_name == 'demo' and not plan.private_bindings
@@ -61,7 +62,7 @@ if __name__ == '__main__':
                     'native_agent.py', 'test_reset.py', 'aio_snapshot.py', 'runtime_profile.py',
                     'operational_profile.py', 'npm_runtime.py', 'npm_topology.py', 'npm-domain-probe.mjs',
                     'npm-route-probe.mjs', 'tailscale_recovery.py', 'headplane_recovery.py', 'host_dns.py', 'local_endpoints.py',
-                    'service_onboarding.py', 'service_tooling.py', 'service_snapshot.py')
+                    'service_onboarding.py', 'service_tooling.py', 'service_configuration.py', 'service_snapshot.py')
         assert all((resources() / name).is_file() for name in required)
         validate_remote_shell_scripts()
         app = App()
