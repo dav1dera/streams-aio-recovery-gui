@@ -8,7 +8,6 @@ from unittest.mock import patch
 import yaml
 from recovery_gui.onboarding import ServiceController, OnboardingError
 from recovery_gui.service_plan import analyze_inputs
-from remote import service_configuration as update
 from tests.test_onboarding_controller import FakeAPI
 from tests import test_onboarding_wire as wire_fixture
 from tests.test_service_configuration_remote import ConfigurationRunner
@@ -30,7 +29,10 @@ class ConfigurationWireTests(unittest.TestCase):
         self.events = []
         @contextmanager
         def locks(engine): yield
-        patcher = patch.object(update, '_worker_locks', locks)
+        # Discovery imports may put remote/ on sys.path before Engine loads,
+        # creating both top-level and package-qualified helper modules. Patch
+        # the exact helper Engine dispatches into, never a different alias.
+        patcher = patch.object(remote.configuration_updates, '_worker_locks', locks)
         patcher.start(); self.addCleanup(patcher.stop)
         self.original = self.analysis('title: Original public theme\n')
         self.updated = self.analysis('title: Revised public theme\n')

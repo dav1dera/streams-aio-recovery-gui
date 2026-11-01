@@ -1,6 +1,6 @@
 """Opt-in real Homepage v2.7/Chromium appearance check using public synthetic data."""
 from contextlib import suppress
-import json,os,shutil,socket,subprocess,tempfile,time,unittest,uuid
+import json,os,shutil,socket,subprocess,sys,tempfile,time,unittest,uuid
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler,build_opener
@@ -52,15 +52,20 @@ class HomepageAppearance(unittest.TestCase):
                     'environment':{'HOMEPAGE_ALLOWED_HOSTS':'127.0.0.1:'+str(port)+',localhost:'+str(port),'TZ':'UTC','HOSTNAME':'0.0.0.0','LOG_TARGETS':'both'},
                     'volumes':[{'type':'bind','source':str(config),'target':'/app/config','read_only':True}],
                     'tmpfs':['/app/logs:rw,nosuid,nodev,size=16777216,mode=1777'],
-                    'depends_on':['glances-fixture'],'networks':['appearance']}},
-                'networks':{'appearance':{'internal':True}}}
+                    'depends_on':['glances-fixture'],'networks':['frontend','appearance']}},
+                'networks':{'frontend':{},'appearance':{'internal':True}}}
             compose=area/'compose.yaml';compose.write_text(yaml.safe_dump(document,sort_keys=False),encoding='utf-8')
             base=['docker','compose','--project-name',project,'--file',compose]
-            started=False
+            started=False;passed=False
             try:
                 invoke([*base,'pull'],'HOMEPAGE_APPEARANCE_IMAGE_PULL_FAILED',timeout=600)
                 started=True
                 invoke([*base,'up','-d'],'HOMEPAGE_APPEARANCE_START_FAILED')
+                # Published ports require a non-internal gateway network; the
+                # fake Glances backend stays attached only to the internal one.
+                published=invoke([*base,'port','homepage','3000'],'HOMEPAGE_APPEARANCE_PORT_QUERY_FAILED').decode().strip()
+                self.assertEqual(published,'127.0.0.1:'+str(port),'HOMEPAGE_APPEARANCE_PORT_NOT_PUBLISHED')
+                (artifacts/'runtime-status.json').write_text(json.dumps({'published_port':published,'homepage_image':HOMEPAGE_IMAGE,'fixture_network':'internal','frontend_network':'loopback-published'},indent=2)+'\n',encoding='utf-8')
                 origin='http://127.0.0.1:'+str(port)
                 opener=build_opener(ProxyHandler({}));deadline=time.monotonic()+120
                 while time.monotonic()<deadline:
@@ -80,11 +85,17 @@ class HomepageAppearance(unittest.TestCase):
                 self.assertEqual(len(result.get('viewports',[])),4)
                 for width in (1280,1600,2560,390):
                     self.assertTrue((artifacts/('homepage-'+str(width)+'.png')).is_file())
+                passed=True
             finally:
                 if started:
                     with suppress(Exception):
                         logs=invoke([*base,'logs','--no-color','--tail','100'],'HOMEPAGE_APPEARANCE_LOGS_FAILED')
                         (artifacts/'compose.log').write_bytes(logs)
+                        if not passed:
+                            # Only this test's public synthetic configuration is
+                            # mounted into these containers; no real endpoint or
+                            # credential is available to their logs.
+                            sys.stderr.write('HOMEPAGE_APPEARANCE_FIXTURE_LOGS\n'+logs.decode('utf-8',errors='replace')[-6000:]+'\n')
                     invoke([*base,'down','--volumes','--remove-orphans'],'HOMEPAGE_APPEARANCE_CLEANUP_FAILED')
 
 if __name__=='__main__':unittest.main()
