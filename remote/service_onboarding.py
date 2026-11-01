@@ -36,6 +36,12 @@ except ModuleNotFoundError:
     from remote.service_tooling import prepare_tooling, ToolingFailure
 
 
+try:
+    import service_configuration as configuration_updates
+except ModuleNotFoundError:
+    from remote import service_configuration as configuration_updates
+
+
 PUBLIC = 'dav1dera/streams-aio-sanitized'
 PRIVATE = 'dav1dera/streams-aio-dr'
 AGENT_UNIT = 'infisical-agent.service'
@@ -1390,6 +1396,7 @@ class Engine:
 
     def inspect(self, request):
         self.configure_scope(request)
+        configuration_updates.require_idle_configuration(self)
         plan, service = plan_document(request.get('plan'))
         if plan.get('schema') == 2:
             return self.inspect_bundle(request, plan, service)
@@ -1433,7 +1440,7 @@ class Engine:
         return self.layout.state / (job + '.json')
 
     def safe_result(self, journal, status=None):
-        return dict(schema=1, status=status or journal['phase'], job_id=journal['job_id'],
+        result = dict(schema=1, status=status or journal['phase'], job_id=journal['job_id'],
                     service=journal['plan']['service_name'], services=[child['service_name'] for child in components(journal['plan'])],
                     phase=journal['phase'],
                     public_commit=journal.get('public_commit'), backup_tag=journal.get('backup_tag'),
@@ -1443,6 +1450,18 @@ class Engine:
                     api_address=journal['agent_profile']['api_address'],
                     verification_scope=journal['verification_scope'],
                     agent_archive_contents_verified=False)
+        if journal.get('kind') == 'configuration':
+            result.update(operation_kind='configuration', configuration_updated=journal.get('configuration_updated') is True)
+        return result
+
+    def inspect_configuration(self, request):
+        return configuration_updates.inspect_configuration(self, request)
+
+    def apply_configuration(self, request):
+        return configuration_updates.apply_configuration(self, request)
+
+    def discover_configuration(self, request):
+        return configuration_updates.discover_configuration(self, request)
 
     def update_tools(self, request):
         self.configure_scope(request)
@@ -1460,7 +1479,7 @@ class Engine:
             journal = self.store.json(path)
             if (journal.get('root') != str(self.layout.root) or journal.get('owner') != self.layout.user
                     or journal.get('verification_scope') != self.verification_scope
-                    or journal.get('phase') == 'ROLLED_BACK'):
+                    or journal.get('phase') == 'ROLLED_BACK' or journal.get('kind') == 'configuration'):
                 continue
             fingerprint = journal.get('fingerprint')
             if not isinstance(fingerprint, str) or not HASH.fullmatch(fingerprint):
@@ -1610,10 +1629,12 @@ class Engine:
                                          probe_url=request.get('probe_url', ''))))
 
     def _apply(self, request):
+        configuration_updates.require_idle_configuration(self)
         job = request.get('job_id') or uuid.uuid4().hex
         path = self.journal_path(job)
         if self.store.exists(path):
             journal = self.store.json(path)
+            need(journal.get('kind') != 'configuration', 'ONBOARDING_JOB_SCOPE_MISMATCH')
             need(journal.get('root') == str(self.layout.root) and journal.get('owner') == self.layout.user,
                  'ONBOARDING_JOB_SCOPE_MISMATCH')
             need(self.operation_matches(journal, request),
@@ -2032,12 +2053,20 @@ class Engine:
 def handle(request, runner=None, store=None, layout=None):
     job = request.get('job_id') if isinstance(request, dict) else None
     try:
-        need(isinstance(request, dict) and request.get('action') in ('inspect', 'discover', 'apply', 'finalize', 'status', 'update_tools'),
+        need(isinstance(request, dict) and request.get('action') in ('inspect', 'discover', 'apply', 'finalize', 'status', 'update_tools',
+                'inspect_configuration', 'configuration_discover', 'apply_configuration'),
              'ONBOARDING_REQUEST_INVALID')
         layout = layout or Layout.production(request.get('root'))
         engine = Engine(layout, runner, store)
         engine.configure_scope(request)
         action = request['action']
+        if action == 'configuration_discover':
+            return engine.discover_configuration(request)
+        if action == 'inspect_configuration':
+            result = engine.inspect_configuration(request)
+            return {key: value for key, value in result.items() if not key.startswith('_')}
+        if action == 'apply_configuration':
+            return engine.apply_configuration(request)
         if action == 'update_tools':
             with engine.operation():
                 return engine.update_tools(request)

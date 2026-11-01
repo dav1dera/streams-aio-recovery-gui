@@ -246,7 +246,7 @@ class ControllerTests(unittest.TestCase):
 class RemoteLauncherTests(unittest.TestCase):
     def invoke(self, interpreter, *, exists=True):
         output = io.StringIO()
-        with patch('sys.argv', ['-c', interpreter, 'packed-engine', 'packed-tooling']), \
+        with patch('sys.argv', ['-c', interpreter, 'packed-engine', 'packed-tooling', 'packed-configuration']), \
                 patch('os.path.isfile', return_value=exists), patch('os.access', return_value=exists), \
                 patch('os.execv') as execute, patch('sys.stdin') as stdin, redirect_stdout(output):
             exec(compile(REMOTE_LAUNCHER, '<synthetic-launcher>', 'exec'), {})
@@ -261,7 +261,7 @@ class RemoteLauncherTests(unittest.TestCase):
         self.assertEqual(args[0], interpreter)
         self.assertEqual(args[1][:3], [interpreter, '-I', '-c'])
         self.assertIn('import yaml', args[1][3])
-        self.assertEqual(args[1][-2:], ['packed-engine', 'packed-tooling'])
+        self.assertEqual(args[1][-3:], ['packed-engine', 'packed-tooling', 'packed-configuration'])
 
     def test_missing_worker_fails_before_executing_source(self):
         output, execute = self.invoke('/home/pi/.local/share/streams-aio-public-sync/venv/bin/python', exists=False)

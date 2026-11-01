@@ -1,0 +1,12 @@
+- glances:
+    url: http://glances-fixture:61208
+    version: 4
+    cpu: true
+    mem: true
+    uptime: true
+    label: VM Docker
+- search:
+    provider: google
+    focus: true
+    showSearchSuggestions: false
+    target: _blank

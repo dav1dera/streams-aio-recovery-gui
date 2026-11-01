@@ -1,0 +1,3 @@
+docker-locale:
+  host: glances-fixture
+  port: 61208

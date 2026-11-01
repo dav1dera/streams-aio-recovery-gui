@@ -217,8 +217,11 @@ class LoopbackSSH:
         self.layout, self.runner = layout, runner
         self.actions = []
         self.responses = []
+        self.http_calls = 0
 
     def run(self, args, **kwargs):
+        if args[-1] == SSH_HTTP_HELPER:
+            self.http_calls += 1
         if args[-1] in (SSH_HTTP_HELPER, PRIVATE_PROOF):
             return invoke(args, 'ONBOARDING_E2E_FIXED_HELPER_FAILED', payload=kwargs.get('input'),
                           timeout=kwargs.get('timeout', 60))
@@ -236,12 +239,12 @@ class LoopbackSSH:
 
     @staticmethod
     def validate_remote_command(args, home):
-        # The production launcher now carries two bounded compressed modules.
+        # The production launcher now carries three bounded compressed modules.
         # Validate the actual encoded bytes before replacing only SSH delivery.
         interpreter = str(home / '.local/share/streams-aio-recovery/venv/bin/python')
-        require(len(args) == 7 and args[:4] == ['python3', '-I', '-c', REMOTE_LAUNCHER]
+        require(len(args) == 8 and args[:4] == ['python3', '-I', '-c', REMOTE_LAUNCHER]
                 and args[4] == interpreter, 'ONBOARDING_E2E_UNEXPECTED_REMOTE_COMMAND')
-        for encoded, name in zip(args[5:], ('service_onboarding.py', 'service_tooling.py')):
+        for encoded, name in zip(args[5:], ('service_onboarding.py', 'service_tooling.py', 'service_configuration.py')):
             require(isinstance(encoded, str) and len(encoded) <= 120 * 1024,
                     'ONBOARDING_E2E_REMOTE_SOURCE_BOUND')
             try:
@@ -497,7 +500,73 @@ class RealInfisicalOnboarding(unittest.TestCase):
                 require(repeated.get('status') == 'PASS_LOCAL', 'ONBOARDING_E2E_RESUME_FAILED')
                 require(self.container(root, application_project, 'fixture') == fixture_id
                         and agent.starts == restarts, 'ONBOARDING_E2E_RESUME_REINSTALLED_SERVICE')
-                public_report = json.dumps([result, repeated, events]).encode() + b''.join(ssh.responses)
+                # A separate public-only application now exercises the complete
+                # configuration-update controller/transport/Engine path without
+                # changing the secret-bearing service's Agent or container.
+                appearance = self.appearance_analysis(application_image, '.fixture { color: #bfd9ed; }\n')
+                appearance_controller = factory()
+                appearance_receipt = appearance_controller.inspect(appearance, connection, scope, events.append)
+                appearance_result = appearance_controller.apply(appearance, connection, scope, appearance_receipt, events.append)
+                require(appearance_result.get('status') == 'PASS_LOCAL', 'ONBOARDING_E2E_APPEARANCE_ADD_FAILED')
+                appearance_id = self.container(root, application_project, 'appearance')
+                started_at = invoke(['docker', 'inspect', '--format', '{{.State.StartedAt}}', appearance_id])
+                css_before = self.http_file(appearance_id, 'custom.css')
+                require(css_before == b'.fixture { color: #bfd9ed; }\n', 'ONBOARDING_E2E_APPEARANCE_HTTP_REQUIRED')
+                state_before = self.compose(root, application_project, 'exec', '-T', 'appearance', 'cat', '/state/record.bin')
+                unchanged_paths = [root / 'docker-compose.yml', root / 'data/appearance/.env', agent_config,
+                                   root / 'data/appearance/public/index.html']
+                unchanged_files = {str(path): self.file_identity(path) for path in unchanged_paths}
+                inventory_before = json.loads((root / 'config/service-resources.json').read_bytes())
+                http_before, restarts_before = ssh.http_calls, agent.starts
+                updated_appearance = self.appearance_analysis(application_image, '.fixture { color: #f2a878; }\n')
+                updater = factory()
+                update_receipt = updater.inspect_configuration(updated_appearance, connection, scope, events.append)
+                require(update_receipt.kind == 'configuration' and not update_receipt.resume,
+                        'ONBOARDING_E2E_CONFIGURATION_PREVIEW_REQUIRED')
+                update_result = updater.apply_configuration(updated_appearance, connection, scope, update_receipt, events.append)
+                require(update_result.get('status') == 'PASS_LOCAL'
+                        and update_result.get('operation_kind') == 'configuration',
+                        'ONBOARDING_E2E_CONFIGURATION_UPDATE_FAILED')
+                require(self.http_file(appearance_id, 'custom.css') == b'.fixture { color: #f2a878; }\n',
+                        'ONBOARDING_E2E_CONFIGURATION_HTTP_UNCHANGED')
+                require(all(self.file_identity(Path(path)) == value for path, value in unchanged_files.items()),
+                        'ONBOARDING_E2E_CONFIGURATION_CHANGED_UNRELATED_FILES')
+                inventory_after = json.loads((root / 'config/service-resources.json').read_bytes())
+                css_path = 'data/appearance/public/custom.css'
+                require(inventory_after['resources'] == inventory_before['resources']
+                        and {row['path']: row for row in inventory_after['configuration_files'] if row['path'] != css_path}
+                        == {row['path']: row for row in inventory_before['configuration_files'] if row['path'] != css_path},
+                        'ONBOARDING_E2E_CONFIGURATION_CHANGED_UNRELATED_INVENTORY')
+                selected_css = [row for row in inventory_after['configuration_files'] if row['path'] == css_path]
+                require(len(selected_css) == 1 and selected_css[0]['sha256']
+                        == remote.digest((root / css_path).read_bytes()),
+                        'ONBOARDING_E2E_CONFIGURATION_INVENTORY_HASH_FAILED')
+                require(self.compose(root, application_project, 'exec', '-T', 'appearance', 'cat', '/state/record.bin')
+                        == state_before and self.container(root, application_project, 'appearance') == appearance_id
+                        and invoke(['docker', 'inspect', '--format', '{{.State.StartedAt}}', appearance_id]) == started_at
+                        and self.container(root, application_project, 'fixture') == fixture_id
+                        and self.container(root, application_project, 'existing') == existing_id,
+                        'ONBOARDING_E2E_CONFIGURATION_RESTARTED_OR_CHANGED_DATA')
+                restarted_updater = factory()
+                resumed_update = restarted_updater.inspect_configuration(updated_appearance, connection, scope, events.append)
+                require(resumed_update.resume and resumed_update.kind == 'configuration'
+                        and resumed_update.job_id == update_receipt.job_id,
+                        'ONBOARDING_E2E_CONFIGURATION_RESUME_REQUIRED')
+                resumed_update_result = restarted_updater.apply_configuration(updated_appearance, connection, scope,
+                    resumed_update, events.append)
+                require(resumed_update_result.get('status') == 'PASS_LOCAL'
+                        and self.http_file(appearance_id, 'custom.css') == b'.fixture { color: #f2a878; }\n'
+                        and self.container(root, application_project, 'appearance') == appearance_id,
+                        'ONBOARDING_E2E_CONFIGURATION_RESUME_REINSTALLED_SERVICE')
+                require(ssh.http_calls == http_before and agent.starts == restarts_before
+                        and agent_config.read_bytes() == unchanged_files[str(agent_config)][0],
+                        'ONBOARDING_E2E_CONFIGURATION_TOUCHED_INFISICAL_OR_AGENT')
+                # Add mode cannot adopt a configuration-update receipt and start
+                # an existing application again, even with the same new packet.
+                with self.assertRaisesRegex(OnboardingError, '^ONBOARDING_SERVICE_ALREADY_EXISTS$'):
+                    factory().inspect(updated_appearance, connection, scope, events.append)
+                public_report = json.dumps([result, repeated, appearance_result, update_result,
+                    resumed_update_result, events]).encode() + b''.join(ssh.responses)
                 require(not any(value.encode() in public_report for value in (private_value, referenced_value, token, client_secret)),
                         'ONBOARDING_E2E_PRIVATE_VALUE_IN_REPORT')
             finally:
@@ -536,6 +605,30 @@ class RealInfisicalOnboarding(unittest.TestCase):
             if predicate(): return
             time.sleep(1)
         raise AssertionError(code)
+
+    @staticmethod
+    def file_identity(path):
+        info = path.stat()
+        return (path.read_bytes(), info.st_uid, info.st_gid, info.st_mode, info.st_ino, info.st_mtime_ns)
+
+    @staticmethod
+    def http_file(container_id, relative):
+        require(relative in ('custom.css', 'index.html'), 'ONBOARDING_E2E_HTTP_SCOPE')
+        return invoke(['docker', 'exec', container_id, 'wget', '-q', '-O', '-',
+                       'http://127.0.0.1:8080/' + relative], 'ONBOARDING_E2E_PUBLIC_HTTP_FAILED')
+
+    @staticmethod
+    def appearance_analysis(image, css):
+        document = {'services': {'appearance': {'image': image,
+            'command': ['sh', '-ec', 'printf "appearance-data\\n" > /state/record.bin; httpd -f -p 8080 -h /config'],
+            'volumes': ['./data/appearance/public:/config:ro', 'appearance-data:/state'],
+            'healthcheck': {'test': ['CMD-SHELL', 'test -s /state/record.bin && wget -q -O - http://127.0.0.1:8080/ | grep -qx appearance-fixture'],
+                            'interval': '1s', 'timeout': '3s', 'retries': 30}}},
+            'volumes': {'appearance-data': {}}}
+        return analyze_inputs(yaml.safe_dump(document, sort_keys=False), '', service_name='appearance',
+            configuration_files=[dict(path='data/appearance/public/index.html', content='appearance-fixture\n', mode=0o644),
+                                 dict(path='data/appearance/public/custom.css', content=css, mode=0o644)],
+            storage_policies=[dict(service='appearance', target='/state', method='stopped_archive')])
 
     @staticmethod
     def analysis(image, value):

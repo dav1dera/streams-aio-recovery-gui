@@ -37,6 +37,20 @@ SENSITIVE = frozenset(('password', 'key_password', 'sudo_password', 'infisical_p
 DEFAULTS = dict.fromkeys(KEYS, '') | dict(user='test', port='22', infisical_user='test2',
                                        infisical_port='22', routing_mode='parallel_test', age_identity_mode='file')
 WEB_ERRORS = {
+    'ONBOARDING_CONFIGURATION_APPLY_FAILED': 'L’aggiornamento dei file si è fermato. Verifica di nuovo la VM per controllare il lavoro conservato.',
+    'ONBOARDING_CONFIGURATION_JOURNAL_TOO_LARGE': 'Questo pacchetto contiene troppi dati per un aggiornamento protetto. Riduci i file del pacchetto.',
+    'ONBOARDING_CONFIGURATION_LOCK_INVALID': 'Il blocco di sicurezza dell’aggiornamento non supera il controllo. Lo stato esistente viene conservato.',
+    'ONBOARDING_CONFIGURATION_MODE_CHANGED': 'I permessi previsti da un file sono diversi da quelli installati. Mantieni i permessi originali del servizio.',
+    'ONBOARDING_CONFIGURATION_PATH_SET_CHANGED': 'Questo aggiornamento deve contenere gli stessi file pubblici del servizio installato. Controlla l’elenco dei file.',
+    'ONBOARDING_CONFIGURATION_PUBLIC_BASE_MOVED': 'La configurazione pubblica è cambiata durante l’aggiornamento. Verifica di nuovo la VM.',
+    'ONBOARDING_CONFIGURATION_RECOVERY_REQUIRED': 'Un aggiornamento precedente richiede una verifica dello stato conservato prima di continuare.',
+    'ONBOARDING_CONFIGURATION_RETRY_REQUIRED': 'I file dell’ultimo tentativo sono stati ripristinati. Verifica di nuovo la VM e riprova.',
+    'ONBOARDING_CONFIGURATION_SCOPE_REQUIRED': 'Questa modalità aggiorna i file pubblici di servizi già presenti. Usa un pacchetto senza variabili private e conserva le altre impostazioni.',
+    'ONBOARDING_CONFIGURATION_SOURCE_CHANGED': 'Un file installato è cambiato rispetto al piano verificato. Lo stato esistente viene conservato: verifica di nuovo.',
+    'ONBOARDING_CONFIGURATION_STATIC_CHANGED': 'Il pacchetto cambia anche Compose, variabili o dati. Per aggiornare i file pubblici queste impostazioni devono corrispondere al servizio esistente.',
+
+    'ONBOARDING_SERVICE_ALREADY_EXISTS': 'Il servizio è già presente. Per modificare i suoi file pubblici seleziona Aggiorna file di configurazione e verifica di nuovo la VM.',
+    'SERVICE_CONFIGURATION_UPDATE_SCOPE_REQUIRED': 'Questo aggiornamento richiede un pacchetto con file pubblici e senza variabili private. Le altre impostazioni devono corrispondere al servizio esistente.',
     'ONBOARDING_RESOURCE_BACKUP_CAPABILITY_REQUIRED': 'Il backup della VM deve supportare i dati del nuovo servizio. Usa Prepara strumenti VM e poi verifica di nuovo.',
     'ONBOARDING_PORT_IN_USE': 'Una porta richiesta dal servizio è già occupata sulla VM. Scegli una porta libera nel Compose e verifica di nuovo.',
     'ONBOARDING_TOOLING_GIT_FAILED': 'La VM non riesce a controllare gli strumenti esistenti. Verifica la disponibilità di Git e riprova.',
@@ -673,8 +687,12 @@ class WebBridge:
 
     def _service_inputs(self, payload):
         need(self._analysis is not None, 'SERVICE_ANALYSIS_REQUIRED')
-        need(isinstance(payload, dict) and set(payload) <= {'stack_root', 'probe_url', 'verification_scope', 'infisical'})
+        need(isinstance(payload, dict) and set(payload) <= {'stack_root', 'probe_url', 'verification_scope', 'infisical', 'mode'})
         need(all(isinstance(payload.get(key, ''), str) for key in ('stack_root', 'probe_url', 'verification_scope')))
+        mode = payload.get('mode', 'add')
+        need(mode in ('add', 'configuration'))
+        need(mode != 'configuration' or not self._analysis.plan.private_bindings,
+             'SERVICE_CONFIGURATION_UPDATE_SCOPE_REQUIRED')
         private = payload.get('infisical', {})
         need(isinstance(private, dict) and set(private) <= {'endpoint', 'project_id', 'environment', 'access_token'}
              and all(isinstance(value, str) and len(value) <= 16384 for value in private.values()))
@@ -682,7 +700,7 @@ class WebBridge:
             probe_url=payload.get('probe_url', ''), verification_scope=payload.get('verification_scope', 'full'))
         infisical = infisical_from_fields(*(private.get(key, '') for key in ('endpoint', 'project_id', 'environment', 'access_token')),
             private_required=bool(self._analysis.plan.private_bindings))
-        raw = json.dumps([connection, infisical], sort_keys=True).encode()
+        raw = json.dumps([connection, infisical, mode], sort_keys=True).encode()
         signature = hmac.digest(self._binding_key, raw, 'sha256')
         return self._analysis, connection, infisical, signature
 
@@ -694,12 +712,14 @@ class WebBridge:
             self._receipt, self._service_signature = None, None
             revision = self._revision
             def worker():
-                receipt = self._controller.inspect(analysis, connection, infisical, self._progress)
+                mode = payload.get('mode', 'add')
+                inspect = self._controller.inspect_configuration if mode == 'configuration' else self._controller.inspect
+                receipt = inspect(analysis, connection, infisical, self._progress)
                 self._active()
                 with self._lock:
                     need(revision == self._revision, 'SERVICE_INPUTS_CHANGED')
                     self._receipt, self._service_signature = receipt, signature
-                self._enqueue('inspected', verification_scope=connection['verification_scope'],
+                self._enqueue('inspected', verification_scope=connection['verification_scope'], mode=mode,
                     resume=getattr(receipt, 'resume', False) is True,
                     resume_phase=getattr(receipt, 'resume_phase', '') if getattr(receipt, 'resume_phase', '') in RESUME_PHASES else '')
             return self._start('inspect_service', worker)
@@ -731,14 +751,17 @@ class WebBridge:
                 raise BridgeFailure('SERVICE_INPUTS_CHANGED')
             receipt, revision = self._receipt, self._revision
             def worker():
-                result = self._controller.apply(analysis, connection, infisical, receipt, self._progress)
+                mode = payload.get('mode', 'add')
+                apply = self._controller.apply_configuration if mode == 'configuration' else self._controller.apply
+                result = apply(analysis, connection, infisical, receipt, self._progress)
+                need(mode != 'configuration' or result.get('operation_kind') == 'configuration', 'SERVICE_OPERATION_INCOMPLETE')
                 self._active()
                 local = connection['verification_scope'] == 'local_lab'
                 need(verified_local_completion(result) if local else verified_completion(result), 'SERVICE_OPERATION_INCOMPLETE')
                 with self._lock:
                     need(revision == self._revision, 'SERVICE_INPUTS_CHANGED')
                     self._invalidate()
-                safe = dict(operation='service', status='PASS_LOCAL' if local else 'PASS',
+                safe = dict(operation='service', mode=mode, status='PASS_LOCAL' if local else 'PASS',
                             checks=dict(service=True, agent=True, github=not local, backup=not local))
                 if not local:
                     safe.update(public_commit=result['public_commit'], backup_tag=result['backup_tag'])
